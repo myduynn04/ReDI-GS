@@ -71,7 +71,7 @@
 | T2.4 | Tạo `CoR-GS/crs_module.py` — R_i function | [x] Done | Hướng 1: GT color pairwise. File: utils/crs/crs_module.py. Unit test 6/6 PASS. |
 | T2.5 | Tạo `CoR-GS/crs_module.py` — update_crs() | [x] Done | EMA trên logit space, scale=5.0, w1=w2=0.5 default. Unit test 6/6 PASS. Surface=0.74, floater=0.46, invisible=0.50. |
 | T2.6 | Hook vào train.py — LOG ONLY (không đổi loss) | [x] Done | PSNR 21.10 (baseline 21.15, no regression). CRS range [0.14, 0.90]. <0.35=4572 (2.2%), >0.65=54679 (25.9%). Signal separation confirmed. |
-| T2.7 | Validate: floater có CRS thấp hơn surface? | | Kỳ vọng: floater → CRS 0.1-0.3, surface → 0.6-0.9 |
+| T2.7 | Validate: floater có CRS thấp hơn surface? | [x] Done | Floater CRS=0.316 opacity=0.903, surface CRS=0.820 opacity=0.432. Histogram bimodal (log). Floaters_only.ply confirmed. Pruning AND logic cần sửa → Option C ở T4.2. |
 
 ---
 
@@ -81,7 +81,7 @@
 
 | # | Task | Kết quả | Ghi chú |
 |---|------|---------|---------|
-| T3.1 | Thêm `fixed_depth_loss()` vào loss_utils.py | | Dùng trong Stage 2b (T_densify → T_warmup). Pearson correlation |
+| T3.1 | Thêm `pearson_depth_loss()` vào loss_utils.py | [x] Done | Pearson correlation, scale/shift invariant, differentiable. Unit test 8/8 PASS. |
 | T3.2 | Thêm `adaptive_depth_loss()` vào loss_utils.py | | lambda_i = base*(2-CRS_i). Chỉ sau T_warmup |
 | T3.3 | Tích hợp cả hai vào train.py | | Fixed loss trước T_warmup, adaptive sau T_warmup |
 | T3.4 | **Ablation A3: D_i+R_i, no position constraint** | PSNR=? vs A0=? | LLFF fern |

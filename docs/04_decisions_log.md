@@ -218,4 +218,40 @@
   - CRS thực tế range: [0.16, 0.92] — vẫn đủ rộng để detect floater
   - tau_crs=0.35 nằm giữa 0.16 (floater) và 0.92 (surface) — hợp lý
 - **Thay thế đã cân nhắc:** Tăng scale factor (>5.0) để mở rộng CRS range — không cần vì [0.16, 0.92] đã đủ
-- **Kết quả:** Confirmed bằng unit test T2.4. Verify lại bằng histogram thực nghiệm ở T2.7
+- **Kết quả:** Confirmed bằng unit test T2.4. Verified bằng histogram thực nghiệm T2.7: CRS thực tế [0.14, 0.90].
+
+---
+
+### [2026-04] T2.7 — Kết quả thực nghiệm CRS trên fern 3-view (iter 3000)
+
+- **Quyết định:** Ghi nhận kết quả T2.7 — CRS phân biệt được floater vs surface. Phase 2 PASS.
+- **Lý do:** Kết quả thực nghiệm trên fern single-field, 3000 iter, --use_depth_prior:
+  - CRS floater: mean=0.316, range [0.14, 0.32], N=2,634 (1.2%)
+  - CRS surface: mean=0.820, range [0.82, 0.90], N=53,043 (24.3%)
+  - CRS undecided: mean=0.497, N=145,739 (66.8%) — do densification nhanh hơn CRS update
+  - **Opacity floater = 0.903** — xác nhận DropoutGS (CVPR 2025): floater có opacity CAO
+  - **Opacity surface = 0.432** — thấp do alpha compositing nhiều Gaussians chồng nhau
+  - Floaters_only.ply: điểm rải rác xa surface = floater thật ✓
+  - Histogram bimodal (log scale): peak floater ~0.25, peak surface ~0.85
+  - PSNR 21.10 (baseline 21.15) — CRS log-only không break training
+  - 67% undecided sẽ giảm khi densification dừng (iter 10k) và CRS tiếp tục update
+- **Thay thế đã cân nhắc:** N/A (observational)
+- **Kết quả:** PASS — CRS hoạt động, sẵn sàng Phase 3
+
+---
+
+### [2026-04] Sửa pruning logic: AND → Option C (CRS+isolation OR opacity)
+
+- **Quyết định:** Thay đổi pruning formula ở T4.2:
+  ```
+  CŨ:  prune = (CRS < tau_crs) AND (opacity < 0.005) AND (knn_dist > tau_isolated)
+  MỚI: prune = (CRS < tau_crs AND knn_dist > tau_isolated) OR (opacity < 0.005)
+  ```
+- **Lý do:** T2.7 cho thấy floater có opacity = 0.903. Với AND logic cũ, điều kiện `opacity < 0.005` không bao giờ đúng cho floater → CRS pruning bị vô hiệu hóa hoàn toàn. Option C tách CRS pruning thành kênh riêng:
+  - Kênh 1 (CRS): CRS thấp + isolated → prune (không cần opacity thấp)
+  - Kênh 2 (legacy): opacity < 0.005 → prune (giữ behavior gốc của 3DGS)
+  - Lý do giữ knn_dist: Gaussian đang học có CRS thấp nhưng nằm gần surface (có neighbors) → không prune nhầm. Floater thật = CRS thấp VÀ isolated.
+- **Thay thế đã cân nhắc:**
+  - Option A: CRS < tau OR (opacity<0.005 AND big_points) — CRS alone quá aggressive
+  - Option B: CRS < tau alone — thiếu safety net, có thể prune Gaussian đang học
+- **Kết quả:** Implement tại T4.2

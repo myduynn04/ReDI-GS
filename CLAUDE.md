@@ -107,8 +107,10 @@ L_depth_adaptive = sum_i(lambda_depth_i * Pearson(d_render_i, d_prior_i))
 # Gaussian mới phải có |depth_new - d_prior| < epsilon_depth
 # epsilon_depth = 0.05 * depth_range, ablate {0.02, 0.05, 0.10}
 
-# ── Pruning — AND của 3 điều kiện, chỉ sau T_warmup ──
-prune = (CRS_i < tau_crs) AND (opacity < 0.005) AND (knn_dist > tau_isolated)
+# ── Pruning — Option C, chỉ sau T_warmup ──
+# T2.7 phát hiện: floater có opacity=0.90 → AND(CRS, opacity<0.005) vô hiệu
+# Option C: tách CRS pruning thành kênh riêng, giữ legacy opacity pruning
+prune = (CRS_i < tau_crs AND knn_dist > tau_isolated) OR (opacity < 0.005)
 ```
 
 ---

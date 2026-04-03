@@ -80,5 +80,79 @@ def loss_photometric(image, gt_image, opt, valid=None):
     return loss
 
 
+# ============================================================
+# [CRSGaussian] Task: T3.1 — pearson_depth_loss
+# File: CRSGaussian/utils/loss_utils.py  (THÊM VÀO)
+# Mục đích: Pearson correlation loss giữa rendered depth và
+#           aligned depth prior. Dùng correlation thay L1/L2
+#           vì robust với scale/shift ambiguity còn sót.
+# Được gọi từ: train.py, trong loss computation block
+# ============================================================
+
+
+def pearson_depth_loss(rendered_depth, depth_prior, mask=None):
+    """Pearson correlation depth loss.
+
+    Loss = 1 - pearson_corr(rendered, prior).
+    Pearson correlation đo tương quan tuyến tính, invariant với
+    scale và shift → robust khi depth alignment chưa hoàn hảo.
+    Loss = 0 khi hai depth maps hoàn toàn tương quan (tốt nhất).
+    Loss = 2 khi hoàn toàn ngược chiều (tệ nhất).
+
+    Args:
+        rendered_depth: (1, H, W) tensor GPU — từ rasterizer.
+        depth_prior: (H, W) tensor — aligned depth prior.
+            Có thể trên CPU (sẽ chuyển GPU) hoặc GPU.
+        mask: (1, H, W) hoặc (H, W) tensor boolean, optional.
+            True = pixel hợp lệ. None = dùng tất cả pixels.
+
+    Returns:
+        loss: scalar tensor — 1 - pearson_corr, range [0, 2].
+    """
+    # Đảm bảo cùng device
+    if depth_prior.device != rendered_depth.device:
+        depth_prior = depth_prior.to(rendered_depth.device)
+
+    # Flatten về 1D — pearson_corr cần vectors
+    rd = rendered_depth.squeeze()  # (H, W)
+    dp = depth_prior.squeeze()     # (H, W)
+
+    if mask is not None:
+        m = mask.squeeze().bool()  # (H, W)
+        rd = rd[m]
+        dp = dp[m]
+    else:
+        rd = rd.reshape(-1)
+        dp = dp.reshape(-1)
+
+    # Bỏ pixels depth_prior = 0 (vùng không có thông tin)
+    valid = dp > 0
+    if valid.sum() < 10:
+        # Quá ít pixels hợp lệ → trả loss 0 (không penalize)
+        return torch.tensor(0.0, device=rendered_depth.device)
+    rd = rd[valid]
+    dp = dp[valid]
+
+    # Pearson correlation thủ công — tránh dependency torchmetrics
+    # và kiểm soát edge cases tốt hơn.
+    # corr = cov(x,y) / (std(x) * std(y))
+    rd_mean = rd.mean()
+    dp_mean = dp.mean()
+    rd_centered = rd - rd_mean
+    dp_centered = dp - dp_mean
+
+    cov = (rd_centered * dp_centered).mean()
+    rd_std = rd_centered.pow(2).mean().sqrt()
+    dp_std = dp_centered.pow(2).mean().sqrt()
+
+    # Clamp std tối thiểu tránh chia 0 (depth map phẳng)
+    eps = 1e-6
+    corr = cov / (rd_std * dp_std + eps)
+
+    # Loss = 1 - corr: corr=1 → loss=0 (hoàn hảo),
+    #                   corr=-1 → loss=2 (ngược chiều)
+    return 1.0 - corr
+
+
 
 
