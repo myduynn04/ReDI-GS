@@ -75,16 +75,17 @@
 
 ---
 
-## PHASE 3 — Adaptive Depth Loss
+## PHASE 3 — Depth Loss
 
 > **Nhắc lại:** CoR-GS gốc KHÔNG có depth loss. Đây là thêm hoàn toàn mới.
+> **Quyết định:** Depth loss dùng fixed lambda. CRS chỉ điều khiển densify/prune (Phase 4). Xem decisions_log.
 
 | # | Task | Kết quả | Ghi chú |
 |---|------|---------|---------|
 | T3.1 | Thêm `pearson_depth_loss()` vào loss_utils.py | [x] Done | Pearson correlation, scale/shift invariant, differentiable. Unit test 8/8 PASS. |
-| T3.2 | Thêm `adaptive_depth_loss()` vào loss_utils.py | | lambda_i = base*(2-CRS_i). Chỉ sau T_warmup |
-| T3.3 | Tích hợp cả hai vào train.py | | Fixed loss trước T_warmup, adaptive sau T_warmup |
-| T3.4 | **Ablation A3: D_i+R_i, no position constraint** | PSNR=? vs A0=? | LLFF fern |
+| ~~T3.2~~ | ~~Thêm `adaptive_depth_loss()` vào loss_utils.py~~ | REMOVED | Bỏ — depth loss fixed lambda, CRS tách biệt cho Phase 4. Xem decisions_log. |
+| T3.3 | Tích hợp fixed depth loss vào train.py | [x] Done | PSNR 22.35 (+1.2 vs baseline 21.15). Vượt 2-field CoR-GS (22.29). N=73k (-65% vs no-depth 211k). Gap train-test giảm 14→11 dB. |
+| T3.4 | **Ablation: depth loss only vs baseline** | [x] Done | Kết quả T3.3 = ablation A1 (depth loss only). PSNR 22.35 vs A0=21.15. |
 
 ---
 
@@ -119,9 +120,9 @@
 
 | Config | D_i | R_i | Pos.const | W.align | CRS₀ | T_warmup | PSNR (fern) | PSNR (DTU avg) |
 |--------|-----|-----|-----------|---------|------|----------|-------------|----------------|
-| A0 — CoR-GS 2-field (T0.5) | ✗ | ✗ | ✗ | ✗ | N/A | N/A | | |
-| A0b — Single-field (T0.5b) | ✗ | ✗ | ✗ | ✗ | N/A | N/A | | |
-| A1 — D_i only | ✓ | ✗ | ✗ | ✓ | f(reproj)/0.5 | 1000 | | |
+| A0 — CoR-GS 2-field (T0.5) | ✗ | ✗ | ✗ | ✗ | N/A | N/A | 22.29 | |
+| A0b — Single-field (T0.5b) | ✗ | ✗ | ✗ | ✗ | N/A | N/A | 21.15 | |
+| A1 — Depth loss only (T3.3) | ✗ | ✗ | ✗ | ✓ | 0.5 | 1000 | **22.35** | |
 | A2 — R_i only | ✗ | ✓ | ✗ | ✓ | f(reproj)/0.5 | 1000 | | |
 | A3 — Full CRS, no pos | ✓ | ✓ | ✗ | ✓ | f(reproj)/0.5 | 1000 | | |
 | A4 — Full CRSGaussian | ✓ | ✓ | ✓ (T_densify=500) | ✓ | f(reproj)/0.5 | 1000 | | |

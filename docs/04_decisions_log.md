@@ -255,3 +255,26 @@
   - Option A: CRS < tau OR (opacity<0.005 AND big_points) — CRS alone quá aggressive
   - Option B: CRS < tau alone — thiếu safety net, có thể prune Gaussian đang học
 - **Kết quả:** Implement tại T4.2
+
+---
+
+### [2026-04] Bỏ adaptive_depth_loss — depth loss và CRS tách biệt hoàn toàn
+
+- **Quyết định:** Depth loss dùng fixed lambda (không weight theo CRS). CRS chỉ điều khiển densification và pruning. Bỏ `adaptive_depth_loss()` khỏi plan.
+  ```
+  L_depth = lambda_base * pearson_depth_loss(rendered_depth, depth_prior)
+  CRS → densification gating + multi-signal pruning (Phase 4)
+  ```
+- **Lý do:** Depth loss và CRS giải quyết 2 vấn đề khác nhau:
+  - Depth loss: **correction** — kéo Gaussians về đúng depth
+  - CRS pruning: **elimination** — xóa floater nếu vẫn tệ sau correction
+  - Hai cơ chế bổ sung nhau, không cần overlap (adaptive weight)
+  - Thiết kế sạch hơn: mỗi component có 1 nhiệm vụ rõ ràng
+  - Ablation rõ ràng hơn: A1 (depth only) vs A2 (CRS only) vs A3 (cả hai) — không bị confound bởi adaptive weighting
+- **Thay thế đã cân nhắc:** adaptive_depth_loss(lambda_base * (2 - CRS_i)) — phức tạp hơn, CRS per-Gaussian nhưng depth loss per-image → mismatch granularity, khó implement đúng
+- **Kết quả:** T3.2 removed. T3.3 DONE — fern 3-view 3000 iter:
+  - Test PSNR 22.35 (+1.20 vs baseline 21.15, vượt 2-field CoR-GS 22.29)
+  - Train PSNR 33.34 (gap 10.99 vs 13.97 trước — less overfit)
+  - N=73,575 (-65% vs no-depth 211k) — depth loss ngăn proliferation
+  - CRS: mean=0.75, <0.35=876 (-81%), >0.65=56,336
+  - Depth loss (correction) hoạt động mạnh. CRS pruning (Phase 4) chưa bật.

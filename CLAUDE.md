@@ -91,12 +91,13 @@ tau_densify  = 0.45   # ngưỡng chặn sinh con: CRS < 0.45 → skip densify
 # tau_densify > tau_crs: chặn sinh con trước, xóa sau — logic đúng thứ tự
 # Ablate: tau_crs ∈ {0.25, 0.35, 0.45}, tau_densify ∈ {0.40, 0.45, 0.50}
 
-# ── Adaptive depth loss ──
+# ── Fixed depth loss ──
 # CoR-GS gốc KHÔNG có depth loss — đây là thêm hoàn toàn mới
-lambda_depth_i = lambda_base * (2.0 - CRS_i)   # lambda_base = 0.05
-# CRS=0.1 → lambda=1.9x (phạt mạnh floater)
-# CRS=0.9 → lambda=1.1x (phạt nhẹ surface đúng)
-L_depth_adaptive = sum_i(lambda_depth_i * Pearson(d_render_i, d_prior_i))
+# Depth loss = correction (kéo Gaussian về đúng depth)
+# CRS = elimination (prune floater qua Phase 4)
+# Hai cơ chế tách biệt, không overlap
+L_depth = lambda_base * pearson_depth_loss(rendered_depth, depth_prior)
+# lambda_base = 0.05, ablate {0.01, 0.05, 0.10}
 
 # ── depth_range ──
 # depth_range = median(far) - median(near) across tất cả training cameras

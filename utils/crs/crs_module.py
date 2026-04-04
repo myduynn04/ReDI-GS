@@ -105,10 +105,8 @@ def compute_depth_consistency(
         py = pixel_y[valid].long().clamp(0, H - 1)
 
         # ── Depth prior lookup ──
-        # aligned_depth_dict lưu CPU tensors → chuyển GPU khi cần.
-        # Với 3 cameras sparse-view, overhead transfer không đáng kể
-        # (~0.7 MB/image ở 504x378).
-        depth_prior_map = aligned_depth_dict[cam.uid].to(device)  # (H, W)
+        # aligned_depth_dict lưu GPU tensors (moved tại depth_alignment.py).
+        depth_prior_map = aligned_depth_dict[cam.uid]  # (H, W) GPU
         d_prior = depth_prior_map[py, px]  # (M,)
 
         # Depth projected của Gaussians visible

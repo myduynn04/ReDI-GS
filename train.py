@@ -24,7 +24,7 @@ import torch.nn.functional as F
 from torchmetrics import PearsonCorrCoef
 from torchmetrics.functional.regression import pearson_corrcoef
 from random import randint
-from utils.loss_utils import l1_loss, l1_loss_mask, l2_loss, ssim, loss_photometric
+from utils.loss_utils import l1_loss, l1_loss_mask, l2_loss, ssim, loss_photometric, pearson_depth_loss
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -202,9 +202,18 @@ def training(dataset, opt, pipe, args):
                             for j in range(args.gaussiansN):
                                 if i != j:
                                     LossDict[f"loss_gs{i}"] += loss_photometric(RenderDict[f"image_pseudo_co_gs{i}"], RenderDict[f"image_pseudo_co_gs{j}"].clone().detach(), opt=opt) / (args.gaussiansN - 1)
-
         #TODO: Cài đặt hàm loss liên quan đến kéo thông tin vào gần những point tốt
 
+        # ── [CRSGaussian T3.3] Fixed Pearson depth loss ──
+        # Gated bởi --use_depth_prior: không ảnh hưởng baseline khi tắt.
+        # Depth loss = correction: kéo Gaussians về đúng depth.
+        # CRS = elimination: prune floater (Phase 4). Hai cơ chế tách biệt.
+        # lambda_base=0.05, ablate {0.01, 0.05, 0.10}
+        if dataset.use_depth_prior and viewpoint_cam.uid in aligned_depth_dict:
+            rendered_depth = RenderDict["depth_gs0"]              # (1,H,W) GPU
+            depth_prior = aligned_depth_dict[viewpoint_cam.uid]   # (H,W) GPU
+            L_depth = 0.05 * pearson_depth_loss(rendered_depth, depth_prior)
+            LossDict["loss_gs0"] += L_depth
 
         loss = LossDict["loss_gs0"]
         for i in range(args.gaussiansN):

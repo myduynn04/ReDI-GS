@@ -68,7 +68,7 @@ def align_depth_to_colmap(depth_prior_dict, cameras, source_path, n_views,
             # Quá ít points → không align được, giữ nguyên relative depth
             print(f"[CRSGaussian] WARNING: cam {cam.uid} has <3 visible "
                   f"COLMAP points, skipping alignment")
-            aligned_depth_dict[cam.uid] = dense_depth
+            aligned_depth_dict[cam.uid] = dense_depth.cuda()
             continue
 
         # Lấy dense depth tại pixel locations tương ứng
@@ -101,7 +101,9 @@ def align_depth_to_colmap(depth_prior_dict, cameras, source_path, n_views,
         aligned = scale * dense_depth + shift
         aligned = aligned.clamp(min=1e-6)  # tránh depth ≤ 0
 
-        aligned_depth_dict[cam.uid] = aligned
+        # Lưu trên GPU — tránh CPU→GPU transfer mỗi iter khi dùng trong
+        # depth loss (T3.3) và CRS update (T2.6).
+        aligned_depth_dict[cam.uid] = aligned.cuda()
 
         # Thu thập near/far cho depth_range
         all_near.append(aligned.min().item())
