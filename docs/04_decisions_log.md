@@ -278,3 +278,20 @@
   - N=73,575 (-65% vs no-depth 211k) — depth loss ngăn proliferation
   - CRS: mean=0.75, <0.35=876 (-81%), >0.65=56,336
   - Depth loss (correction) hoạt động mạnh. CRS pruning (Phase 4) chưa bật.
+
+---
+
+### [2026-04] Position constraint (T4.1) TẮT sau thực nghiệm
+
+- **Quyết định:** Tắt position constraint hoàn toàn. Config cuối: depth loss + CRS pruning, KHÔNG có position constraint.
+- **Lý do:** Thực nghiệm ablation trên fern 3-view 3000 iter:
+  - Run A (depth loss + CRS pruning only): PSNR=22.37, N=72k ✓
+  - Run B (depth loss + position constraint only): PSNR=19.33, N=59k ✗ (-3 dB)
+  - Run C (cả hai): PSNR=19.11, N=55k ✗
+  - Position constraint với epsilon=0.05*depth_range=1.53 units quá hẹp. DAV2 depth prior có noise → reject Gaussians hợp lệ ở vị trí hơi lệch surface. Kết quả: không đủ Gaussians → PSNR giảm mạnh.
+  - Depth loss đã đủ correction (kéo Gaussians về đúng depth). CRS pruning đủ elimination (xóa floater). Position constraint thừa và gây hại.
+- **Thay thế đã cân nhắc:**
+  - Tăng epsilon (0.10, 0.15, 0.20) — có thể giảm hại nhưng vẫn reject một số Gaussians cần thiết
+  - Chỉ áp dụng cho split (không clone) — clone copy parent position nên ít bị ảnh hưởng
+  - Dùng soft constraint (penalty thay reject) — phức tạp hơn, chưa rõ lợi ích
+- **Kết quả:** Ablation value cho paper: position constraint hại hơn lợi khi depth prior noisy. Đây là finding quan trọng — trái với AD-GS (2025) claim.

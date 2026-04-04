@@ -280,11 +280,9 @@ def training(dataset, opt, pipe, args):
             # Gated: --use_depth_prior AND sau T_warmup AND mỗi 100 iter.
             # KHÔNG dùng CRS cho loss/pruning ở bước này — chỉ log stats
             # để verify signal trước khi bật (T3.x, T4.x).
-            T_warmup = 1000  # ablate: {500, 1000, 2000}
-            crs_update_interval = 100  # ablate: {50, 100, 200}
             if (dataset.use_depth_prior
-                    and iteration > T_warmup
-                    and iteration % crs_update_interval == 0):
+                    and iteration > opt.T_warmup
+                    and iteration % 100 == 0):
                 update_crs(gaussians, allCameras, aligned_depth_dict,
                            depth_range)
                 # Log CRS distribution — giúp chọn tau_crs ở T2.7
@@ -314,9 +312,28 @@ def training(dataset, opt, pipe, args):
                     size_threshold = None
                     # size_threshold = 20 if iteration > opt.opacity_reset_interval else None
 
-                    for i in range(args.gaussiansN):
+                    # [CRSGaussian T4.1] Truyền depth constraint params.
+                    # Khi --use_depth_prior: position constraint chặn floater sinh ra.
+                    # [CRSGaussian] Position constraint gated bởi --use_pos_constraint
+                    # CRS pruning gated bởi --use_crs_pruning
+                    # Cả hai cần --use_depth_prior làm prerequisite
+                    _pc_cams = allCameras if (dataset.use_depth_prior and opt.use_pos_constraint) else None
+                    _pc_depth = aligned_depth_dict if (dataset.use_depth_prior and opt.use_pos_constraint) else None
+                    _pc_range = depth_range if (dataset.use_depth_prior and opt.use_pos_constraint) else None
+                    # CRS pruning cần aligned_depth_dict để biết CRS đã được update
+                    _crs_dict = aligned_depth_dict if (dataset.use_depth_prior and opt.use_crs_pruning) else None
 
-                        GsDict[f"gs{i}"].densify_and_prune(opt.densify_grad_threshold, opt.prune_threshold, scene.cameras_extent, size_threshold, iteration)                              
+                    for i in range(args.gaussiansN):
+                        GsDict[f"gs{i}"].densify_and_prune(
+                            opt.densify_grad_threshold, opt.prune_threshold,
+                            scene.cameras_extent, size_threshold, iteration,
+                            cameras=_pc_cams,
+                            aligned_depth_dict=_pc_depth,
+                            depth_range=_pc_range,
+                            T_warmup=opt.T_warmup,
+                            tau_crs=opt.tau_crs,
+                            tau_isolated=opt.tau_isolated,
+                            crs_prune_dict=_crs_dict)
 
             # Optimizer step
             if iteration < opt.iterations:

@@ -93,8 +93,8 @@
 
 | # | Task | Kết quả | Ghi chú |
 |---|------|---------|---------|
-| T4.1 | Sửa densify_and_prune() — position constraint **từ T_densify=500** | | depth_range = median(far)-median(near). epsilon_depth=0.05*range |
-| T4.2 | Sửa compute_prune_mask() — thêm CRS condition + iter check | | Chỉ active sau T_warmup. tau_crs=0.2 |
+| T4.1 | Sửa densify_and_prune() — position constraint **từ T_densify=500** | [x] Done | _depth_constraint_mask helper + sửa split/clone/prune. epsilon=0.05*depth_range. Unit test 5/5 PASS. |
+| T4.2 | Sửa densify_and_prune() — CRS pruning Option C | [x] Done | (CRS<0.35 AND isolated) OR legacy. Params in OptimizationParams. Unit test 5/5 PASS. |
 | T4.3 | **Ablation A4: Full CRSGaussian** | PSNR=? vs A0=? | LLFF fern |
 | T4.4 | **Ablation A5: T_warmup=0** | PSNR=? | Confirm need warmup |
 

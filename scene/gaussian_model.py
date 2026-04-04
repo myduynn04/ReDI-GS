@@ -18,10 +18,90 @@ from utils.system_utils import mkdir_p
 from plyfile import PlyData, PlyElement
 from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
-from utils.graphics_utils import BasicPointCloud
+from utils.graphics_utils import BasicPointCloud, fov2focal
 from utils.general_utils import strip_symmetric, build_scaling_rotation, chamfer_dist
 import open3d as o3d
 from torch.optim.lr_scheduler import MultiStepLR
+
+
+# ============================================================
+# [CRSGaussian] Task: T4.1 — _depth_constraint_mask
+# File: CRSGaussian/scene/gaussian_model.py  (THÊM VÀO)
+# Mục đích: Kiểm tra Gaussian mới có nằm gần depth prior không.
+#           Reject Gaussians quá xa surface → ngăn floater sinh ra.
+# Lý do (AD-GS 2025): floater hình thành ngay khi densification
+#   bắt đầu — Gaussian mới sample tự do → vòng lặp tự khuếch đại.
+# Được gọi từ: densify_and_split(), densify_and_clone()
+# ============================================================
+
+
+@torch.no_grad()
+def _depth_constraint_mask(new_xyz, cameras, aligned_depth_dict, epsilon_depth):
+    """Kiểm tra new_xyz có nằm gần depth prior không.
+
+    Project new_xyz xuống tất cả cameras, so depth projected với
+    depth prior. Accept nếu BẤT KỲ camera nào cho |diff| < epsilon.
+    Reject nếu TẤT CẢ cameras đều cho diff lớn hoặc invisible.
+
+    Args:
+        new_xyz: (M, 3) positions của Gaussians mới, GPU.
+        cameras: list of Camera objects.
+        aligned_depth_dict: {cam.uid: Tensor (H,W)} GPU.
+        epsilon_depth: float — max depth error cho phép.
+
+    Returns:
+        keep: (M,) boolean tensor — True = accept, False = reject.
+    """
+    M = new_xyz.shape[0]
+    device = new_xyz.device
+    # Track: Gaussian đã pass ít nhất 1 camera chưa
+    accepted = torch.zeros(M, dtype=torch.bool, device=device)
+
+    ones = torch.ones(M, 1, device=device, dtype=new_xyz.dtype)
+    xyz_hom = torch.cat([new_xyz, ones], dim=1)  # (M, 4)
+
+    for cam in cameras:
+        if cam.uid not in aligned_depth_dict:
+            continue
+
+        H = cam.image_height
+        W = cam.image_width
+
+        W2C = cam.world_view_transform.T  # (4, 4) GPU
+        pts_cam = (W2C @ xyz_hom.T).T     # (M, 4)
+        depth = pts_cam[:, 2]
+
+        fx = fov2focal(cam.FoVx, W)
+        fy = fov2focal(cam.FoVy, H)
+        cx, cy = W / 2.0, H / 2.0
+
+        pixel_x = pts_cam[:, 0] / depth * fx + cx
+        pixel_y = pts_cam[:, 1] / depth * fy + cy
+
+        valid = (
+            (depth > 0)
+            & (pixel_x >= 0) & (pixel_x < W)
+            & (pixel_y >= 0) & (pixel_y < H)
+        )
+
+        if valid.sum() == 0:
+            continue
+
+        px = pixel_x[valid].long().clamp(0, W - 1)
+        py = pixel_y[valid].long().clamp(0, H - 1)
+
+        d_prior = aligned_depth_dict[cam.uid][py, px]  # (K,)
+        d_proj = depth[valid]                           # (K,)
+
+        # Accept nếu depth error < epsilon
+        # epsilon_depth = 0.05 * depth_range ≈ 1.53 units cho fern
+        close_enough = torch.abs(d_proj - d_prior) < epsilon_depth
+
+        # Cập nhật: Gaussian pass camera này → accepted
+        valid_indices = valid.nonzero(as_tuple=True)[0]
+        accepted[valid_indices[close_enough]] = True
+
+    return accepted
 
 
 class GaussianModel:
@@ -476,7 +556,8 @@ class GaussianModel:
 
 
 
-    def densify_and_split(self, grads, grad_threshold, grads_abs, grad_abs_threshold, scene_extent, iter, N=2):
+    def densify_and_split(self, grads, grad_threshold, grads_abs, grad_abs_threshold, scene_extent, iter, N=2,
+                          cameras=None, aligned_depth_dict=None, depth_range=None):
         n_init_points = self.get_xyz.shape[0]
         # Extract points that satisfy the gradient condition
         padded_grad = torch.zeros((n_init_points), device="cuda")
@@ -507,6 +588,22 @@ class GaussianModel:
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N, 1, 1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
 
+        # ── [CRSGaussian T4.1] Position constraint — DISABLED ──
+        # Tắt sau thực nghiệm: DAV2 depth prior noise → reject Gaussians
+        # hợp lệ → PSNR giảm 3 dB. Xem decisions_log 2026-04.
+        # Depth loss + CRS pruning đủ kiểm soát floater.
+        # Code giữ lại để enable nếu cần (e.g. depth prior chính xác hơn).
+        # if aligned_depth_dict is not None and cameras is not None and depth_range is not None:
+        #     epsilon_depth = 0.05 * depth_range
+        #     keep = _depth_constraint_mask(new_xyz, cameras, aligned_depth_dict, epsilon_depth)
+        #     if keep.sum() < new_xyz.shape[0]:
+        #         new_xyz = new_xyz[keep]
+        #         new_scaling = new_scaling[keep]
+        #         new_rotation = new_rotation[keep]
+        #         new_features_dc = new_features_dc[keep]
+        #         new_features_rest = new_features_rest[keep]
+        #         new_opacity = new_opacity[keep]
+
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
 
         prune_filter = torch.cat(
@@ -514,7 +611,8 @@ class GaussianModel:
         self.prune_points(prune_filter, iter)
 
 
-    def densify_and_clone(self, grads, grad_threshold, grads_abs, grad_abs_threshold, scene_extent):
+    def densify_and_clone(self, grads, grad_threshold, grads_abs, grad_abs_threshold, scene_extent,
+                          cameras=None, aligned_depth_dict=None, depth_range=None):
         # Extract points that satisfy the gradient condition
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
         if self.absdensify:
@@ -531,11 +629,29 @@ class GaussianModel:
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
 
+        # ── [CRSGaussian T4.1] Position constraint ──
+        # Clone copy parent position nguyên bản — nhưng nếu parent
+        # đã là floater (xa depth prior) thì clone cũng là floater.
+        # Reject clones xa surface để ngăn floater nhân bản.
+        if aligned_depth_dict is not None and cameras is not None and depth_range is not None:
+            epsilon_depth = 0.05 * depth_range
+            keep = _depth_constraint_mask(new_xyz, cameras, aligned_depth_dict, epsilon_depth)
+            if keep.sum() < new_xyz.shape[0]:
+                new_xyz = new_xyz[keep]
+                new_features_dc = new_features_dc[keep]
+                new_features_rest = new_features_rest[keep]
+                new_opacities = new_opacities[keep]
+                new_scaling = new_scaling[keep]
+                new_rotation = new_rotation[keep]
+
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling,
                                    new_rotation)
 
 
-    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, iter):
+    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, iter,
+                          cameras=None, aligned_depth_dict=None, depth_range=None,
+                          T_warmup=1000, tau_crs=0.35, tau_isolated=0.1,
+                          crs_prune_dict=None):
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
@@ -543,15 +659,45 @@ class GaussianModel:
         grads_abs[grads_abs.isnan()] = 0.0
         ratio = (torch.norm(grads, dim=-1) >= max_grad).float().mean()
         Q = torch.quantile(grads_abs.reshape(-1), 1 - ratio)
-        
-        self.densify_and_clone(grads, max_grad, grads_abs, Q, extent)
-        self.densify_and_split(grads, max_grad, grads_abs, Q, extent, iter)
-        
+
+        # [CRSGaussian T4.1] Truyền depth constraint params xuống clone/split.
+        # cameras=None → skip constraint (backward compat khi không dùng --use_depth_prior).
+        self.densify_and_clone(grads, max_grad, grads_abs, Q, extent,
+                               cameras=cameras, aligned_depth_dict=aligned_depth_dict, depth_range=depth_range)
+        self.densify_and_split(grads, max_grad, grads_abs, Q, extent, iter,
+                               cameras=cameras, aligned_depth_dict=aligned_depth_dict, depth_range=depth_range)
+
+        # ── Legacy pruning (3DGS gốc) — giữ nguyên ──
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
+
+        # ── [CRSGaussian T4.2] CRS pruning — Option C ──
+        # prune = (CRS < tau_crs AND isolated) OR legacy
+        # Lý do Option C: T2.7 cho thấy floater opacity=0.90 →
+        # AND(CRS, opacity<0.005) vô hiệu. Option C tách CRS thành
+        # kênh prune riêng, không cần opacity thấp.
+        #
+        # Chỉ active sau T_warmup: CRS trước T_warmup là noise
+        # (chưa đủ EMA updates) → prune sai nếu dùng sớm.
+        #
+        # isolated = knn_dist > tau_isolated * extent:
+        # Floater thật đứng một mình trong 3D space.
+        # Gaussian đang học có CRS thấp nhưng nằm gần surface
+        # (có neighbors) → không bị prune nhầm.
+        if iter > T_warmup and crs_prune_dict is not None:
+            crs_scores = self.get_crs.squeeze()                    # (N,) [0,1]
+            crs_low = (crs_scores < tau_crs)                       # floater candidate
+
+            # distCUDA2 trả (dist, indices) — dist là khoảng cách tới
+            # nearest neighbor, đã import sẵn từ simple_knn._C
+            knn_dist, _ = distCUDA2(self.get_xyz)                  # (N,)
+            isolated = (knn_dist > tau_isolated * extent)           # đứng một mình
+
+            crs_prune = crs_low & isolated                         # floater thật
+            prune_mask = torch.logical_or(prune_mask, crs_prune)
 
         self.prune_points(prune_mask, iter)
         torch.cuda.empty_cache()

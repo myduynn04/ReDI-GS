@@ -105,7 +105,14 @@ class OptimizationParams(ParamGroup):
         self.dist_thres = 10.
         self.random_background = False
         self.absdensify = False
-        
+        # ── [CRSGaussian T4.2] CRS pruning params ──
+        self.T_warmup = 1000        # iter bắt đầu CRS active. Ablate: {500, 1000, 2000}
+        self.tau_crs = 0.35         # ngưỡng CRS để prune. Ablate: {0.25, 0.35, 0.45}
+        self.tau_densify = 0.45     # ngưỡng CRS để chặn densify (Phase 4 future)
+        self.tau_isolated = 0.1     # ngưỡng isolation (× scene_extent). Ablate: {0.05, 0.10, 0.20}
+        self.use_pos_constraint = False  # [debug] bật/tắt position constraint (T4.1)
+        self.use_crs_pruning = False     # [debug] bật/tắt CRS pruning (T4.2)
+
         super().__init__(parser, "Optimization Parameters")
 
 
