@@ -103,10 +103,10 @@ L_depth = lambda_base * pearson_depth_loss(rendered_depth, depth_prior)
 # depth_range = median(far) - median(near) across tất cả training cameras
 # Dùng median (robust với outlier), tính một lần ở đầu training
 
-# ── Position constraint khi densify — BẬT TỪ T_densify=500 ──
-# Lý do: AD-GS (2025) — floater hình thành ngay khi densification bắt đầu
-# Gaussian mới phải có |depth_new - d_prior| < epsilon_depth
-# epsilon_depth = 0.05 * depth_range, ablate {0.02, 0.05, 0.10}
+# ── Position constraint — DISABLED ──
+# Thực nghiệm: epsilon=0.05*depth_range quá hẹp vì DAV2 noise
+# → reject Gaussians hợp lệ → PSNR giảm 3 dB. Xem decisions_log.
+# Depth loss + CRS pruning đủ kiểm soát floater.
 
 # ── Pruning — Option C, chỉ sau T_warmup ──
 # T2.7 phát hiện: floater có opacity=0.90 → AND(CRS, opacity<0.005) vô hiệu

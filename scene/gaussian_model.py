@@ -629,20 +629,18 @@ class GaussianModel:
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
 
-        # ── [CRSGaussian T4.1] Position constraint ──
-        # Clone copy parent position nguyên bản — nhưng nếu parent
-        # đã là floater (xa depth prior) thì clone cũng là floater.
-        # Reject clones xa surface để ngăn floater nhân bản.
-        if aligned_depth_dict is not None and cameras is not None and depth_range is not None:
-            epsilon_depth = 0.05 * depth_range
-            keep = _depth_constraint_mask(new_xyz, cameras, aligned_depth_dict, epsilon_depth)
-            if keep.sum() < new_xyz.shape[0]:
-                new_xyz = new_xyz[keep]
-                new_features_dc = new_features_dc[keep]
-                new_features_rest = new_features_rest[keep]
-                new_opacities = new_opacities[keep]
-                new_scaling = new_scaling[keep]
-                new_rotation = new_rotation[keep]
+        # ── [CRSGaussian T4.1] Position constraint — DISABLED ──
+        # Xem decisions_log 2026-04. DAV2 noise → reject hợp lệ → -3 dB.
+        # if aligned_depth_dict is not None and cameras is not None and depth_range is not None:
+        #     epsilon_depth = 0.05 * depth_range
+        #     keep = _depth_constraint_mask(new_xyz, cameras, aligned_depth_dict, epsilon_depth)
+        #     if keep.sum() < new_xyz.shape[0]:
+        #         new_xyz = new_xyz[keep]
+        #         new_features_dc = new_features_dc[keep]
+        #         new_features_rest = new_features_rest[keep]
+        #         new_opacities = new_opacities[keep]
+        #         new_scaling = new_scaling[keep]
+        #         new_rotation = new_rotation[keep]
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling,
                                    new_rotation)
