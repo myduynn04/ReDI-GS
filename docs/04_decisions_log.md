@@ -168,12 +168,52 @@
 
 ---
 
-### [2026-03] CRS₀ = 0 (neutral) cho tất cả Gaussians — bỏ informed init
+### [2026-03] ~~CRS₀ = 0 (neutral) cho tất cả Gaussians — bỏ informed init~~ → SUPERSEDED
 
-- **Quyết định:** Tất cả Gaussians khởi tạo _crs_score = 0 (logit) → CRS = 0.5 (neutral). Không dùng reprojection errors để init.
-- **Lý do:** CRS không được dùng trước T_warmup → giá trị khởi tạo không có tác dụng thực tế. Sau T_warmup, mỗi 100 iter CRS sẽ được tính lại từ D_i và R_i thực tế → init value converge về 0 trong vài lần update đầu dù khởi tạo gì. Bỏ informed init đơn giản hóa code và loại bỏ dependency không cần thiết.
-- **Thay thế đã cân nhắc:** CRS₀ = 1 - normalize(reproj_error) — bỏ vì không có tác dụng trước T_warmup
-- **Kết quả:** Pending
+- **Quyết định cũ:** Tất cả Gaussians khởi tạo _crs_score = 0 (logit) → CRS = 0.5 (neutral).
+- **Lý do cũ:** CRS không được dùng trước T_warmup → giá trị khởi tạo không có tác dụng thực tế.
+- **SUPERSEDED bởi:** [2026-04] Informed CRS₀ Initialization (xem bên dưới).
+- **Lý do thay đổi:** Iter 500-1000 densification chạy không kiểm soát khi CRS₀=0.5.
+  Floaters sinh ra trước T_warmup, CRS chỉ detect được sau đó → quá muộn.
+  Geometry info từ COLMAP + DAV2 alignment đã có sẵn → lãng phí nếu không dùng.
+
+---
+
+### [2026-04] Informed CRS₀ Initialization — 3-signal geometry prior
+
+- **Quyết định:** COLMAP Gaussians nhận CRS₀ từ 3 geometry signals thay vì neutral 0.5.
+  Densified Gaussians nhận conservative inherit từ parent (capped tại 0.5).
+  Toàn bộ gated bởi `--informed_crs_init` (default False → behavior cũ).
+- **Công thức COLMAP Gaussians:**
+  ```
+  q_reproj = 1 - clip(reproj_error / τ_r, 0, 1)           τ_r=2.5
+  q_depth  = 1 - clip(|d_DAV2 - d_COLMAP| / depth_range, 0, 1)
+  q_view   = (n_obs - 1) / max(N_train - 1, 1)
+  Q_i = w_r*q_reproj + w_d*q_depth + w_v*q_view            default 1/3 mỗi cái
+  ℓᵢ⁽⁰⁾ = γ * (Q_i - 0.5)                                  γ=5.0
+  CRS₀ = sigmoid(ℓᵢ⁽⁰⁾)
+  ```
+- **Công thức Densified Gaussians:**
+  ```
+  CRS₀_child = clip(η * CRS_parent, 0, 0.5)               η=0.7
+  ```
+  Max=0.5: child không bao giờ trên neutral → phải "earn" CRS cao.
+- **Lý do:**
+  1. Iter 500-1000 densification chạy "mù" → floaters sinh tự do → CRS₀=0.5 quá muộn
+  2. Geometry info đã có sẵn sau alignment (reproj errors, aligned depth, view count)
+  3. 3 signals bổ sung nhau: reproj=SfM quality, depth=DAV2 agreement, view=stereo support
+  4. Conservative inherit đảm bảo densified Gaussians không "free ride" từ parent
+- **Thiết kế ablation-friendly:**
+  - Master switch: `--informed_crs_init` (False → CRS₀=0.5 như cũ)
+  - Component switches: `--crs_init_use_reproj`, `--crs_init_use_depth`, `--crs_init_use_view`
+  - Tự normalize weights khi component bị tắt → 9 ablation configs
+  - Densify inherit switch riêng: `--crs_densify_inherit`
+- **Thay thế đã cân nhắc:**
+  - CRS₀=0.5 tất cả (decision cũ) — bỏ vì lãng phí geometry info, iter 500-1000 không kiểm soát
+  - Chỉ dùng reproj (1 signal) — thiếu depth agreement và view support
+  - CRS₀=1.0 cho COLMAP (quá optimistic) — không phân biệt COLMAP point tốt/xấu
+  - Inherit CRS_parent nguyên (không cap) — child ở vị trí khác, chưa proven
+- **Kết quả:** Pending — 9 ablation configs (CONFIG 0-8)
 
 ---
 

@@ -100,21 +100,40 @@
 
 ---
 
-## PHASE 5 — GFS Metric [HOLD - deprioritized]
+## PHASE 5 — Informed CRS₀ Initialization
+
+> **Triết lý:** CRS₀ có ý nghĩa hình học ngay từ đầu → densification iter 500-1000 không blind.
+> **Prerequisite:** Phase 1 DONE (aligned depth), Phase 2 DONE (CRS module), T4.2 DONE (pruning).
+> **Xem chi tiết:** docs/09_informed_crs_init_plan.md
+
+| # | Task | Kết quả | Ghi chú |
+|---|------|---------|---------|
+| T5.1 | Thêm arguments Informed CRS₀ vào arguments/__init__.py | [x] Done | 11 args mới trong ModelParams. Master switch --informed_crs_init default False. str2bool cho bool default=True. |
+| T5.2 | Tạo utils/crs/crs_init.py — compute_informed_crs0() | [x] Done | 4 functions: q_reproj, q_depth, q_view, compute_informed_crs0. + _match_reproj_errors helper. |
+| T5.3 | Sửa gaussian_model.py — create_from_pcd() nhận informed_crs0 | [x] Done | Optional param, backward-compatible. |
+| T5.4 | Sửa gaussian_model.py — densification_postfix() inherit CRS | [x] Done | Conservative inherit: clip(η*parent, 0, 0.5). Gated --crs_densify_inherit. Chain qua split/clone/prune. |
+| T5.5 | Sửa train.py — hook informed CRS₀ + eta | [x] Done | Option C: overwrite sau Scene(). Log Q distribution. eta truyền vào densify. |
+| T5.6 | Tạo tests/test_informed_crs_init.py — 6 unit tests | [x] Done | 6/6 PASS trên server. |
+| T5.7 | Verify baseline không break (informed_crs_init=False) | [ ] | Chạy trên server: PSNR phải = baseline cũ. |
+| T5.8 | Log Q distribution (100 iter, --informed_crs_init) | [ ] | Validate γ=5.0 phù hợp với Q distribution thực tế. |
+
+---
+
+## PHASE 6 — GFS Metric [HOLD - deprioritized]
 
 > **Tạm gác hoàn toàn.** Focus 100% vào C1 (CRS Module) và C2 (CRS-guided Densification) trước.
 > Không implement metrics_dtu.py extension, compute_depth_rmse(), compute_floater_ratio().
 
 | # | Task | Kết quả | Ghi chú |
 |---|------|---------|---------|
-| ~~T5.1~~ | ~~Mở rộng metrics_dtu.py — Depth RMSE~~ | HOLD | |
-| ~~T5.2~~ | ~~Mở rộng metrics_dtu.py — Floater Ratio~~ | HOLD | |
-| ~~T5.3~~ | ~~Validate: CRSGaussian vs CoR-GS trên DTU~~ | HOLD | |
-| ~~T5.4~~ | ~~Scatter plot PSNR vs Depth RMSE~~ | HOLD | |
+| ~~T6.1~~ | ~~Mở rộng metrics_dtu.py — Depth RMSE~~ | HOLD | |
+| ~~T6.2~~ | ~~Mở rộng metrics_dtu.py — Floater Ratio~~ | HOLD | |
+| ~~T6.3~~ | ~~Validate: CRSGaussian vs CoR-GS trên DTU~~ | HOLD | |
+| ~~T6.4~~ | ~~Scatter plot PSNR vs Depth RMSE~~ | HOLD | |
 
 ---
 
-## PHASE 6 — Full Ablation Study
+## PHASE 7 — Full Ablation Study
 
 ### Component ablation
 
@@ -129,14 +148,19 @@
 | A5 — No warmup | ✓ | ✓ | ✓ | ✓ | f(reproj)/0.5 | 0 | | |
 | A6 — Naive align | ✓ | ✓ | ✓ | ✗ | f(reproj)/0.5 | 1000 | | |
 
-### CRS₀ initialization ablation
+### CRS₀ Informed Initialization ablation (updated 2026-04)
 
-| Config | COLMAP init | Densified init | PSNR (fern) |
-|--------|-------------|----------------|-------------|
-| Alt-1 | 1.0 | 0.5 | |
-| Alt-2 | f(reproj) | 0.3 | |
-| Alt-3 | f(reproj) | 0.8 | |
-| Alt-4 | 0.5 | 0.5 | ← baseline cũ |
+| Config | q_reproj | q_depth | q_view | Inherit | PSNR (fern) | Ghi chú |
+|--------|----------|---------|--------|---------|-------------|---------|
+| C0 | ✗ | ✗ | ✗ | ✗ | | Baseline — informed_crs_init=False |
+| C1 | ✓ | ✗ | ✗ | ✗ | | Chỉ reproj |
+| C2 | ✗ | ✓ | ✗ | ✗ | | Chỉ depth |
+| C3 | ✗ | ✗ | ✓ | ✗ | | Chỉ view |
+| C4 | ✓ | ✓ | ✗ | ✗ | | reproj + depth |
+| C5 | ✓ | ✗ | ✓ | ✗ | | reproj + view |
+| C6 | ✗ | ✓ | ✓ | ✗ | | depth + view |
+| C7 | ✓ | ✓ | ✓ | ✗ | | Tất cả, equal weights |
+| C8 | ✓ | ✓ | ✓ | ✓ | | Tất cả + densify inherit |
 
 ### Hyperparameter sensitivity
 
@@ -160,15 +184,15 @@
 
 ---
 
-## PHASE 7 — Full Experiments
+## PHASE 8 — Full Experiments
 
 | # | Task | Status |
 |---|------|--------|
-| T7.1 | LLFF 8 scenes × baselines | |
-| T7.2 | DTU 15 scenes × baselines | |
-| T7.3 | Blender 8 scenes × baselines | |
-| T7.4 | Compile Table 1 (PSNR/SSIM/LPIPS) | |
-| T7.5 | Compile Table 2 (Depth RMSE / Floater Ratio) [HOLD] | |
+| T8.1 | LLFF 8 scenes × baselines | |
+| T8.2 | DTU 15 scenes × baselines | |
+| T8.3 | Blender 8 scenes × baselines | |
+| T8.4 | Compile Table 1 (PSNR/SSIM/LPIPS) | |
+| T8.5 | Compile Table 2 (Depth RMSE / Floater Ratio) [HOLD] | |
 
 ---
 

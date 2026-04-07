@@ -111,9 +111,47 @@ def training(dataset, opt, pipe, args):
             depth_prior_dict, allCameras, dataset.source_path, dataset.n_views)
         del depth_prior_dict  # không cần nữa, chỉ giữ aligned version
 
+    # ── [CRSGaussian T5.5] Informed CRS₀ initialization ──
+    # Option C: compute sau Scene() init, overwrite _crs_score trực tiếp.
+    # Gated: --informed_crs_init AND --use_depth_prior (cần aligned depth).
+    # Khi False: _crs_score giữ neutral 0 (sigmoid=0.5) — behavior cũ.
+    if dataset.informed_crs_init and dataset.use_depth_prior:
+        from utils.crs.crs_init import compute_informed_crs0
+        informed_crs0 = compute_informed_crs0(
+            points_xyz    = scene.init_point_cloud.points,
+            cameras       = allCameras,
+            aligned_depth_dict = aligned_depth_dict,
+            depth_range   = depth_range,
+            source_path   = dataset.source_path,
+            n_views       = dataset.n_views,
+            use_reproj    = dataset.crs_init_use_reproj,
+            use_depth     = dataset.crs_init_use_depth,
+            use_view      = dataset.crs_init_use_view,
+            w_reproj      = dataset.crs_init_w_reproj,
+            w_depth       = dataset.crs_init_w_depth,
+            w_view        = dataset.crs_init_w_view,
+            tau_r         = dataset.crs_init_tau_r,
+            gamma         = dataset.crs_init_gamma,
+        )
+        # Overwrite neutral CRS₀ cho gs0
+        gaussians._crs_score = informed_crs0.unsqueeze(-1).cuda()
+        # Log Q distribution để validate γ choice
+        Q = torch.sigmoid(informed_crs0)
+        print(f"[CRS] CRS₀ informed init: N={len(Q)}")
+        print(f"[CRS] CRS₀ distribution: "
+              f"min={Q.min():.3f} max={Q.max():.3f} "
+              f"mean={Q.mean():.3f} std={Q.std():.3f}")
+        print(f"[CRS] CRS₀ < 0.35: {(Q<0.35).sum().item()} "
+              f"({(Q<0.35).float().mean()*100:.1f}%)")
+        print(f"[CRS] CRS₀ > 0.65: {(Q>0.65).sum().item()} "
+              f"({(Q>0.65).float().mean()*100:.1f}%)")
+
+    # ── [CRSGaussian] Collect eval results cho summary table cuối training ──
+    eval_history = []
+
     ema_loss_for_log = 0.0
     first_iter += 1
-    
+
     for iteration in range(first_iter, opt.iterations + 1):
         if network_gui.conn == None:
             network_gui.try_connect()
@@ -261,7 +299,8 @@ def training(dataset, opt, pipe, args):
                 progress_bar.close()
 
             training_report(args, tb_writer, iteration, loss, l1_loss,
-                            testing_iterations, scene, render, (pipe, background), GsDict=GsDict)
+                            testing_iterations, scene, render, (pipe, background),
+                            GsDict=GsDict, eval_history=eval_history)
 
             if iteration > first_iter and (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
@@ -282,9 +321,9 @@ def training(dataset, opt, pipe, args):
             # để verify signal trước khi bật (T3.x, T4.x).
             if (dataset.use_depth_prior
                     and iteration > opt.T_warmup
-                    and iteration % 100 == 0):
+                    and iteration % opt.crs_update_interval == 0):
                 update_crs(gaussians, allCameras, aligned_depth_dict,
-                           depth_range)
+                           depth_range, ema=opt.crs_ema_decay)
                 # Log CRS distribution — giúp chọn tau_crs ở T2.7
                 crs_vals = gaussians.get_crs.detach()
                 if iteration % 500 == 0:
@@ -322,6 +361,8 @@ def training(dataset, opt, pipe, args):
                     _pc_range = depth_range if (dataset.use_depth_prior and opt.use_pos_constraint) else None
                     # CRS pruning cần aligned_depth_dict để biết CRS đã được update
                     _crs_dict = aligned_depth_dict if (dataset.use_depth_prior and opt.use_crs_pruning) else None
+                    # [CRSGaussian T5.5] Conservative inherit: child CRS₀ = clip(η*parent, 0, 0.5)
+                    _eta = dataset.crs_init_eta if dataset.crs_densify_inherit else 0.0
 
                     for i in range(args.gaussiansN):
                         GsDict[f"gs{i}"].densify_and_prune(
@@ -333,7 +374,8 @@ def training(dataset, opt, pipe, args):
                             T_warmup=opt.T_warmup,
                             tau_crs=opt.tau_crs,
                             tau_isolated=opt.tau_isolated,
-                            crs_prune_dict=_crs_dict)
+                            crs_prune_dict=_crs_dict,
+                            eta=_eta)
 
             # Optimizer step
             if iteration < opt.iterations:
@@ -370,6 +412,29 @@ def training(dataset, opt, pipe, args):
                     
                 #TODO thêm cập nhật cfs_score
 
+    # ── [CRSGaussian] Summary table — in kết quả tổng hợp cuối training ──
+    if eval_history:
+        print("\n" + "=" * 90)
+        print("  SUMMARY — Evaluation Results")
+        print("=" * 90)
+        print(f"  {'Iter':>6} | {'Split':>5} | {'PSNR':>8} | {'SSIM':>8} | {'LPIPS':>8} | {'L1':>10} | {'#Gaussians':>11}")
+        print("-" * 90)
+        for row in eval_history:
+            print(f"  {row['iter']:>6} | {row['split']:>5} | "
+                  f"{row['psnr']:>8.4f} | {row['ssim']:>8.4f} | "
+                  f"{row['lpips']:>8.4f} | {row['l1']:>10.6f} | "
+                  f"{row['n_gaussians']:>11}")
+        print("=" * 90)
+
+        # Tìm best test PSNR
+        test_rows = [r for r in eval_history if r['split'] == 'test']
+        if test_rows:
+            best = max(test_rows, key=lambda r: r['psnr'])
+            print(f"  Best test PSNR: {best['psnr']:.4f} at iter {best['iter']} "
+                  f"(N={best['n_gaussians']})")
+        print("=" * 90 + "\n")
+
+
 def prepare_output_and_logger(args):
     if not args.model_path:
         if os.getenv('OAR_JOB_ID'):
@@ -394,7 +459,7 @@ def prepare_output_and_logger(args):
 
 
 
-def training_report(args, tb_writer, iteration, loss, l1_loss, testing_iterations, scene : Scene, renderFunc, renderArgs, GsDict=None):
+def training_report(args, tb_writer, iteration, loss, l1_loss, testing_iterations, scene : Scene, renderFunc, renderArgs, GsDict=None, eval_history=None):
     if tb_writer:
         # tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
@@ -476,6 +541,18 @@ def training_report(args, tb_writer, iteration, loss, l1_loss, testing_iteration
                 l1_test /= len(config['cameras'])
                 print("\n[ITER {}] Evaluating {}: L1 {} PSNR {} SSIM {} LPIPS {} ".format(
                     iteration, config['name'], l1_test, psnr_test, ssim_test, lpips_test))
+                # ── [CRSGaussian] Thu thập kết quả cho summary table ──
+                if eval_history is not None:
+                    N_gs = scene.gaussians.get_xyz.shape[0]
+                    eval_history.append({
+                        'iter': iteration,
+                        'split': config['name'],
+                        'psnr': float(psnr_test),
+                        'ssim': float(ssim_test),
+                        'lpips': float(lpips_test),
+                        'l1': float(l1_test),
+                        'n_gaussians': N_gs,
+                    })
                 if tb_writer:
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)

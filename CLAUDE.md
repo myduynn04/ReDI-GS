@@ -58,11 +58,29 @@ SCGaussian/      ← KHÔNG DÙNG CODE — chỉ đọc paper
 ## Công thức cốt lõi
 
 ```python
-# ── CRS₀ Initialization ──
-# TẤT CẢ Gaussians khởi tạo = 0 (logit space) → sigmoid(0) = 0.5 (neutral)
-# Lý do: CRS không được dùng trước T_warmup → giá trị init không có tác dụng
-# Không cần informed init từ reprojection errors
-self._crs_score = torch.zeros(N, 1)   # logit space
+# ── CRS₀ Initialization — Informed (updated 2026-04) ──
+# Triết lý mới: CRS₀ có ý nghĩa hình học ngay từ đầu, không neutral 0.5.
+# Lý do: iter 500-1000 densification chạy "mù" khi CRS₀=0.5 → floater sinh tự do
+#         → CRS chỉ detect được sau T_warmup=1000 → quá muộn.
+#
+# COLMAP Gaussians — 3 signals kết hợp:
+#   q_reproj = 1 - clip(reproj_error / τ_r, 0, 1)       # τ_r=2.5
+#   q_depth  = 1 - clip(|d_DAV2 - d_COLMAP| / range, 0, 1)
+#   q_view   = (n_obs - 1) / max(N_train - 1, 1)
+#   Q_i = w_r*q_reproj + w_d*q_depth + w_v*q_view        # default equal 1/3
+#   ℓᵢ⁽⁰⁾ = γ * (Q_i - 0.5)                              # γ=5.0
+#   CRS₀ = sigmoid(ℓᵢ⁽⁰⁾)   [lưu logit ℓᵢ⁽⁰⁾ vào _crs_score]
+#
+# Densified Gaussians — conservative inherit:
+#   CRS₀_child = clip(η * CRS_parent, 0, 0.5)            # η=0.7
+#   Child không bao giờ bắt đầu trên neutral → phải "earn" CRS cao
+#
+# Ablation-friendly: mỗi component bật/tắt độc lập qua arguments.
+# Master switch: --informed_crs_init (default False → giữ behavior cũ)
+# Xem docs/09_informed_crs_init_plan.md cho chi tiết implementation.
+#
+# Behavior cũ (khi informed_crs_init=False):
+self._crs_score = torch.zeros(N, 1)   # logit space → sigmoid(0) = 0.5
 
 # ── Depth consistency ──
 # Chỉ tính cho visible Gaussians (visibility_filter = radii > 0)
@@ -212,14 +230,23 @@ Phase 1 — DONE
   T1.3  ✓ Tích hợp vào train.py (--use_depth_prior flag)
   T1.4  ✓ Depth map verified (scale=-0.09, range [16.9, 47.6])
 
-Phase 2 — IN PROGRESS
+Phase 2 — DONE
   T2.1  ✓ Đọc CoR-GS disagreement → không refactor, viết mới R_i
   T2.2  ✓ _crs_score attribute trong gaussian_model.py (5 chỗ sửa)
-  T2.3  ← NEXT: D_i function
-  T2.4  R_i function
-  T2.5  update_crs()
-  T2.6  Hook vào train.py — LOG ONLY
-  T2.7  Validate CRS distribution
+  T2.3  ✓ D_i function
+  T2.4  ✓ R_i function (GT color pairwise)
+  T2.5  ✓ update_crs() — EMA logit space, scale=5.0
+  T2.6  ✓ Hook vào train.py — LOG ONLY
+  T2.7  ✓ Validate CRS distribution — bimodal confirmed
+
+Phase 3 — DONE
+  T3.1  ✓ pearson_depth_loss()
+  T3.3  ✓ Fixed depth loss λ=0.05 → PSNR 22.35 (+1.2)
+
+Phase 4 — IN PROGRESS
+  T4.1  ✓ Position constraint — DISABLED (PSNR -3dB)
+  T4.2  ✓ CRS pruning Option C
+  T5.x  ← NEXT: Informed CRS₀ Initialization (Phase 5)
 ```
 
 ---
@@ -232,7 +259,7 @@ Phase 2 — IN PROGRESS
 - **D_i dùng 3D projection + visibility filter**
 - **CRS scale factor = 5.0** — CRS range [0.08, 0.92]
 - **tau_crs = 0.35, tau_densify = 0.45** — provisional, xác nhận sau T2.7
-- **CRS₀ = 0 (neutral)** cho tất cả Gaussians — không cần informed init
+- **CRS₀ — Informed init** (updated 2026-04): COLMAP Gaussians dùng q_reproj+q_depth+q_view, densified dùng conservative inherit. Gated bởi --informed_crs_init
 - CRS update interval = 100 iter — ablate {50, 100, 200}
 
 ---

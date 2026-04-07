@@ -235,7 +235,17 @@ class GaussianModel:
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
 
-    def create_from_pcd(self, pcd: BasicPointCloud, spatial_lr_scale: float):
+    def create_from_pcd(self, pcd: BasicPointCloud, spatial_lr_scale: float,
+                         informed_crs0=None):
+        """Khởi tạo Gaussians từ COLMAP point cloud.
+
+        Args:
+            pcd: BasicPointCloud — points, colors, normals
+            spatial_lr_scale: float — scale cho learning rate
+            informed_crs0: (N,) torch.Tensor logit hoặc None
+                [CRSGaussian T5.3] Informed CRS₀ từ compute_informed_crs0().
+                None → neutral CRS₀=0.5 (behavior cũ).
+        """
         self.spatial_lr_scale = spatial_lr_scale
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).cuda().float()
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
@@ -263,10 +273,14 @@ class GaussianModel:
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
         self.confidence = torch.ones_like(opacities, device="cuda")
-        # ── [CRSGaussian T2.2] CRS score per Gaussian ──
-        # Logit space: sigmoid(0) = 0.5 (neutral). CRS không dùng trước T_warmup.
+        # ── [CRSGaussian T5.3] CRS score per Gaussian — informed hoặc neutral ──
+        # Logit space: sigmoid(0) = 0.5 (neutral).
+        # Khi informed_crs0 được truyền vào: dùng geometry prior thay neutral.
         # KHÔNG dùng self.confidence (đã dành cho rasterizer).
-        self._crs_score = torch.zeros((fused_point_cloud.shape[0], 1), device="cuda")
+        if informed_crs0 is not None:
+            self._crs_score = informed_crs0.unsqueeze(-1).to("cuda")
+        else:
+            self._crs_score = torch.zeros((fused_point_cloud.shape[0], 1), device="cuda")
         if self.args.train_bg:
             self.bg_color = nn.Parameter((torch.zeros(3, 1, 1) + 0.).cuda().requires_grad_(True))
 
@@ -508,7 +522,14 @@ class GaussianModel:
         return optimizable_tensors
 
     def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling,
-                              new_rotation):
+                              new_rotation, parent_crs_logits=None, eta=0.0):
+        """Append new Gaussians vào model + optimizer.
+
+        Args:
+            parent_crs_logits: (M, 1) tensor hoặc None — CRS logit của parents.
+                [CRSGaussian T5.4] Dùng khi crs_densify_inherit=True.
+            eta: float — inherit factor. 0.0 = neutral (behavior cũ).
+        """
         d = {"xyz": new_xyz,
              "f_dc": new_features_dc,
              "f_rest": new_features_rest,
@@ -530,11 +551,26 @@ class GaussianModel:
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
         self.confidence = torch.cat([self.confidence, torch.ones(new_opacities.shape, device="cuda")], 0)
-        # ── [CRSGaussian T2.2] Gaussian mới → neutral CRS (logit=0 → sigmoid=0.5) ──
-        # Không inherit từ parent: child chưa có geometry history,
-        # CRS sẽ hội tụ sau vài lần update_crs() dựa trên D_i, R_i thực tế.
-        self._crs_score = torch.cat([self._crs_score,
-                                     torch.zeros((new_xyz.shape[0], 1), device="cuda")], dim=0)
+        # ── [CRSGaussian T5.4] CRS cho Gaussians mới ──
+        # eta > 0: conservative inherit — child CRS₀ = clip(η*CRS_parent, 0, 0.5)
+        #   Child không bao giờ trên neutral → phải "earn" CRS cao qua D_i/R_i.
+        #   parent_crs_logits truyền từ densify_and_split/clone.
+        # eta = 0: neutral (behavior cũ) — logit=0 → sigmoid=0.5
+        if eta > 0 and parent_crs_logits is not None:
+            # sigmoid: logit → CRS ∈ [0, 1] của parent
+            parent_crs = torch.sigmoid(parent_crs_logits).squeeze(-1)   # (M,)
+            # η * parent_crs: scale down, cap tại 0.5
+            # Lý do cap=0.5: child ở vị trí khác parent (split sample noise,
+            # clone copy) → geometry chưa proven → không nên bắt đầu trên neutral.
+            # 1e-6 lower bound: tránh log(0) trong inverse sigmoid
+            inherited = (parent_crs * eta).clamp(1e-6, 0.5)
+            # Inverse sigmoid: CRS → logit để lưu vào _crs_score (logit space)
+            child_logit = torch.log(inherited / (1 - inherited))        # inverse sigmoid
+            new_crs = child_logit.unsqueeze(-1)                         # (M, 1)
+        else:
+            # Behavior cũ: neutral logit=0 → sigmoid=0.5
+            new_crs = torch.zeros((new_xyz.shape[0], 1), device="cuda")
+        self._crs_score = torch.cat([self._crs_score, new_crs], dim=0)
 
 
     def proximity(self, scene_extent, N = 3):
@@ -556,8 +592,10 @@ class GaussianModel:
 
 
 
+    # [CRSGaussian T5.4] +eta param cho conservative CRS inherit
     def densify_and_split(self, grads, grad_threshold, grads_abs, grad_abs_threshold, scene_extent, iter, N=2,
-                          cameras=None, aligned_depth_dict=None, depth_range=None):
+                          cameras=None, aligned_depth_dict=None, depth_range=None,
+                          eta=0.0):
         n_init_points = self.get_xyz.shape[0]
         # Extract points that satisfy the gradient condition
         padded_grad = torch.zeros((n_init_points), device="cuda")
@@ -604,15 +642,21 @@ class GaussianModel:
         #         new_features_rest = new_features_rest[keep]
         #         new_opacity = new_opacity[keep]
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
+        # [CRSGaussian T5.4] Truyền parent CRS logit cho conservative inherit.
+        # Split tạo N children mỗi parent → repeat N lần để match new_xyz.
+        _parent_crs = self._crs_score[selected_pts_mask].repeat(N, 1) if eta > 0 else None
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation,
+                                   parent_crs_logits=_parent_crs, eta=eta)
 
         prune_filter = torch.cat(
             (selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter, iter)
 
 
+    # [CRSGaussian T5.4] +eta param cho conservative CRS inherit
     def densify_and_clone(self, grads, grad_threshold, grads_abs, grad_abs_threshold, scene_extent,
-                          cameras=None, aligned_depth_dict=None, depth_range=None):
+                          cameras=None, aligned_depth_dict=None, depth_range=None,
+                          eta=0.0):
         # Extract points that satisfy the gradient condition
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
         if self.absdensify:
@@ -642,14 +686,18 @@ class GaussianModel:
         #         new_scaling = new_scaling[keep]
         #         new_rotation = new_rotation[keep]
 
+        # [CRSGaussian T5.4] Truyền parent CRS logit cho conservative inherit.
+        # Clone copy nguyên parent → 1:1 mapping.
+        _parent_crs = self._crs_score[selected_pts_mask] if eta > 0 else None
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling,
-                                   new_rotation)
+                                   new_rotation, parent_crs_logits=_parent_crs, eta=eta)
 
 
+    # [CRSGaussian T5.4] +eta param cho conservative CRS inherit → chain xuống clone/split
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, iter,
                           cameras=None, aligned_depth_dict=None, depth_range=None,
                           T_warmup=1000, tau_crs=0.35, tau_isolated=0.1,
-                          crs_prune_dict=None):
+                          crs_prune_dict=None, eta=0.0):
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
@@ -661,9 +709,11 @@ class GaussianModel:
         # [CRSGaussian T4.1] Truyền depth constraint params xuống clone/split.
         # cameras=None → skip constraint (backward compat khi không dùng --use_depth_prior).
         self.densify_and_clone(grads, max_grad, grads_abs, Q, extent,
-                               cameras=cameras, aligned_depth_dict=aligned_depth_dict, depth_range=depth_range)
+                               cameras=cameras, aligned_depth_dict=aligned_depth_dict, depth_range=depth_range,
+                               eta=eta)
         self.densify_and_split(grads, max_grad, grads_abs, Q, extent, iter,
-                               cameras=cameras, aligned_depth_dict=aligned_depth_dict, depth_range=depth_range)
+                               cameras=cameras, aligned_depth_dict=aligned_depth_dict, depth_range=depth_range,
+                               eta=eta)
 
         # ── Legacy pruning (3DGS gốc) — giữ nguyên ──
         prune_mask = (self.get_opacity < min_opacity).squeeze()

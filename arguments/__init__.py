@@ -13,6 +13,21 @@ from argparse import ArgumentParser, Namespace
 import sys
 import os
 
+
+# ── [CRSGaussian T5.1] str2bool helper cho argparse ──
+# ParamGroup dùng action="store_true" cho bool → không truyền False từ CLI được.
+# Với args default=True (vd. crs_init_use_reproj), cần type=str2bool
+# để hỗ trợ: --crs_init_use_reproj False
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', '1'):
+        return True
+    if v.lower() in ('no', 'false', 'f', '0'):
+        return False
+    raise ValueError(f"Boolean value expected, got '{v}'")
+
+
 class GroupParams:
     pass
 
@@ -25,15 +40,23 @@ class ParamGroup:
                 shorthand = True
                 key = key[1:]
             t = type(value)
-            value = value if not fill_none else None 
+            value = value if not fill_none else None
             if shorthand:
                 if t == bool:
-                    group.add_argument("--" + key, ("-" + key[0:1]), default=value, action="store_true")
+                    if value is True:
+                        # [CRSGaussian T5.1] default=True → dùng str2bool để cho phép --key False
+                        group.add_argument("--" + key, ("-" + key[0:1]), default=value, type=str2bool)
+                    else:
+                        group.add_argument("--" + key, ("-" + key[0:1]), default=value, action="store_true")
                 else:
                     group.add_argument("--" + key, ("-" + key[0:1]), default=value, type=t)
             else:
                 if t == bool:
-                    group.add_argument("--" + key, default=value, action="store_true")
+                    if value is True:
+                        # [CRSGaussian T5.1] default=True → dùng str2bool để cho phép --key False
+                        group.add_argument("--" + key, default=value, type=str2bool)
+                    else:
+                        group.add_argument("--" + key, default=value, action="store_true")
                 else:
                     group.add_argument("--" + key, default=value, type=t)
 
@@ -63,6 +86,30 @@ class ModelParams(ParamGroup):
         self.use_depth_prior = False
         self.dav2_path = "../Depth-Anything-V2"
         self.dav2_encoder = "vitl"
+        # ── [CRSGaussian T5.1] Informed CRS₀ Initialization ──
+        # Dùng geometry info có sẵn sau alignment để set CRS₀ có ý nghĩa
+        # hình học, thay vì neutral 0.5. Xem docs/09_informed_crs_init_plan.md
+        # Master switch: False → behavior cũ (CRS₀=0.5 tất cả)
+        self.informed_crs_init = False
+        # Component switches — mỗi cái bật/tắt độc lập cho ablation.
+        # Default=True: khi bật informed_crs_init, dùng cả 3 signals.
+        # Dùng str2bool: --crs_init_use_reproj False để tắt từ CLI.
+        self.crs_init_use_reproj = True   # q_reproj: SfM reprojection quality
+        self.crs_init_use_depth  = True   # q_depth:  DAV2-COLMAP depth agreement
+        self.crs_init_use_view   = True   # q_view:   multi-view stereo support
+        # Weights — tự normalize về sum=1 khi component bị tắt.
+        # Grid search: w ∈ {0.0, 0.2, 0.33, 0.5, 0.8, 1.0}
+        self.crs_init_w_reproj = 0.333    # weight cho q_reproj
+        self.crs_init_w_depth  = 0.333    # weight cho q_depth
+        self.crs_init_w_view   = 0.334    # weight cho q_view
+        # Hyperparameters
+        self.crs_init_tau_r = 2.5         # reproj error normalization. Ablate: {2.0, 2.5, 3.0}
+        self.crs_init_gamma = 5.0         # logit scale factor. Ablate: {3.0, 5.0, 8.0}
+        self.crs_init_eta   = 0.7         # densify inherit factor. Ablate: {0.5, 0.7, 0.9}
+        # Densify inherit — riêng biệt với informed_crs_init.
+        # True: child CRS₀ = clip(η * CRS_parent, 0, 0.5)
+        # False (default): child CRS₀ = 0.5 (neutral, behavior cũ)
+        self.crs_densify_inherit = False
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -112,6 +159,9 @@ class OptimizationParams(ParamGroup):
         self.tau_isolated = 0.1     # ngưỡng isolation (× scene_extent). Ablate: {0.05, 0.10, 0.20}
         self.use_pos_constraint = False  # [debug] bật/tắt position constraint (T4.1)
         self.use_crs_pruning = False     # [debug] bật/tắt CRS pruning (T4.2)
+        # ── [CRSGaussian] CRS update hyperparameters ──
+        self.crs_ema_decay = 0.9         # EMA decay cho CRS update. Ablate: {0.5, 0.7, 0.9}
+        self.crs_update_interval = 100   # Mỗi bao nhiêu iter update CRS. Ablate: {25, 50, 100}
 
         super().__init__(parser, "Optimization Parameters")
 
