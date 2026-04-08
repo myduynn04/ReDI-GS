@@ -30,6 +30,7 @@ import sys
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
 import uuid
+import time
 from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
@@ -148,6 +149,11 @@ def training(dataset, opt, pipe, args):
 
     # ── [CRSGaussian] Collect eval results cho summary table cuối training ──
     eval_history = []
+
+    # ── [CRSGaussian] Timing ──
+    train_start_time = time.time()
+    crs_update_time_total = 0.0   # tích lũy thời gian update_crs()
+    densify_time_total = 0.0      # tích lũy thời gian densification
 
     ema_loss_for_log = 0.0
     first_iter += 1
@@ -322,8 +328,10 @@ def training(dataset, opt, pipe, args):
             if (dataset.use_depth_prior
                     and iteration > opt.T_warmup
                     and iteration % opt.crs_update_interval == 0):
+                _t0 = time.time()
                 update_crs(gaussians, allCameras, aligned_depth_dict,
                            depth_range, ema=opt.crs_ema_decay)
+                crs_update_time_total += time.time() - _t0
                 # Log CRS distribution — giúp chọn tau_crs ở T2.7
                 crs_vals = gaussians.get_crs.detach()
                 if iteration % 500 == 0:
@@ -348,6 +356,7 @@ def training(dataset, opt, pipe, args):
             
                 # density and prune
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
+                    _t0 = time.time()
                     size_threshold = None
                     # size_threshold = 20 if iteration > opt.opacity_reset_interval else None
 
@@ -376,6 +385,7 @@ def training(dataset, opt, pipe, args):
                             tau_isolated=opt.tau_isolated,
                             crs_prune_dict=_crs_dict,
                             eta=_eta)
+                    densify_time_total += time.time() - _t0
 
             # Optimizer step
             if iteration < opt.iterations:
@@ -411,6 +421,12 @@ def training(dataset, opt, pipe, args):
                     GsDict[f"gs{i}"].prune_from_mask(GsDict[f"mask_inconsistent_gs{i}"].squeeze(), iter=iteration)
                     
                 #TODO thêm cập nhật cfs_score
+
+    # ── [CRSGaussian] Timing summary ──
+    train_elapsed = time.time() - train_start_time
+    print(f"\n[TIMING] Total training: {train_elapsed:.1f}s ({train_elapsed/60:.1f}min)")
+    print(f"[TIMING] CRS update:    {crs_update_time_total:.1f}s ({crs_update_time_total/max(train_elapsed,1e-6)*100:.1f}%)")
+    print(f"[TIMING] Densification: {densify_time_total:.1f}s ({densify_time_total/max(train_elapsed,1e-6)*100:.1f}%)")
 
     # ── [CRSGaussian] Summary table — in kết quả tổng hợp cuối training ──
     if eval_history:

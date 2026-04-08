@@ -199,3 +199,9 @@
 ## Notes / Blockers
 
 *(Ghi vào đây khi gặp vấn đề)*
+
+---
+
+## Future Work / Ideas
+
+- **Selective CRS update**: Hiện tại update_crs() tính D_i+R_i cho TẤT CẢ N Gaussians mỗi lần. Gaussians đã ổn định (không di chuyển) có D_i/R_i giống hệt → update thừa. Ý tưởng: chỉ update Gaussians mới sinh + Gaussians có gradient lớn. Tiết kiệm ~80% compute ở iter muộn. Chưa cần vì overhead hiện tại nhỏ (vài ms/lần, N=90k, K=3).

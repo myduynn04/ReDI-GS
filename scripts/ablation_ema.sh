@@ -1,49 +1,46 @@
 #!/bin/bash
 # ============================================================
-# [CRSGaussian] EMA Hyperparameter Ablation
-# File: scripts/ablation_ema.sh
+# [CRSGaussian] EMA Hyperparameter Ablation — Full Sweep
 #
 # USAGE:
-#   bash scripts/ablation_ema.sh [GPU] [SCENE] [PHASE]
+#   bash scripts/ablation_ema.sh [GPU] [PHASE]
 #
 # EXAMPLES:
-#   bash scripts/ablation_ema.sh              # GPU=0, fern, phase 1+2
-#   bash scripts/ablation_ema.sh 1            # GPU=1, fern, phase 1+2
-#   bash scripts/ablation_ema.sh 0 flower     # GPU=0, flower
-#   bash scripts/ablation_ema.sh 0 fern 1     # Chỉ phase 1 (sweep ema)
-#   bash scripts/ablation_ema.sh 0 fern 2     # Chỉ phase 2 (sweep interval)
-#                                              # → sửa BEST_EMA trước khi chạy!
+#   bash scripts/ablation_ema.sh              # GPU=0, phase 1
+#   bash scripts/ablation_ema.sh 1            # GPU=1, phase 1
+#   bash scripts/ablation_ema.sh 0 2          # Phase 2 (sweep interval)
+#   bash scripts/ablation_ema.sh 0 summary    # Chỉ in bảng tổng hợp
 #
-# STRATEGY:
-#   Phase 1 — Sweep EMA decay (fix interval=100):
-#     Config 1: ema=0.9  (baseline C7)
-#     Config 2: ema=0.7
-#     Config 3: ema=0.5
-#   → Chọn ema tốt nhất (best test PSNR)
+# PHASE 1: Sweep EMA decay × ALL scenes (fix interval=100)
+#   ema ∈ {0.9, 0.7, 0.5, 0.4, 0.35, 0.3, 0.2, 0.1, 0.0}
 #
-#   Phase 2 — Sweep interval (fix ema=BEST từ phase 1):
-#     Config 4: interval=50
-#     Config 5: interval=25
-#     (interval=100 đã có từ phase 1)
+# PHASE 2: Sweep interval × ALL scenes (fix ema=BEST)
+#   interval ∈ {25, 50, 100}
 #
 # OUTPUT:
-#   logs/ablation_ema/<scene>_ema<X>_int<Y>.log
-#
-# SAU KHI CHẠY PHASE 1:
-#   1. Đọc PSNR summary cuối mỗi log
-#   2. Sửa BEST_EMA bên dưới
-#   3. Chạy phase 2
+#   Mỗi (ema, scene) → 1 log file:
+#     logs/ablation_ema/ema<X>_int<Y>_<scene>.log
+#   Bảng tổng hợp cuối: PSNR @10k cho tất cả scenes × configs
 # ============================================================
 
 set -e
 
-# ── ARGS ──
+# ── CONFIG ──
 GPU=${1:-0}
-SCENE=${2:-fern}
-PHASE=${3:-0}       # 0=cả hai, 1=chỉ phase 1, 2=chỉ phase 2
+PHASE=${2:-1}
 
 # ── SAU PHASE 1: sửa giá trị này ──
-BEST_EMA=0.9        # ← ĐỔI SAU KHI CÓ KẾT QUẢ PHASE 1
+BEST_EMA=0.3
+
+# ── SCENES ──
+SCENES="fern flower fortress horns leaves orchids room trex"
+
+# ── EMA VALUES ──
+EMA_VALUES="0.9 0.7 0.5 0.4 "
+# EMA_VALUES="0.35 0.3 0.2 0.1 0"
+
+# ── INTERVAL VALUES (phase 2) ──
+INTERVAL_VALUES="25 50 100"
 
 # ── SHARED PARAMS ──
 DATA_ROOT="data/nerf_llff_data"
@@ -59,22 +56,27 @@ LOGDIR="logs/ablation_ema"
 mkdir -p ${LOGDIR}
 
 # ── Run function ──
-run_config() {
+run_one() {
     local ema=$1
     local interval=$2
-    local tag="${SCENE}_ema${ema}_int${interval}"
+    local scene=$3
+    local tag="ema${ema}_int${interval}_${scene}"
     local log="${LOGDIR}/${tag}.log"
     local out="output/ablation_ema/${tag}"
 
+    # Skip nếu log đã tồn tại và có kết quả
+    if [ -f "$log" ] && grep -q "Best test PSNR" "$log" 2>/dev/null; then
+        echo "[SKIP] ${tag} — already done"
+        return
+    fi
+
     echo ""
     echo "========================================"
-    echo " CONFIG: ema=${ema}, interval=${interval}"
-    echo " Scene:  ${SCENE} | GPU: ${GPU}"
-    echo " Log:    ${log}"
+    echo " ema=${ema} | int=${interval} | ${scene} | GPU=${GPU}"
     echo "========================================"
 
     CUDA_VISIBLE_DEVICES=${GPU} python train.py \
-        --source_path ${DATA_ROOT}/${SCENE} \
+        --source_path ${DATA_ROOT}/${scene} \
         -m ${out} \
         --eval -r ${RESOLUTION} --n_views ${N_VIEWS} \
         --random_background \
@@ -92,57 +94,103 @@ run_config() {
         --test_iterations ${TEST_ITERS} \
         2>&1 | tee ${log}
 
-    echo ""
     echo "[DONE] ${tag}"
-    echo ""
 }
 
-# ── Phase 1: Sweep EMA decay ──
-if [ "$PHASE" = "0" ] || [ "$PHASE" = "1" ]; then
+# ── Phase 1: Sweep EMA × ALL scenes ──
+if [ "$PHASE" = "1" ]; then
     echo "============================================"
-    echo " PHASE 1 — Sweep EMA (interval=100)"
+    echo " PHASE 1 — Sweep EMA × ALL scenes"
+    echo " EMA: ${EMA_VALUES}"
+    echo " Scenes: ${SCENES}"
     echo "============================================"
 
-    run_config 0.9 100    # Config 1 — baseline
-    run_config 0.7 100    # Config 2
-    run_config 0.5 100    # Config 3
+    for ema in ${EMA_VALUES}; do
+        for scene in ${SCENES}; do
+            run_one ${ema} 100 ${scene}
+        done
+    done
 fi
 
-# ── Phase 2: Sweep interval ──
-if [ "$PHASE" = "0" ] || [ "$PHASE" = "2" ]; then
+# ── Phase 2: Sweep interval × ALL scenes ──
+if [ "$PHASE" = "2" ]; then
     echo "============================================"
     echo " PHASE 2 — Sweep interval (ema=${BEST_EMA})"
+    echo " Intervals: ${INTERVAL_VALUES}"
+    echo " Scenes: ${SCENES}"
     echo "============================================"
 
-    run_config ${BEST_EMA} 50     # Config 4
-    run_config ${BEST_EMA} 25     # Config 5
+    for interval in ${INTERVAL_VALUES}; do
+        for scene in ${SCENES}; do
+            run_one ${BEST_EMA} ${interval} ${scene}
+        done
+    done
 fi
 
-# ── Summary: extract best test PSNR từ mỗi log ──
-echo ""
-echo "============================================"
-echo " SUMMARY — All configs for ${SCENE}"
-echo "============================================"
-echo ""
-printf "  %-35s | %s\n" "Config" "Best test PSNR"
-echo "  ------------------------------------------------"
-for log in ${LOGDIR}/${SCENE}_*.log; do
-    if [ -f "$log" ]; then
-        name=$(basename "$log" .log)
-        best=$(grep "Best test PSNR" "$log" 2>/dev/null | tail -1)
-        if [ -n "$best" ]; then
-            printf "  %-35s | %s\n" "$name" "$best"
+# ── Summary table ──
+print_summary() {
+    local pattern=$1   # e.g. "ema*_int100" or "ema0.3_int*"
+    local label=$2
+
+    echo ""
+    echo "=================================================================="
+    echo "  ${label}"
+    echo "=================================================================="
+
+    # Header
+    printf "  %-12s" "Config"
+    for scene in ${SCENES}; do
+        printf " | %7s" "${scene}"
+    done
+    printf " | %7s\n" "AVG"
+    echo "  ------------$(printf -- '----------%.0s' ${SCENES})----------"
+
+    # Collect configs
+    local configs=""
+    for log in ${LOGDIR}/${pattern}_fern.log; do
+        [ -f "$log" ] || continue
+        local name=$(basename "$log" _fern.log)
+        configs="${configs} ${name}"
+    done
+
+    # Rows
+    for cfg in ${configs}; do
+        printf "  %-12s" "${cfg}"
+        local sum=0
+        local count=0
+        for scene in ${SCENES}; do
+            local log="${LOGDIR}/${cfg}_${scene}.log"
+            if [ -f "$log" ]; then
+                local val=$(grep "Evaluating test.*PSNR" "$log" 2>/dev/null | tail -1 | sed 's/.*PSNR \([0-9.]*\).*/\1/')
+                if [ -n "$val" ]; then
+                    printf " | %7s" "${val:0:7}"
+                    sum=$(echo "$sum + $val" | bc)
+                    count=$((count + 1))
+                else
+                    printf " | %7s" "—"
+                fi
+            else
+                printf " | %7s" "—"
+            fi
+        done
+        # AVG
+        if [ $count -gt 0 ]; then
+            local avg=$(echo "scale=2; $sum / $count" | bc)
+            printf " | %7s" "${avg}"
         else
-            # Fallback: grep last test PSNR
-            last=$(grep "Evaluating test.*PSNR" "$log" 2>/dev/null | tail -1 | grep -oP 'PSNR \K[0-9.]+')
-            printf "  %-35s | last test PSNR: %s\n" "$name" "$last"
+            printf " | %7s" "—"
         fi
+        echo ""
+    done
+    echo "=================================================================="
+}
+
+# Always print summary at end (or when PHASE=summary)
+if [ "$PHASE" = "summary" ] || [ "$PHASE" = "1" ] || [ "$PHASE" = "2" ]; then
+    print_summary "ema*_int100" "PHASE 1 — EMA sweep (interval=100) — Test PSNR @10k"
+
+    # Check if phase 2 logs exist
+    if ls ${LOGDIR}/ema${BEST_EMA}_int25_*.log 1>/dev/null 2>&1; then
+        print_summary "ema${BEST_EMA}_int*" "PHASE 2 — Interval sweep (ema=${BEST_EMA}) — Test PSNR @10k"
     fi
-done
-echo "  ================================================"
-echo ""
-echo " Next steps:"
-echo "   1. Chọn ema tốt nhất từ Phase 1"
-echo "   2. Sửa BEST_EMA trong script"
-echo "   3. Chạy: bash scripts/ablation_ema.sh ${GPU} ${SCENE} 2"
-echo ""
+fi
