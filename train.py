@@ -296,13 +296,29 @@ def training(dataset, opt, pipe, args):
             torchvision.utils.save_image(image_to_show, f"{dataset.model_path}/log_images_train/{iteration}.jpg")
 
         with torch.no_grad():
-            # Progress bar
+            # Progress bar — hiện Loss + #Gaussians + speed
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             if iteration % 10 == 0:
-                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}"})
+                n_gs = gaussians.get_xyz.shape[0]
+                elapsed = time.time() - train_start_time
+                it_per_s = iteration / max(elapsed, 1e-6)
+                progress_bar.set_postfix({
+                    "Loss": f"{ema_loss_for_log:.7f}",
+                    "N": f"{n_gs//1000}k",
+                    "it/s": f"{it_per_s:.1f}"
+                })
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()
+
+            # ── [CRSGaussian] Periodic stats log — mỗi 500 iter ──
+            if iteration % 500 == 0:
+                n_gs = gaussians.get_xyz.shape[0]
+                elapsed = time.time() - train_start_time
+                print(f"\n[STATS] iter={iteration} | "
+                      f"N={n_gs} | "
+                      f"elapsed={elapsed:.1f}s | "
+                      f"it/s={iteration/max(elapsed,1e-6):.1f}")
 
             training_report(args, tb_writer, iteration, loss, l1_loss,
                             testing_iterations, scene, render, (pipe, background),
@@ -422,11 +438,15 @@ def training(dataset, opt, pipe, args):
                     
                 #TODO thêm cập nhật cfs_score
 
-    # ── [CRSGaussian] Timing summary ──
+    # ── [CRSGaussian] Timing + stats summary ──
     train_elapsed = time.time() - train_start_time
+    final_n = gaussians.get_xyz.shape[0]
+    avg_it_s = opt.iterations / max(train_elapsed, 1e-6)
     print(f"\n[TIMING] Total training: {train_elapsed:.1f}s ({train_elapsed/60:.1f}min)")
+    print(f"[TIMING] Avg speed:     {avg_it_s:.1f} it/s")
     print(f"[TIMING] CRS update:    {crs_update_time_total:.1f}s ({crs_update_time_total/max(train_elapsed,1e-6)*100:.1f}%)")
     print(f"[TIMING] Densification: {densify_time_total:.1f}s ({densify_time_total/max(train_elapsed,1e-6)*100:.1f}%)")
+    print(f"[TIMING] Final #Gaussians: {final_n} ({final_n/1000:.1f}k)")
 
     # ── [CRSGaussian] Summary table — in kết quả tổng hợp cuối training ──
     if eval_history:
