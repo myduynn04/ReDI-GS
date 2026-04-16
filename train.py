@@ -24,7 +24,7 @@ import torch.nn.functional as F
 from torchmetrics import PearsonCorrCoef
 from torchmetrics.functional.regression import pearson_corrcoef
 from random import randint
-from utils.loss_utils import l1_loss, l1_loss_mask, l2_loss, ssim, loss_photometric, pearson_depth_loss
+from utils.loss_utils import l1_loss, l2_loss, ssim, loss_photometric, pearson_depth_loss
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -47,8 +47,20 @@ import copy
 
 # ── [CRSGaussian] Depth prior: DAV2 + COLMAP alignment ──
 from utils.depth import precompute_depth_priors, align_depth_to_colmap
+# ── [CRSGaussian] Anti-overfit regularizers — modular, toggleable ──
+# Mỗi feature là 1 module riêng, gated bởi flag trong dataset.
+# Xem CLAUDE.md Quy tắc 11 (toggleable) + Quy tắc 12 (tách file).
+from utils.regularizer import (
+    compute_pseudo_photo_loss,
+    compute_pseudo_depth_loss,
+)
 # ── [CRSGaussian T2.6] CRS module ──
 from utils.crs import update_crs
+# ── [CRSGaussian] CRS diagnostics ──
+from utils.crs.crs_diagnostics import (
+    log_di_ri_scatter, log_crs_stability,
+    render_crs_heatmap, log_dav2_noise, log_pruning_stats
+)
 
 def seed_everything(seed):
     random.seed(seed)
@@ -111,6 +123,10 @@ def training(dataset, opt, pipe, args):
         aligned_depth_dict, depth_range = align_depth_to_colmap(
             depth_prior_dict, allCameras, dataset.source_path, dataset.n_views)
         del depth_prior_dict  # không cần nữa, chỉ giữ aligned version
+        # [CRSGaussian] DIAG 4 — DAV2 noise vs SfM (chạy 1 lần)
+        log_dav2_noise(aligned_depth_dict, allCameras,
+                       dataset.source_path, dataset.n_views,
+                       depth_range, tb_writer)
 
     # ── [CRSGaussian T5.5] Informed CRS₀ initialization ──
     # Option C: compute sau Scene() init, overwrite _crs_score trực tiếp.
@@ -166,7 +182,9 @@ def training(dataset, opt, pipe, args):
                 net_image_bytes = None
                 custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
                 if custom_cam != None:
-                    net_image = render(custom_cam, gaussians, pipe, background, scaling_modifer)["render"]
+                    # [CRSGaussian Track B] GUI render: disable_dropout để tránh flicker
+                    net_image = render(custom_cam, gaussians, pipe, background, scaling_modifer,
+                                       disable_dropout=True)["render"]
                     net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
                 network_gui.send(net_image_bytes, dataset.source_path)
                 if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
@@ -209,6 +227,11 @@ def training(dataset, opt, pipe, args):
         # render for main viewpoint
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
+        # ── [CRSGaussian Track B] Pass iteration context cho dropout gating ──
+        # Renderer dùng pipe.current_iter để gate với dropout_start_iter.
+        # Training view dùng disable_dropout=False (default) → dropout theo pipe flags.
+        pipe.current_iter = iteration
+
         for i in range(args.gaussiansN):
             RenderDict[f"render_pkg_gs{i}"] = render(viewpoint_cam, GsDict[f'gs{i}'], pipe, bg)
             RenderDict[f"image_gs{i}"] = RenderDict[f"render_pkg_gs{i}"]["render"]
@@ -217,6 +240,21 @@ def training(dataset, opt, pipe, args):
             RenderDict[f"viewspace_point_tensor_gs{i}"] = RenderDict[f"render_pkg_gs{i}"]["viewspace_points"]
             RenderDict[f"visibility_filter_gs{i}"] = RenderDict[f"render_pkg_gs{i}"]["visibility_filter"]
             RenderDict[f"radii_gs{i}"] = RenderDict[f"render_pkg_gs{i}"]["radii"]
+            RenderDict[f"dropout_mask_gs{i}"] = RenderDict[f"render_pkg_gs{i}"]["dropout_mask"]
+
+        # ── [CRSGaussian Track B] Log drop rate (TB mỗi 500 iter, console mỗi 1000) ──
+        # Chỉ log khi thực sự có dropout (mask không None).
+        if getattr(pipe, "use_dropout", False):
+            _dm = RenderDict.get("dropout_mask_gs0", None)
+            if _dm is not None:
+                _drop_rate_actual = 1.0 - _dm.float().mean().item()
+                if tb_writer is not None and iteration % 500 == 0:
+                    tb_writer.add_scalar('dropout/actual_drop_rate', _drop_rate_actual, iteration)
+                    tb_writer.add_scalar('dropout/n_kept', int(_dm.sum().item()), iteration)
+                    tb_writer.add_scalar('dropout/n_total', _dm.shape[0], iteration)
+                if iteration % 1000 == 0:
+                    print(f"[DIAG Track B] iter={iteration} drop_rate={_drop_rate_actual:.3f} "
+                          f"kept={int(_dm.sum().item())}/{_dm.shape[0]}")
 
         # Loss
         for i in range(args.gaussiansN):
@@ -234,7 +272,10 @@ def training(dataset, opt, pipe, args):
                 pseudo_cam_co = pseudo_stack_co.pop(randint(0, len(pseudo_stack_co) - 1))
 
                 for i in range(args.gaussiansN):
-                        RenderDict[f"render_pkg_pseudo_co_gs{i}"] = render(pseudo_cam_co, GsDict[f'gs{i}'], pipe, bg)
+                        # [CRSGaussian Track B] Pseudo view: disable_dropout=True
+                        # (clean separation — pseudo_photo/depth loss dùng full-size render).
+                        RenderDict[f"render_pkg_pseudo_co_gs{i}"] = render(pseudo_cam_co, GsDict[f'gs{i}'], pipe, bg,
+                                                                          disable_dropout=True)
                         RenderDict[f"image_pseudo_co_gs{i}"] = RenderDict[f"render_pkg_pseudo_co_gs{i}"]["render"]
                         RenderDict[f"depth_pseudo_co_gs{i}"] = RenderDict[f"render_pkg_pseudo_co_gs{i}"]["depth"]
                 if iteration >= args.start_sample_pseudo:
@@ -259,6 +300,61 @@ def training(dataset, opt, pipe, args):
             L_depth = 0.05 * pearson_depth_loss(rendered_depth, depth_prior)
             LossDict["loss_gs0"] += L_depth
 
+        # ── [CRSGaussian Pseudo-depth] Pseudo-view depth loss (Approach 1) ──
+        # Module: utils/regularizer/pseudo_depth.py
+        # Status: KHÔNG hoạt động — pseudo cams chỉ cách training 0.3-3.68°,
+        #         reference DAV2 duplicate training depth signal.
+        # Giữ lại flag để có thể re-enable test variant. Default OFF.
+        if (dataset.use_pseudo_depth_loss
+                and dataset.use_depth_prior
+                and iteration >= dataset.pseudo_depth_start_iter
+                and iteration % dataset.pseudo_depth_interval == 0
+                and pseudo_cam_co is not None
+                and "depth_pseudo_co_gs0" in RenderDict):
+            ramp = min(
+                (iteration - dataset.pseudo_depth_start_iter) /
+                max(dataset.pseudo_depth_ramp_iters, 1),
+                1.0,
+            )
+            L_pseudo, coverage = compute_pseudo_depth_loss(
+                rendered_depth_P=RenderDict["depth_pseudo_co_gs0"],
+                pseudo_cam=pseudo_cam_co,
+                train_cameras=allCameras,
+                aligned_depth_dict=aligned_depth_dict,
+                lambda_weight=dataset.lambda_pseudo_depth,
+                ramp=ramp,
+            )
+            if L_pseudo is not None:
+                LossDict["loss_gs0"] += L_pseudo
+                if tb_writer is not None and iteration % 100 == 0:
+                    tb_writer.add_scalar('loss/pseudo_depth', float(L_pseudo.item()), iteration)
+                    tb_writer.add_scalar('crs_diag/warp_coverage', coverage, iteration)
+                    tb_writer.add_scalar('crs_diag/pseudo_depth_ramp', ramp, iteration)
+
+        # ── [CRSGaussian Pseudo-photo] Pseudo-view photometric consistency (Approach 2) ──
+        # Module: utils/regularizer/pseudo_photo.py
+        # Reference = warped GT IMAGE từ training cam (KHÔNG phải DAV2).
+        # Detect floater qua parallax: floater render sai vị trí khi nhìn pseudo cam
+        # → photometric mismatch với warped GT → L1 loss penalize.
+        # Signal độc lập với training depth loss → không redundant.
+        if (dataset.use_pseudo_photo_loss
+                and dataset.use_depth_prior
+                and iteration >= dataset.pseudo_photo_start_iter
+                and pseudo_cam_co is not None
+                and "image_pseudo_co_gs0" in RenderDict):
+            L_pseudo_photo, coverage_photo = compute_pseudo_photo_loss(
+                rendered_img_P=RenderDict["image_pseudo_co_gs0"],
+                pseudo_cam=pseudo_cam_co,
+                train_cameras=allCameras,
+                aligned_depth_dict=aligned_depth_dict,
+                lambda_weight=dataset.lambda_pseudo_photo,
+            )
+            if L_pseudo_photo is not None:
+                LossDict["loss_gs0"] += L_pseudo_photo
+                if tb_writer is not None and iteration % 100 == 0:
+                    tb_writer.add_scalar('loss/pseudo_photo', float(L_pseudo_photo.item()), iteration)
+                    tb_writer.add_scalar('crs_diag/photo_warp_coverage', coverage_photo, iteration)
+
         loss = LossDict["loss_gs0"]
         for i in range(args.gaussiansN):
             LossDict[f"loss_gs{i}"].backward()
@@ -267,7 +363,8 @@ def training(dataset, opt, pipe, args):
             with torch.no_grad():
                 eval_cam = allCameras[random.randint(0, len(allCameras) -1)]
                 
-                render_results = render(eval_cam, GsDict[f'gs0'], pipe, bg)
+                # [CRSGaussian Track B] Eval render (log images): disable_dropout=True
+                render_results = render(eval_cam, GsDict[f'gs0'], pipe, bg, disable_dropout=True)
                 image = torch.clamp(render_results["render"], 0.0, 1.0)
                 gt_image = torch.clamp(eval_cam.original_image.to("cuda"), 0.0, 1.0)
                 black = torch.zeros_like(gt_image).to(gt_image.device)
@@ -276,7 +373,8 @@ def training(dataset, opt, pipe, args):
                 render_opacity_image = render_results["alpha"].repeat(3, 1, 1)
 
                 if args.gaussiansN > 1:
-                    render_results_gs1 = render(eval_cam, GsDict[f'gs1'], pipe, bg)
+                    # [CRSGaussian Track B] Eval render gs1: disable_dropout=True
+                    render_results_gs1 = render(eval_cam, GsDict[f'gs1'], pipe, bg, disable_dropout=True)
                     image_gs1 = torch.clamp(render_results_gs1["render"], 0.0, 1.0)
                     render_depth_gs1 = render_results_gs1["depth"]
                     render_depth_image_gs1 = depth2image(render_depth_gs1, inverse=True, rgb=True)
@@ -345,10 +443,10 @@ def training(dataset, opt, pipe, args):
                     and iteration > opt.T_warmup
                     and iteration % opt.crs_update_interval == 0):
                 _t0 = time.time()
-                update_crs(gaussians, allCameras, aligned_depth_dict,
-                           depth_range, ema=opt.crs_ema_decay)
+                D_diag, R_diag = update_crs(gaussians, allCameras, aligned_depth_dict,
+                                            depth_range, ema=opt.crs_ema_decay)
                 crs_update_time_total += time.time() - _t0
-                # Log CRS distribution — giúp chọn tau_crs ở T2.7
+                # Log CRS distribution
                 crs_vals = gaussians.get_crs.detach()
                 if iteration % 500 == 0:
                     print(f"\n[CRS] iter={iteration} | "
@@ -360,6 +458,20 @@ def training(dataset, opt, pipe, args):
                           f"<0.35={( crs_vals < 0.35).sum().item()} | "
                           f">0.65={(crs_vals > 0.65).sum().item()}")
 
+                # [CRSGaussian] DIAG 2 — CRS stability (mỗi CRS update)
+                log_crs_stability(gaussians, D_diag, R_diag, iteration, tb_writer)
+
+                # [CRSGaussian] DIAG 1 — Scatter D vs R (tại milestones)
+                diag_dir = f"{dataset.model_path}/crs_diag"
+                if iteration in [1100, 2000, 5000]:
+                    log_di_ri_scatter(D_diag, R_diag, iteration, tb_writer, diag_dir)
+
+                # [CRSGaussian] DIAG 3 — CRS heatmap (tại milestones)
+                if iteration in [1100, 3000, 5000, 10000]:
+                    render_crs_heatmap(gaussians, allCameras[0],
+                                       render, pipe, background,
+                                       iteration, diag_dir)
+
             # Densification
             if  iteration < opt.densify_until_iter:
                 # Keep track of max radii in image-space for pruning
@@ -367,8 +479,26 @@ def training(dataset, opt, pipe, args):
                     viewspace_point_tensor = RenderDict[f"viewspace_point_tensor_gs{i}"]
                     visibility_filter = RenderDict[f"visibility_filter_gs{i}"]
                     radii = RenderDict[f"radii_gs{i}"]
-                    GsDict[f"gs{i}"].max_radii2D[visibility_filter] = torch.max(GsDict[f"gs{i}"].max_radii2D[visibility_filter], radii[visibility_filter])
-                    GsDict[f"gs{i}"].add_densification_stats(viewspace_point_tensor, visibility_filter)
+                    dropout_mask = RenderDict[f"dropout_mask_gs{i}"]
+
+                    # ── [CRSGaussian Track B] Reconstruct full-size visibility ──
+                    # Khi dropout active: visibility_filter + radii có size N_keep
+                    # (chỉ Gaussian được giữ), nhưng max_radii2D size N (full).
+                    # Pattern Co-Adapt train.py:187-190: reconstruct combined_mask
+                    # = (Gaussian kept) AND (visible) → index vào full-size array.
+                    if dropout_mask is not None:
+                        true_indices = torch.nonzero(dropout_mask, as_tuple=True)[0]     # (N_keep,)
+                        filtered_indices = true_indices[visibility_filter]               # (N_visible_kept,)
+                        combined_mask = torch.zeros_like(dropout_mask, dtype=torch.bool)  # (N,)
+                        combined_mask[filtered_indices] = True
+                        GsDict[f"gs{i}"].max_radii2D[combined_mask] = torch.max(
+                            GsDict[f"gs{i}"].max_radii2D[combined_mask], radii[visibility_filter])
+                        GsDict[f"gs{i}"].add_densification_stats(viewspace_point_tensor, combined_mask)
+                    else:
+                        # No dropout — original path (size N đồng bộ).
+                        GsDict[f"gs{i}"].max_radii2D[visibility_filter] = torch.max(
+                            GsDict[f"gs{i}"].max_radii2D[visibility_filter], radii[visibility_filter])
+                        GsDict[f"gs{i}"].add_densification_stats(viewspace_point_tensor, visibility_filter)
             
                 # density and prune
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
@@ -390,6 +520,7 @@ def training(dataset, opt, pipe, args):
                     _eta = dataset.crs_init_eta if dataset.crs_densify_inherit else 0.0
 
                     for i in range(args.gaussiansN):
+                        _n_before = GsDict[f"gs{i}"].get_xyz.shape[0]
                         GsDict[f"gs{i}"].densify_and_prune(
                             opt.densify_grad_threshold, opt.prune_threshold,
                             scene.cameras_extent, size_threshold, iteration,
@@ -401,6 +532,10 @@ def training(dataset, opt, pipe, args):
                             tau_isolated=opt.tau_isolated,
                             crs_prune_dict=_crs_dict,
                             eta=_eta)
+                        _n_after = GsDict[f"gs{i}"].get_xyz.shape[0]
+                        # [CRSGaussian] DIAG 5 — Pruning stats
+                        if iteration % 500 == 0:
+                            log_pruning_stats(_n_before, _n_after, iteration, tb_writer)
                     densify_time_total += time.time() - _t0
 
             # Optimizer step
@@ -408,6 +543,22 @@ def training(dataset, opt, pipe, args):
                 for i in range(args.gaussiansN):
                     GsDict[f"gs{i}"].optimizer.step()
                     GsDict[f"gs{i}"].optimizer.zero_grad(set_to_none = True)
+
+            # ── [CRSGaussian DIAG E1] Freeze SH hook ──
+            # Sau iter opt.freeze_sh_after → set lr=0 cho f_dc + f_rest.
+            # Gọi sau optimizer.step() để step cuối trước freeze vẫn dùng
+            # lr bình thường (gradient flow vẫn có, chỉ không update tiếp).
+            # freeze_sh() tự idempotent (self._sh_frozen flag) nên gọi lặp OK.
+            if opt.freeze_sh_after > 0 and iteration >= opt.freeze_sh_after:
+                for i in range(args.gaussiansN):
+                    GsDict[f"gs{i}"].freeze_sh()
+
+            # ── [CRSGaussian DIAG A2] Freeze DC-only hook ──
+            # Chỉ freeze f_dc, f_rest vẫn update → isolate DC contribution.
+            # Idempotent qua self._dc_frozen flag.
+            if opt.freeze_dc_only and iteration >= opt.freeze_dc_start_iter:
+                for i in range(args.gaussiansN):
+                    GsDict[f"gs{i}"].freeze_dc()
 
             for i in range(args.gaussiansN):
                 GsDict[f"gs{i}"].update_learning_rate(iteration)
@@ -522,14 +673,16 @@ def training_report(args, tb_writer, iteration, loss, l1_loss, testing_iteration
                     black = torch.zeros_like(gt_image).to(gt_image.device) 
                     RenderResults = {}
                     
-                    render_results = renderFunc(viewpoint, scene.gaussians, *renderArgs)
+                    # [CRSGaussian Track B] training_report eval — force disable_dropout=True
+                    render_results = renderFunc(viewpoint, scene.gaussians, *renderArgs, disable_dropout=True)
                     render_image = torch.clamp(render_results["render"], 0.0, 1.0)
                     render_depth = render_results["depth"]
                     render_depth_image = depth2image(render_depth, inverse=True, rgb=depth_rgb)
                     render_opacity_image = render_results["alpha"].repeat(3, 1, 1)
 
                     if args.gaussiansN > 1:
-                        render_results_gs1 = renderFunc(viewpoint, GsDict['gs1'], *renderArgs)
+                        # [CRSGaussian Track B] eval gs1 — force disable_dropout=True
+                        render_results_gs1 = renderFunc(viewpoint, GsDict['gs1'], *renderArgs, disable_dropout=True)
                         render_image_gs1 = torch.clamp(render_results_gs1["render"], 0.0, 1.0)
                         render_depth_gs1 = render_results_gs1["depth"]
                         render_depth_image_gs1 = depth2image(render_depth_gs1, inverse=True, rgb=depth_rgb)

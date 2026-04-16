@@ -331,3 +331,5 @@ def update_crs(
     # Lần đầu gọi: _crs_score = 0 (init từ T2.2), EMA sẽ kéo về
     # crs_logit thực tế. Sau ~5 lần update (500 iter), EMA ổn định.
     gaussians._crs_score = ema * gaussians._crs_score + (1.0 - ema) * crs_logit
+
+    return D, R  # [CRSGaussian] Return cho diagnostics (crs_diagnostics.py)

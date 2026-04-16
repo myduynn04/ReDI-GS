@@ -142,6 +142,14 @@ class GaussianModel:
         self.spatial_lr_scale = 0
         self.setup_functions()
         self.bg_color = torch.empty(0)
+        # ── [CRSGaussian DIAG E1] Freeze SH flag ──
+        # Khi True → f_dc/f_rest lr đã bị set=0, gradient vẫn flow nhưng
+        # param không update. Dùng để test SH overfit hypothesis.
+        self._sh_frozen = False
+        # ── [CRSGaussian DIAG A2] Freeze DC-only flag ──
+        # Khi True → chỉ f_dc lr=0, f_rest vẫn tự do. Dùng để isolate
+        # đóng góp của DC drift vs higher-order SH trong overfit.
+        self._dc_frozen = False
         self.confidence = torch.empty(0)
         # self.absdensify = args.absdensify
         self.absdensify = False
@@ -319,6 +327,48 @@ class GaussianModel:
             if param_group["name"] == "xyz":
                 param_group['lr'] = xyz_lr
                 return xyz_lr
+
+    # ============================================================
+    # [CRSGaussian DIAG E1] freeze_sh
+    # File: scene/gaussian_model.py
+    # Mục đích: Set lr=0 cho f_dc và f_rest param groups → SH coeffs
+    #           không update nữa, trong khi xyz/opacity/scaling/rotation
+    #           vẫn tự do optimize. Dùng để test hypothesis "SH overfit
+    #           memorize training views là nguyên nhân train-test gap".
+    # Cách dùng: gọi 1 lần khi iteration == freeze_sh_after trong train.py.
+    # Lý do không remove param groups: densification code (prune/densify/
+    # clone) assume 6 groups cố định — remove sẽ crash.
+    # ============================================================
+    def freeze_sh(self):
+        """[CRSGaussian DIAG E1] Freeze SH bằng cách set lr=0 cho f_dc, f_rest."""
+        if self._sh_frozen:
+            return  # đã frozen, không log lại
+        n_frozen = 0
+        for param_group in self.optimizer.param_groups:
+            if param_group["name"] in ("f_dc", "f_rest"):
+                param_group['lr'] = 0.0
+                n_frozen += 1
+        self._sh_frozen = True
+        print(f"[DIAG E1] SH frozen ({n_frozen} param groups). "
+              f"Only xyz/opacity/scaling/rotation will update.")
+
+    # ============================================================
+    # [CRSGaussian DIAG A2] freeze_dc
+    # Mục đích: Freeze CHỈ f_dc (DC color component), f_rest tự do.
+    #           Cùng pattern với freeze_sh nhưng skip "f_rest" → isolate
+    #           DC contribution trong SH overfit.
+    # Cách dùng: gọi khi iteration == freeze_dc_start_iter.
+    # ============================================================
+    def freeze_dc(self):
+        """[CRSGaussian DIAG A2] Freeze chỉ f_dc param group (lr=0)."""
+        if self._dc_frozen:
+            return
+        for param_group in self.optimizer.param_groups:
+            if param_group["name"] == "f_dc":
+                param_group['lr'] = 0.0
+        self._dc_frozen = True
+        print(f"[DIAG A2] DC-only frozen (f_dc lr=0). "
+              f"f_rest/xyz/opacity/scaling/rotation still update.")
 
 
     def construct_list_of_attributes(self):

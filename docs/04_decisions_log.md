@@ -335,3 +335,140 @@
   - Chỉ áp dụng cho split (không clone) — clone copy parent position nên ít bị ảnh hưởng
   - Dùng soft constraint (penalty thay reject) — phức tạp hơn, chưa rõ lợi ích
 - **Kết quả:** Ablation value cho paper: position constraint hại hơn lợi khi depth prior noisy. Đây là finding quan trọng — trái với AD-GS (2025) claim.
+
+---
+
+### [2026-04] Pseudo Depth Loss (Approach 1) — KHÔNG hoạt động — root cause = pseudo cams không novel
+
+- **Quyết định:** Bỏ pseudo depth loss (warp DAV2 depth từ training cam → pseudo cam). Switch sang Approach 2 (pseudo photometric).
+- **Lý do thực nghiệm:**
+  - Ablation 7 configs × 8 LLFF scenes (B0/PM/PL/PH/PU5/PE/PT): AVG @10k chỉ chênh ±0.06 dB so với baseline. PL (λ=0.02) tốt nhất với +0.058 dB — trong noise floor.
+  - Per-scene phân cực: room/horns/fortress gain +0.3-0.6 dB, trex hại -1.5 dB. Không generalize.
+- **Root cause (verified):** **Pseudo cams chỉ cách training cams 0.3-3.68° (max!), 0/10000 cam pass threshold 5°.**
+  - Đo trên fern: distribution `[0.294°, 3.681°]`, mean=2.35°, median=2.48°
+  - Toán: `arctan(spread/focal) ≈ arctan(1.5/30) ≈ 2.86°` — khớp empirical
+  - Lý do: `generate_random_poses_llff()` sample position uniform trong **bbox training cams** với **fixed lookat** → forward direction bị giới hạn bởi spread của training cluster
+  - LLFF forward-facing → 3 training cams cùng hướng `[~0.1, 0, 1]` → bbox nhỏ → pseudo cam là perturbation 3° của training cam, không phải view "novel"
+- **Hệ quả lý thuyết:** Pseudo depth loss với reference = warped DAV2 depth = **duplicate training depth signal** với view shift 3° → không tạo regularization mới → không giảm overfit.
+- **Thay thế đã cân nhắc:**
+  - F1 (filter pseudo cam có angle > 5°): bất khả thi vì max=3.68°
+  - F2a (tăng radii × N): rủi ro pseudo cam ra ngoài scene → render empty
+  - F2b (perturb forward direction): khả thi nhưng reference DAV2 vẫn redundant → không đáng đầu tư
+  - **F3: Switch sang pseudo PHOTOMETRIC** — reference = warped GT image (không phải DAV2) → signal độc lập với depth loss → CHỌN
+- **Code retained:** `forward_warp_depth()` giữ lại, có thể tái dùng. `--use_pseudo_depth_loss` flag giữ default OFF, không xoá để có thể re-enable nếu cần.
+- **Kết quả:** Ablation value cho paper — finding: pseudo cam interpolation trong LLFF không tạo true novel views; cần regularization mechanism khác.
+
+---
+
+### [2026-04] Pseudo Photometric Consistency (Approach 2) — đang test
+
+- **Quyết định:** Implement pseudo photometric loss = L1 masked giữa rendered image tại pseudo cam vs warped GT image từ training cam gần nhất.
+- **Cơ chế:**
+  - Forward warp: GT image của training cam A → warped image tại pseudo cam P (dùng aligned depth của A)
+  - Loss = `lambda * L1_masked(rendered_image_P, warped_GT_P)`
+- **Tại sao có thể work dù pseudo cam chỉ 3° away:**
+  - Floater là 3D point ở vị trí sai → khi nhìn từ pseudo cam (3°), parallax shift = `floater_depth × tan(3°)`
+  - Với floater depth ~5 units → shift ~0.26 units trong view space → nhiều pixels mismatch
+  - L1 per-pixel detect parallax error trực tiếp (không như Pearson scale-invariant)
+- **Khác Approach 1 (depth):**
+  - Reference = GT IMAGE (3 channels, never used as signal before), KHÔNG phải DAV2 depth
+  - Signal độc lập với training depth loss → không redundant
+  - L1 absolute, không phải Pearson statistical
+- **Lambda thấp (`{0.005, 0.01, 0.02, 0.05}`):**
+  - Warped GT có **artifacts ở boundaries** (forward warp scatter holes) → ngay cả model hoàn hảo vẫn có baseline L1 ~0.02-0.05
+  - Lambda quá cao → ép Gaussians fit warp artifacts → harm
+- **Thay thế đã cân nhắc:**
+  - Approach 1' (DAV2 trên rendered image, FSGS-style): hold do overhead +1.3GB GPU + ~50ms/iter, risk OOM
+  - SSIM thay L1: chưa cần, L1 đơn giản hơn để verify trước
+- **Kết quả:** Pending — smoke test fern 5 configs đầu tiên.
+
+---
+
+### [2026-04] Track A: `_features_rest` là culprit, KHÔNG phải DC
+- **Quyết định:** Identify `_features_rest` (higher-order SH) là primary source của train-test gap
+- **Lý do:**
+  - Hypothesis ban đầu trên fern-only đánh giá sai (fern Δ = +0.08 dB, min trong 8 scenes)
+  - Full 8 scenes: SH1 (degree=1, cắt rest từ 45→9 params) cho +0.20 dB AVG
+  - Exp A2 (DC-only freeze): chỉ +0.053 dB ≈ noise → DC không phải culprit
+  - Chênh lệch full freeze (+0.32) vs DC-only (+0.05) = +0.27 dB → đến từ rest
+- **Thay thế đã cân nhắc:**
+  - "DC là culprit" (hypothesis sai): bị reject bởi Exp A2 full 8 scenes
+  - "SH nói chung là culprit" (quá mơ hồ): cần isolation chính xác để viết paper
+- **Kết quả:** ✅ CONFIRMED. `_features_rest` đóng góp ~85% overfit. Chi tiết docs/10_track_a_b_results.md section 2.
+
+### [2026-04] Track A: A1 = sh_degree=1 + freeze_sh_after=1000
+- **Quyết định:** Config A1 (SH1 + Freeze) làm best baseline cho Track B
+- **Lý do:**
+  - +0.379 dB AVG (tốt hơn SH1 only +0.196 và Freeze1k only +0.321)
+  - Gap 13.74 dB (giảm 5 dB từ B0 18.77)
+  - 6/8 scenes win, validated full 8 LLFF
+- **Thay thế đã cân nhắc:**
+  - SH2 (degree=2): +0.04 dB, gần noise — không đủ effect
+  - Chỉ SH1: yếu hơn combined
+  - Chỉ Freeze: yếu hơn combined
+- **Kết quả:** ✅ A1 thành best config cho Track B baseline. Limitation: hại fortress (-0.18) và trex (-0.06) vì scene có specular thật.
+
+### [2026-04] Track B: Uniform dropout > Targeted (phản trực giác)
+- **Quyết định:** Chọn B1β (uniform dropout 0.2 từ iter 1000) làm final config
+- **Lý do:**
+  - +0.355 dB AVG trên A1 baseline, 7/8 wins
+  - Targeted SH-norm (B3β) chỉ +0.150, Hybrid (B4β) chỉ +0.070
+  - Hybrid B4α thậm chí âm (-0.07) — counter-productive
+  - 4 giải thích: (a) universal risk trong sparse, (b) feedback loop, (c) legitimate specular bị target, (d) overlap với CRS pruning
+- **Thay thế đã cân nhắc:**
+  - B3 SH-norm: lý thuyết target đúng culprit (confirmed từ Track A), nhưng thực tế kém
+  - B4 Hybrid: combine cả position + color signals, nhưng over-regularize Gaussian borderline useful
+- **Kết quả:** ✅ CONFIRMED. B1β winner full 8 scenes. Counter-intuitive finding đáng paper (Section 3.6 Insight 1 trong docs/10).
+
+### [2026-04] Track B: Post-warmup timing > Immediate
+- **Quyết định:** Dropout start_iter = 1000 (sau warmup) thay vì 0 (từ đầu)
+- **Lý do:**
+  - Nhất quán 3 modes: Δ(β-α) trung bình +0.137 dB
+  - Uniform: +0.156, SH-norm: +0.114, Hybrid: +0.140
+  - Warmup 1000 iter cho geometry settle + CRS active + densification ổn định
+  - Dropout sau scene hình thành > dropout trong lúc xây dựng
+- **Thay thế đã cân nhắc:**
+  - Iter 0 (Co-Adapt nguyên bản): phá vỡ learning ban đầu
+  - Iter 500 (sau densify bắt đầu): chưa test, future ablation
+  - Iter 1500+ (quá muộn): có thể miss overfit window, chưa test
+- **Kết quả:** ✅ iter 1000 confirmed optimal qua 3 modes.
+  **UPDATE (B1 start_iter sweep full 8 scenes):** Ablation {0, 500, 1000, 1500, 2000}
+  cho thấy inverted-V pattern với 1000 là peak:
+  - s0: -0.156 dB (too early)
+  - s500: -0.115 dB (early)
+  - **s1000: best** (synchronized với SH freeze)
+  - s1500: -0.134 dB (too late)
+  - s2000: -0.093 dB (too late)
+  Bonus: tất cả configs monotone tăng đến 10k (không decay) — dropout loại bỏ late-stage overfit.
+  Chi tiết: docs/10_track_a_b_results.md section 3.7.
+
+### [2026-04] Final method: A1 + B1β cumulative
+- **Quyết định:** Method cuối = CRS + A1 (sh_degree=1 + freeze 1k) + B1β (uniform dropout 0.2 từ 1k)
+- **Lý do:**
+  - Cumulative từ CoR-GS gốc: 20.08 → 20.96 = **+0.88 dB**
+  - Gap: ~24 dB → 9.64 dB = **giảm 60%**
+  - 2 cơ chế (A1 + B1β) ĐỘC LẬP, additive, không overlap:
+    - A1 attacks higher-order SH drift
+    - B1β attacks co-adaptation
+  - Synergy scene-level: A1 hại fortress (-0.18) → B1β cứu (+0.93 trên A1)
+- **Thay thế đã cân nhắc:** Từng component riêng lẻ đều kém hơn combined
+- **Kết quả:** ✅ Final method for paper. Chi tiết docs/10_track_a_b_results.md section 3.7.
+
+### [2026-04] Diagnostic Gap: Residual 9.64 dB chủ yếu do viewpoint novelty
+- **Quyết định:** Residual gap là structural bound, không cần thêm SH regularization
+- **Lý do:**
+  - T4 (DC vs rest): Δ = +0.004 to +0.089 → rest NEUTRAL trên 4/4 scenes
+  - T5 (Angular dist): test views cách 22-43° → FAR, information limited
+  - T2 (SH diverge): test/train ratio 0.49-2.08x → LOW divergence, SH đã stable
+  - T6 (Pareto): top 10% → 37% error → DISTRIBUTED, targeted fix vô ích
+- **Thay thế đã cân nhắc:**
+  - Cross-view SH consistency loss: ❌ SH đã stable → thêm loss không giúp
+  - SH-norm dropout (B3): ❌ SH norm không còn correlated với error
+  - CRS-guided SH learning rate: ❌ Error distributed → targeted kém uniform
+  - Adaptive dropout: ⚠️ Diminishing returns (gap chủ yếu do missing information)
+- **Kết quả:** ✅ Regularization pipeline hiện tại (A1+B1β) đã extract near-maximum gain.
+  Improvement tiếp theo cần **additional information sources** (dense init, better pseudo-view,
+  longer training) thay vì stronger regularization.
+  Chi tiết: docs/10_track_a_b_results.md section 11.
+
+---

@@ -20,6 +20,10 @@ Ba contribution chính (focus hiện tại: C1 + C2):
 2. **CRS-guided Densification** — adaptive depth loss + position constraint (từ T_densify=500) + multi-signal pruning
 3. ~~**GFS Metric**~~ — [HOLD] Depth RMSE + Floater Ratio — tạm gác
 
+**Bottleneck hiện tại (sau Phase 5):** Train-test gap ~16-18 dB. Pseudo depth loss
+KHÔNG giải quyết được vì pseudo cams không novel (max 3.68° from training cams).
+Đang test Pseudo PHOTOMETRIC loss (Approach 2): detect floater qua parallax photometric mismatch.
+
 ---
 
 ## Codebase structure
@@ -146,6 +150,104 @@ prune = (CRS_i < tau_crs AND knn_dist > tau_isolated) OR (opacity < 0.005)
 8. **KHÔNG dùng `confidence` attribute** của CoR-GS cho CRS — thêm `_crs_score` riêng
 9. **CRS pruning chỉ active sau T_warmup**
 
+### Quy tắc 10 — TAG code mới với marker `[CRSGaussian ...]`
+
+Mọi đoạn code thêm/sửa PHẢI có comment marker `[CRSGaussian]` hoặc `[CRSGaussian Tx.x]` để dễ grep ngược tìm lại sau này.
+
+**Ví dụ:**
+```python
+# ── [CRSGaussian Pseudo-photo] ... ──
+if dataset.use_pseudo_photo_loss:
+    ...
+
+# ============================================================
+# [CRSGaussian] Task: T5b2 — warp_image_forward
+# File: utils/depth/depth_warping.py
+# ============================================================
+def warp_image_forward(...):
+    ...
+```
+
+**Lý do:** train.py + các file khác đã >800 dòng. Khi review/debug cần grep `[CRSGaussian` để biết đoạn nào là CRSGaussian thêm vs CoR-GS gốc.
+
+### Quy tắc 11 — Thiết kế MODULE BẬT/TẮT cho mọi feature mới
+
+Mọi ý tưởng mới PHẢI có:
+- **Master switch** trong `arguments/__init__.py` (default `False`)
+- **Gating** trong code: `if dataset.<feature_flag> and ...` (5 điều kiện AND nếu cần)
+- **Default OFF** đảm bảo baseline không thay đổi khi không bật flag
+- **Verify**: chạy với flag OFF → kết quả phải giống baseline cũ
+
+**Ví dụ pattern:**
+```python
+# arguments/__init__.py
+self.use_my_new_feature = False  # master switch
+self.lambda_my_feature  = 0.05
+self.my_feature_start_iter = 1000
+
+# train.py
+if (dataset.use_my_new_feature
+        and dataset.use_depth_prior        # prerequisites
+        and iteration >= dataset.my_feature_start_iter
+        and <other_conditions>):
+    # ... feature code chỉ chạy khi bật
+```
+
+**Lý do:** Cho phép ablation A/B clean (B0 vs B0+feature), dễ rollback nếu feature hại, dễ combine nhiều features.
+
+### Quy tắc 12 — TÁCH FILE cho ý tưởng mới, IMPORT vào train.py
+
+KHÔNG nhồi logic mới (>30 dòng) trực tiếp vào train.py. Thay vào đó:
+
+1. **Tạo file mới** trong subdir thích hợp:
+   - `utils/depth/<feature>.py` cho depth-related
+   - `utils/crs/<feature>.py` cho CRS-related
+   - `utils/loss/<feature>.py` cho loss-related (tạo dir mới nếu cần)
+   - `utils/regularizer/<feature>.py` cho regularization
+2. **Function chính** trả về loss tensor (có gradient nếu cần)
+3. **train.py chỉ chứa**:
+   - Import: `from utils.<dir>.<feature> import compute_<feature>_loss`
+   - Gating block với `if dataset.use_<feature>:`
+   - Gọi `L = compute_<feature>_loss(...)` (1-3 dòng)
+   - `LossDict["loss_gs0"] += L`
+   - TB log
+
+**Ví dụ pattern đúng:**
+```python
+# utils/loss/pseudo_photo.py  (TẠO MỚI)
+def compute_pseudo_photo_loss(rendered_img_P, nearest_cam, pseudo_cam,
+                                aligned_depth_dict, lambda_weight):
+    """[CRSGaussian Pseudo-photo] Compute pseudo-view photometric loss."""
+    warped_gt, valid_gt = warp_image_forward(...)
+    if int(valid_gt.sum().item()) < 100:
+        return None, 0.0  # skip
+    mask3 = valid_gt.unsqueeze(0).expand(3, -1, -1).float()
+    L = lambda_weight * l1_loss_mask(rendered_img_P, warped_gt, mask3)
+    coverage = float(valid_gt.float().mean().item())
+    return L, coverage
+
+# train.py  (CHỈ 5-10 dòng cho mỗi feature)
+from utils.loss.pseudo_photo import compute_pseudo_photo_loss
+
+if dataset.use_pseudo_photo_loss and iteration >= dataset.pseudo_photo_start_iter \
+        and pseudo_cam_co is not None and "image_pseudo_co_gs0" in RenderDict:
+    nearest_cam = find_nearest_training_cam(pseudo_cam_co, allCameras)
+    if nearest_cam and nearest_cam.uid in aligned_depth_dict:
+        L_photo, cov = compute_pseudo_photo_loss(
+            RenderDict["image_pseudo_co_gs0"], nearest_cam, pseudo_cam_co,
+            aligned_depth_dict, dataset.lambda_pseudo_photo)
+        if L_photo is not None:
+            LossDict["loss_gs0"] += L_photo
+            if tb_writer and iteration % 100 == 0:
+                tb_writer.add_scalar('loss/pseudo_photo', float(L_photo.item()), iteration)
+```
+
+**Lý do:**
+- train.py hiện 833 dòng — khó review, khó merge
+- Logic riêng biệt → dễ unit test
+- Mỗi ý tưởng = 1 file → dễ tìm, dễ xoá nếu fail
+- Import line + gate block là **interface clean** giữa main loop và feature
+
 ---
 
 ## Quy tắc chú thích code — BẮT BUỘC mọi thay đổi
@@ -243,10 +345,22 @@ Phase 3 — DONE
   T3.1  ✓ pearson_depth_loss()
   T3.3  ✓ Fixed depth loss λ=0.05 → PSNR 22.35 (+1.2)
 
-Phase 4 — IN PROGRESS
+Phase 4 — DONE
   T4.1  ✓ Position constraint — DISABLED (PSNR -3dB)
   T4.2  ✓ CRS pruning Option C
-  T5.x  ← NEXT: Informed CRS₀ Initialization (Phase 5)
+
+Phase 5 — DONE
+  T5.1-T5.6 ✓ Informed CRS₀ (3-signal: q_reproj+q_depth+q_view)
+  Best WG: w_reproj=0.4, w_depth=0.6, w_view=0, ema=0.3, AVG=20.36
+
+Phase 5b — Anti-overfit (Pseudo-View Loss)
+  T5b1  ✗ Pseudo DEPTH loss — NOT WORKING
+        Root cause: pseudo cams chỉ cách training cams 0.3-3.68°
+        (max 3.68° / 10000 cams, 0% pass threshold 5°)
+        → Reference = duplicate training depth signal
+  T5b2  ← NEXT: Pseudo PHOTOMETRIC loss (Approach 2)
+        Reference = warped GT image, detect floater qua parallax
+        Lambda sweep: {0.005, 0.01, 0.02, 0.05}
 ```
 
 ---

@@ -41,7 +41,9 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
 
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
-        render_pkg = render(view, gaussians, pipeline, background)
+        # [CRSGaussian Track B] Offline eval render — force disable_dropout=True
+        # để đảm bảo render đầy đủ khi tính metrics (không mất Gaussian random).
+        render_pkg = render(view, gaussians, pipeline, background, disable_dropout=True)
         gt = view.original_image[0:3, :, :]
         torchvision.utils.save_image(render_pkg["render"], os.path.join(render_path, view.image_name + '.png'))
         torchvision.utils.save_image(gt, os.path.join(gts_path, view.image_name + ".png"))

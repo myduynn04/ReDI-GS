@@ -119,6 +119,42 @@
 
 ---
 
+## PHASE 5b — Anti-Overfit: Pseudo-View Loss
+
+> **Mục đích:** Giảm train-test gap (~16-18 dB) bằng cách ép Gaussians học geometry/appearance ở novel views, không chỉ training views.
+> **Bottleneck đã xác định:** Densify_until ablation chứng minh dừng densify sớm KHÔNG giảm overfit (drop AVG chỉ ±0.05 dB) → root cause là model overfit photometric ở 3 training views, cần signal regularization mới.
+
+### Sub-phase 5b.1 — Pseudo Depth Loss (Approach 1) — KHÔNG HOẠT ĐỘNG
+
+| # | Task | Kết quả | Ghi chú |
+|---|------|---------|---------|
+| T5b1.1 | Tạo `utils/depth/depth_warping.py` — forward warp DAV2 depth | [x] Done | 3 functions: `find_nearest_training_cam`, `forward_warp_depth`, `compute_warp_coverage`. Convention `cam.R = C2W rot`, `cam.T = W2C trans`. |
+| T5b1.2 | Verify camera convention (round-trip + gradient flow) | [x] PASS | 4/4 tests: round-trip 7e-15, coverage 86%, scale ratio 0.875, gradient norm 1.46e-2. |
+| T5b1.3 | 6 unit tests synthetic | [x] PASS | 6/6 tests trong `tests/test_pseudo_depth_warp.py`. |
+| T5b1.4 | Hook `--use_pseudo_depth_loss` vào train.py | [x] Done | Gated, default OFF. Tái dùng `RenderDict["depth_pseudo_co_gs0"]`. |
+| T5b1.5 | Ablation 7 configs × 8 LLFF scenes (B0/PM/PL/PH/PU5/PE/PT) | [x] Done | **AVG @10k: PL=20.288 vs B0=20.230 (+0.058)** — không cải thiện, gain trong noise floor. |
+| T5b1.6 | Verify H1-H4 hypotheses | [x] **H4 = ROOT CAUSE** | H1/H2/H3 đã verify OK ở session trước. **H4: pseudo cams chỉ cách training cams 0.3-3.68° (max!), 0/10000 cam pass threshold 5°**. Pseudo loss = duplicate training depth signal. |
+| T5b1.7 | Ablation H4 fix? | SKIP | F1 (filter) bất khả thi vì max angle 3.68° < threshold. F2 (perturb) phức tạp + reference DAV2 redundant nên không đáng đầu tư. → Switch sang Approach 2. |
+
+### Sub-phase 5b.2 — Pseudo Photometric Consistency (Approach 2)
+
+> **Triết lý khác:** Reference KHÔNG phải DAV2 (đã dùng training depth loss → redundant) mà là **GT IMAGE** warped từ training cam. Detect floater qua **PARALLAX**: floater 3D ở vị trí sai → khi nhìn từ pseudo cam (dù chỉ 3°), parallax shift `~ depth × tan(3°)` đủ để L1 loss detect.
+
+| # | Task | Kết quả | Ghi chú |
+|---|------|---------|---------|
+| T5b2.1 | Thêm `warp_image_forward()` vào `utils/depth/depth_warping.py` | [x] Done | Scatter RGB thay vì depth, collision nearest-wins. |
+| T5b2.2 | Thêm 3 args vào ModelParams | [x] Done | `use_pseudo_photo_loss`, `lambda_pseudo_photo`, `pseudo_photo_start_iter`. Default OFF → không phá baseline. |
+| T5b2.3 | Hook vào train.py — loss block sau pseudo depth block | [x] Done | Gated bởi 5 điều kiện AND. Tái dùng `RenderDict["image_pseudo_co_gs0"]`. L1 masked loss với valid mask broadcast (3,H,W). |
+| T5b2.4 | Tạo `scripts/ablation_pseudo_photo.sh` | [x] Done | 5 configs: B0, AP2_005 (λ=0.005), AP2_01, AP2_02, AP2_05. Lambda thấp vì warp có boundary artifacts. |
+| T5b2.5 | Smoke test fern (5 runs) | [ ] | Verify không crash, có log `loss/pseudo_photo`. |
+| T5b2.6 | Full 8 LLFF scenes (40 runs, parallel 2 GPU) | [ ] | Sau khi smoke test pass. |
+
+### Sub-phase 5b.3 — Pseudo DAV2 Self-Reference (Approach 1') — HOLD
+
+> Chạy DAV2 trên rendered image tại pseudo cam → reference depth phụ thuộc content render thực. FSGS-style. **Hold cho đến khi Approach 2 cho kết quả** vì overhead DAV2 inference per-iter cao (+1.3GB GPU memory + ~50ms/call), risk OOM.
+
+---
+
 ## PHASE 6 — GFS Metric [HOLD - deprioritized]
 
 > **Tạm gác hoàn toàn.** Focus 100% vào C1 (CRS Module) và C2 (CRS-guided Densification) trước.

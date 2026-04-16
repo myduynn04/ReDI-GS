@@ -110,6 +110,25 @@ class ModelParams(ParamGroup):
         # True: child CRS₀ = clip(η * CRS_parent, 0, 0.5)
         # False (default): child CRS₀ = 0.5 (neutral, behavior cũ)
         self.crs_densify_inherit = False
+        # ── [CRSGaussian Pseudo-depth] Pseudo-view depth loss ──
+        # Ép Gaussian model đúng geometry ở novel views (giảm overfit train-test gap).
+        # Forward warp aligned DAV2 depth từ training cam gần nhất → pseudo-cam
+        # → so với rendered depth tại pseudo-cam (Pearson loss).
+        # Master switch: False → behavior cũ (không có pseudo depth loss).
+        # Cần --use_depth_prior=True (để có aligned_depth_dict làm reference).
+        self.use_pseudo_depth_loss   = False    # master switch
+        self.lambda_pseudo_depth     = 0.05     # loss weight (như fixed depth loss)
+        self.pseudo_depth_start_iter = 2000     # bắt đầu sau warmup, sau khi geometry sơ bộ ổn
+        self.pseudo_depth_ramp_iters = 500      # linear ramp tránh shock
+        self.pseudo_depth_interval   = 5        # mỗi N iter (tránh tính mỗi iter cho rẻ)
+        # ── [CRSGaussian Pseudo-photo] Pseudo-view photometric consistency (Approach 2) ──
+        # Forward warp GT IMAGE từ training cam → pseudo-cam (dùng aligned depth)
+        # → so với rendered image tại pseudo-cam (L1 masked loss).
+        # Khác pseudo depth: signal photometric mạnh hơn, detect floater qua parallax.
+        # Cần --use_depth_prior=True (cần aligned depth để warp).
+        self.use_pseudo_photo_loss    = False   # master switch
+        self.lambda_pseudo_photo      = 0.01    # loss weight — bắt đầu thấp
+        self.pseudo_photo_start_iter  = 1000    # bắt đầu sau warmup
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -124,6 +143,21 @@ class PipelineParams(ParamGroup):
         self.debug = False
         self.use_confidence = False
         self.use_color = True
+
+        # ── [CRSGaussian Track B] Dropout regularization ──
+        # Master switch + per-knob flags để ablate độc lập.
+        # Default OFF: use_dropout=False → toàn bộ gating block trong renderer
+        # bị skip → kết quả MATCH baseline A1 (reproduce exactly).
+        # Mode: "uniform" (B1, Co-Adapt) | "sh_norm" (B3) | "hybrid" (B4).
+        # Các field current_iter / train_mode gán dynamic trong train.py.
+        self.use_dropout        = False
+        self.dropout_mode       = "uniform"
+        self.dropout_base       = 0.1
+        self.dropout_w_crs      = 0.0
+        self.dropout_w_sh       = 0.0
+        self.dropout_max        = 0.6
+        self.dropout_start_iter = 0
+
         super().__init__(parser, "Pipeline Parameters")
 
 class OptimizationParams(ParamGroup):
@@ -162,6 +196,20 @@ class OptimizationParams(ParamGroup):
         # ── [CRSGaussian] CRS update hyperparameters ──
         self.crs_ema_decay = 0.9         # EMA decay cho CRS update. Ablate: {0.5, 0.7, 0.9}
         self.crs_update_interval = 100   # Mỗi bao nhiêu iter update CRS. Ablate: {25, 50, 100}
+        # ── [CRSGaussian DIAG E1] Freeze SH hyperparameter ──
+        # Iter sau đó SH (f_dc + f_rest) bị freeze (lr=0). Chỉ xyz/opacity/
+        # scaling/rotation tiếp tục update.
+        # Default 0 → KHÔNG freeze (behavior cũ). > 0 → freeze tại iter này.
+        # Dùng để test H4: "SH overfit memorize training views là nguyên nhân
+        # chính của train-test gap 16dB".
+        # Ablate: {0, 3000, 5000, 7000}
+        self.freeze_sh_after = 0
+
+        # ── [CRSGaussian DIAG A2] Freeze chỉ DC (f_dc), f_rest tự do ──
+        # Isolate DC contribution vs rest trong SH overfit.
+        # freeze_dc_only=True → freeze_dc() được gọi tại freeze_dc_start_iter.
+        self.freeze_dc_only = False
+        self.freeze_dc_start_iter = 1000
 
         super().__init__(parser, "Optimization Parameters")
 
