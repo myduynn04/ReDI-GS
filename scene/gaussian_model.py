@@ -230,6 +230,20 @@ class GaussianModel:
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
 
+    # ============================================================
+    # [CRSGaussian Phase 2c] Opacity decay (inspired by Binocular3DGS)
+    # Mục đích: continuous opacity pressure mỗi iter → zombie Gaussian
+    #           giảm opacity dần → bị CRS pruning hoặc legacy opacity prune loại
+    # Được gọi từ: train.py sau optimizer.step(), mỗi iter sau densify_from_iter
+    # ============================================================
+    def opacity_decay(self, factor: float = 0.995):
+        """[CRSGaussian Phase 2c] Multiply activated opacity by factor → logit."""
+        with torch.no_grad():
+            # Activate → multiply → clamp min để tránh inverse_sigmoid(0) = -inf
+            opacity = self.get_opacity * factor
+            opacity = opacity.clamp(min=1e-6)
+            self._opacity.data = self.inverse_opacity_activation(opacity)
+
     # ── [CRSGaussian T2.2] CRS property ──
     @property
     def get_crs(self):
@@ -289,6 +303,11 @@ class GaussianModel:
             self._crs_score = informed_crs0.unsqueeze(-1).to("cuda")
         else:
             self._crs_score = torch.zeros((fused_point_cloud.shape[0], 1), device="cuda")
+        # ── [CRSGaussian Hướng D MVP] Spawn iter tracking ──
+        # Per-Gaussian "creation iter" để compute age trong rnrc warmup logic.
+        # Init Gaussians (từ COLMAP point cloud) → spawn_iter=0.
+        # Densified Gaussians sẽ được set spawn_iter=current_iter trong densification_postfix.
+        self.spawn_iter = torch.zeros(fused_point_cloud.shape[0], device="cuda", dtype=torch.int32)
         if self.args.train_bg:
             self.bg_color = nn.Parameter((torch.zeros(3, 1, 1) + 0.).cuda().requires_grad_(True))
 
@@ -541,6 +560,13 @@ class GaussianModel:
             self.confidence = self.confidence[valid_points_mask]
             # ── [CRSGaussian T2.2] Prune CRS cùng với Gaussian ──
             self._crs_score = self._crs_score[valid_points_mask]
+            # ── [CRSGaussian Hướng D MVP] Prune spawn_iter + _rc_smooth + _crs_rnrc ──
+            if hasattr(self, "spawn_iter") and self.spawn_iter.shape[0] == valid_points_mask.shape[0]:
+                self.spawn_iter = self.spawn_iter[valid_points_mask]
+            if hasattr(self, "_rc_smooth") and self._rc_smooth.shape[0] == valid_points_mask.shape[0]:
+                self._rc_smooth = self._rc_smooth[valid_points_mask]
+            if hasattr(self, "_crs_rnrc") and self._crs_rnrc.shape[0] == valid_points_mask.shape[0]:
+                self._crs_rnrc = self._crs_rnrc[valid_points_mask]
 
 
     def cat_tensors_to_optimizer(self, tensors_dict):
@@ -621,6 +647,14 @@ class GaussianModel:
             # Behavior cũ: neutral logit=0 → sigmoid=0.5
             new_crs = torch.zeros((new_xyz.shape[0], 1), device="cuda")
         self._crs_score = torch.cat([self._crs_score, new_crs], dim=0)
+        # ── [CRSGaussian Hướng D MVP] Append spawn_iter cho Gaussians mới ──
+        # Read iter từ instance attr set bởi densify_and_prune. Default 0 nếu chưa set
+        # (e.g. proximity() hoặc init path).
+        if hasattr(self, "spawn_iter"):
+            cur_iter = getattr(self, "_densify_current_iter", 0)
+            new_spawn = torch.full((new_xyz.shape[0],), cur_iter,
+                                    device="cuda", dtype=torch.int32)
+            self.spawn_iter = torch.cat([self.spawn_iter, new_spawn], dim=0)
 
 
     def proximity(self, scene_extent, N = 3):
@@ -748,6 +782,9 @@ class GaussianModel:
                           cameras=None, aligned_depth_dict=None, depth_range=None,
                           T_warmup=1000, tau_crs=0.35, tau_isolated=0.1,
                           crs_prune_dict=None, eta=0.0):
+        # ── [CRSGaussian Hướng D MVP] Lưu iter để densification_postfix track spawn ──
+        self._densify_current_iter = int(iter)
+
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
@@ -798,6 +835,13 @@ class GaussianModel:
             prune_mask = torch.logical_or(prune_mask, crs_prune)
 
         self.prune_points(prune_mask, iter)
+
+        # [CRSGaussian Phase 2d Stage A] Invalidate density cache khi population
+        # thay đổi (densify tạo thêm / prune xóa bớt → density outdated).
+        # anchor_dropout_mask sẽ recompute ở iter sau.
+        if hasattr(self, "_cached_density"):
+            self._cached_density = None
+
         torch.cuda.empty_cache()
 
 

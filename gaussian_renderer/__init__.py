@@ -45,29 +45,74 @@ def render(viewpoint_camera, pc, pipe, bg_color : torch.Tensor, scaling_modifier
         # print("bg_color set to 000")
         bg_color = torch.tensor([0., 0., 0.]).cuda()
 
-    # ── [CRSGaussian Track B] Dropout gating ──
-    # Tính keep_mask trước khi build raster_settings + slice tensors.
-    # Lý do build trước: raster_settings nhận confidence (per-Gaussian custom
-    # field của CRSGaussian), cần slice cùng kích thước với means3D/opacity.
-    # Gate condition (multi-AND để guarantee default OFF):
-    #   - pipe.use_dropout=True (master switch, default False)
-    #   - disable_dropout=False (explicit override từ caller cho eval/pseudo)
-    #   - pipe.current_iter >= pipe.dropout_start_iter (warmup optional)
-    apply_dropout = (
+    # ── [CRSGaussian Combined Dropout] Gate cho B1 (Track B) + DropAnSH ──
+    # 2 regularization độc lập, có thể combine:
+    #   B1:       per-Gaussian uniform/sh_norm/hybrid dropout (fine-grained)
+    #   DropAnSH: anchor + k-NN cluster dropout (spatial) + SH degree dropout
+    # Logic: compute cả 2 masks trên full N → AND → slice once.
+    # SH degree dropout modify _features_rest in-place → snapshot để restore sau rasterizer.
+    N_full = pc.get_xyz.shape[0]
+    dropansh_snapshot = None  # để restore SH rest coefficients sau forward
+
+    apply_b1 = (
         getattr(pipe, "use_dropout", False)
         and (not disable_dropout)
         and getattr(pipe, "current_iter", 0) >= getattr(pipe, "dropout_start_iter", 0)
     )
+    apply_dropansh = (
+        getattr(pipe, "use_dropansh", False)
+        and (not disable_dropout)
+    )
+    # apply_dropout = bất kỳ regularization nào active → cần slice tensors.
+    apply_dropout = apply_b1 or apply_dropansh
+
     if apply_dropout:
-        from utils.regularizer.sh_dropout import compute_dropout_mask
-        keep_mask, _drop_prob = compute_dropout_mask(
-            pc,
-            mode=getattr(pipe, "dropout_mode", "uniform"),
-            base=getattr(pipe, "dropout_base", 0.1),
-            w_crs=getattr(pipe, "dropout_w_crs", 0.0),
-            w_sh=getattr(pipe, "dropout_w_sh", 0.0),
-            max_drop=getattr(pipe, "dropout_max", 0.6),
-        )
+        # Start với mask toàn 1 (giữ tất cả)
+        keep_mask = torch.ones(N_full, device=pc.get_xyz.device, dtype=torch.bool)
+
+        if apply_b1:
+            from utils.regularizer.sh_dropout import compute_dropout_mask
+            b1_mask, _drop_prob = compute_dropout_mask(
+                pc,
+                mode=getattr(pipe, "dropout_mode", "uniform"),
+                base=getattr(pipe, "dropout_base", 0.1),
+                w_crs=getattr(pipe, "dropout_w_crs", 0.0),
+                w_sh=getattr(pipe, "dropout_w_sh", 0.0),
+                max_drop=getattr(pipe, "dropout_max", 0.6),
+            )
+            keep_mask &= b1_mask
+
+        if apply_dropansh:
+            from utils.regularizer.dropansh import (
+                anchor_dropout_mask, sh_degree_dropout
+            )
+            # SH degree dropout: modify _features_rest IN-PLACE → lưu snapshot.
+            dropansh_snapshot = sh_degree_dropout(
+                pc,
+                iteration=getattr(pipe, "current_iter", 0),
+                p_sh=getattr(pipe, "dropansh_psh", 0.2),
+                schedule=(
+                    getattr(pipe, "dropansh_sched0", 2000),
+                    getattr(pipe, "dropansh_sched1", 4000),
+                    getattr(pipe, "dropansh_sched2", 6000),
+                ),
+                crs_modulated=getattr(pipe, "dropansh_crs_sh", False),
+            )
+            # Anchor cluster dropout mask (spatial)
+            anchor_mask = anchor_dropout_mask(
+                pc,
+                iteration=getattr(pipe, "current_iter", 0),
+                total_iter=getattr(pipe, "dropansh_total_iter", 10000),
+                k=getattr(pipe, "dropansh_k", 10),
+                pa_max=getattr(pipe, "dropansh_pa", 0.02),
+                crs_guided=getattr(pipe, "dropansh_crs_anchor", False),
+            )
+            keep_mask &= anchor_mask
+
+        # Nếu không có Gaussian nào bị drop (rare edge case) → set None để skip slicing path
+        if keep_mask.all():
+            keep_mask = None
+            apply_dropout = False
     else:
         keep_mask = None
 
@@ -96,6 +141,18 @@ def render(viewpoint_camera, pc, pipe, bg_color : torch.Tensor, scaling_modifier
     means3D = pc.get_xyz
     means2D = screenspace_points
     opacity = pc.get_opacity
+
+    # ── [CRSGaussian Hướng D MVP] Layer 3: Differentiable α-coupling ──
+    # Khi RNRC active mode "full" và _crs_rnrc đã set bởi train.py:
+    #   α_eff = α × CRS.detach()  → CRS gates rendering signal trong forward path.
+    #   Gradient flow back qua opacity raw (CRS detached), nên opacity tự update
+    #   theo CRS-weighted error → mechanism khác hoàn toàn post-hoc gate.
+    # Khi flag OFF hoặc mode khác hoặc _crs_rnrc chưa init → opacity = raw (no change).
+    if (getattr(pc, "_rnrc_l3_active", False)
+            and hasattr(pc, "_crs_rnrc")
+            and pc._crs_rnrc.shape[0] == opacity.shape[0]):
+        crs_gate = pc._crs_rnrc.detach().unsqueeze(-1)  # (N, 1) match opacity shape
+        opacity = opacity * crs_gate
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
     # scaling / rotation by the rasterizer.
@@ -152,6 +209,14 @@ def render(viewpoint_camera, pc, pipe, bg_color : torch.Tensor, scaling_modifier
         scales = scales,
         rotations = rotations,
         cov3D_precomp = cov3D_precomp)
+
+    # ── [CRSGaussian DropAnSH] Restore _features_rest sau forward ──
+    # SH degree dropout đã zero some coefficients in-place để forward pass.
+    # Giờ rasterizer done → phải restore để backward + subsequent renders đúng.
+    # No-op nếu snapshot=None (DropAnSH off hoặc iter ≥ schedule[2] hoặc p_sh=0).
+    if dropansh_snapshot is not None:
+        from utils.regularizer.dropansh import restore_sh_dropout
+        restore_sh_dropout(pc, dropansh_snapshot)
 
     if min(pc.bg_color.shape) != 0:
         rendered_image = rendered_image + (1 - alpha) * torch.sigmoid(pc.bg_color)  # torch.ones((3, 1, 1)).cuda()

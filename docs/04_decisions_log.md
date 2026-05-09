@@ -470,5 +470,693 @@
   Improvement tiếp theo cần **additional information sources** (dense init, better pseudo-view,
   longer training) thay vì stronger regularization.
   Chi tiết: docs/10_track_a_b_results.md section 11.
+- **⚠️ SUPERSEDED 2026-04-18:** Claim "near-maximum gain" bị Phase 1 DropAnSH phản bác
+  (+0.16 dB gain). Regularization ceiling là ~21.12 dB (D1), không phải ~20.96 (B1b).
+  Xem entry dưới.
+
+---
+
+### [2026-04-18] Phase 1 DropAnSH: D1 beats A1+B1β — backbone pivot
+- **Quyết định:** Chuyển backbone từ A1+B1β sang D1 (pure DropAnSH, sh=3, no freeze, no B1)
+- **Lý do:**
+  - 4 configs × 8 LLFF scenes (n_views=3, 10k iter):
+    - B0 (A1+B1β) = 20.96 AVG (prior best)
+    - **D1 (pure DropAnSH) = 21.12 AVG** (+0.16 dB vs B0, +0.66 vs CoR-GS)
+    - D2 (A1+DropAnSH stack) = 21.03 (A1 freeze conflicts với DropAnSH SH degree dropout)
+    - D3 (A1+B1β+anchor) = 20.64 (over-regularize: B1 uniform + anchor cùng giải co-adaptation)
+  - D1 win 6/8 scenes, lose chỉ fern (-0.13) và horns (-0.03)
+- **Thay thế đã cân nhắc:**
+  - Giữ A1+B1β: reviewer sẽ bắt bỏ qua +0.16 dB gain có thực
+  - Chỉ dùng SH degree dropout của DropAnSH: chưa biết component nào dominant, cần Phase 2
+  - Lock A1+B1β vì "đơn giản hơn": thực tế D1 đơn giản hơn (không cần freeze, không cần sh=1, không cần B1)
+- **Kết quả:** ✅ D1 là new backbone. A1+B1β labeled "dominated by D1, reference only".
+  Chi tiết: docs/10 Section 12.
+
+### [2026-04-18] Multi-seed verify lock-in: D1 signal thật, không phải CUDA noise
+- **Quyết định:** Confirm D1 > B1b là signal thật, không cần flip lại backbone
+- **Lý do:**
+  - 3 seeds (42, 123, 2024) × 3 weak scenes (orchids/leaves/horns):
+    - orchids: D1 = 16.70 ± 0.13, B1b = 16.60, Δ = +0.10 (NOISE, trong 1σ)
+    - leaves: D1 = 18.49 ± 0.07, B1b = 18.31, Δ = +0.18 (SIGNAL)
+    - horns: D1 = 19.95 ± 0.12, B1b = 19.81, Δ = +0.14 (SIGNAL)
+  - Std trong scene 0.07-0.13 dB → model stable, không nhạy seed
+  - 2/3 SIGNAL, 1 NOISE, 0 FLIP → D1 ≥ B1b robust
+  - AVG gap +0.14 (3 scene) khớp +0.16 (8 scene) → consistent
+- **Thay thế đã cân nhắc:** Chỉ 1 seed (Phase 1 gốc) — không đủ để loại noise
+- **Kết quả:** ✅ D1 lock-in. Tiến tới Phase 2.
+
+### [2026-04-18] Conceptual reframing: "SH cần regularize liên tục, không phải chặt"
+- **Quyết định:** Cập nhật root cause narrative cho paper
+- **Lý do:**
+  - Track A đúng: `_features_rest` là culprit (không phải DC)
+  - Track A sai một phần: "cần chặt (freeze + low sh_degree)" — quá thô
+  - Phase 1 chỉ ra: SH bậc cao **cần continuous stochastic regularization**
+    - Freeze = binary gate, chặn SH học → bỏ lỡ cơ hội fine-tune khi geometry settle
+    - DropAnSH SH degree dropout = stochastic, SH vẫn học nhưng "thỉnh thoảng vắng mặt" → không memorize
+- **Thay thế đã cân nhắc:**
+  - Giữ "SH cần chặt" narrative: Phase 1 evidence phủ nhận (D1 với sh=3+no freeze > A1)
+  - Narrative phức tạp hơn ("mix freeze + dropout"): D2 result (-0.09) chứng minh ngược
+- **Kết quả:** ✅ New narrative. Phản ánh trong paper Section 12.6 của docs/10.
+
+### [2026-04-18] Phase 2 plan: DropAnSH component ablation
+- **Quyết định:** Tách D1 thành D1-A (anchor only) và D1-S (SH degree only) trên 3 scenes
+- **Lý do:**
+  - D1 bật cả 2 cơ chế (anchor dropout pa=0.02 + SH degree dropout psh=0.2)
+  - Phase 3 (CRS integration) cần biết component nào dominant để CRS-hóa đúng chỗ
+  - Nếu anchor dominant → Phase 3 là CRS-guided anchor selection
+  - Nếu SH degree dominant → Phase 3 là CRS-modulated SH dropout
+- **Thay thế đã cân nhắc:**
+  - Nhảy thẳng Phase 3 với cả 2: không biết CRS-hóa chỗ nào có tác dụng
+  - Ablation 8 scenes: tốn thời gian, 3 scenes (fern/fortress/trex) đủ cover easy/medium/hard
+- **Kết quả:** 🔄 Pending — 6 runs × ~10 min, 2 GPU parallel ~30 min wall-clock
+
+### [2026-04-18] Phase 4 future idea: SH-reliability signal trong CRS
+- **Quyết định:** Ghi nhận ý tưởng user đề xuất, defer đến sau Phase 3
+- **Lý do:**
+  - Hiện tại CRS = position signal (D_i depth + R_i reprojection). Thêm S_i (SH reliability)
+    làm CRS thực sự multi-dimensional (position + color) → novelty mạnh hơn, phân biệt
+    với DropAnSH thuần
+  - Integration vào CRS logit: `crs = scale × (w1·D_i + w2·R_i + w3·S_i - 0.5)`
+- **Thay thế đã cân nhắc:**
+  - Naive `||c_rest||` magnitude proxy: ❌ không phân biệt view-independent-valid (matte wall)
+    vs memorize (specular drift). Magnitude nhỏ/lớn đều có thể là 1 trong 2.
+  - Proxy tốt hơn: SH directional variance, train-novel render divergence, SH gradient
+    variance late-stage
+  - SH pruning condition riêng (tách khỏi CRS): ❌ làm CRS thành multi-signal phức tạp, khó
+    paper framing
+- **Kết quả:** 📋 Saved to memory (project_sh_reliability_crs_idea.md). Implement chỉ khi
+  Phase 3 CRS-guided có tín hiệu dương. Warmup w3=0 đến iter ~3000 vì SH chưa ổn định.
+
+---
+
+### [2026-04-21] Phase 2 fair rerun: Phase 1 D1 = 21.12 là batch luck, thực là 20.95
+- **Quyết định:** Revise D1 baseline từ 21.12 (Phase 1) xuống 20.95 (Phase 2 fair batch)
+- **Lý do:**
+  - Phase 2 chạy D1/D1-A/D1-S trong cùng batch trên 8 LLFF scenes
+  - D1 fair = 20.95, lệch -0.17 so với Phase 1 batch (21.12)
+  - 4/8 scene lệch > 0.2 dB giữa 2 batch (room -0.66, fortress -0.39, orchids -0.25, trex -0.21)
+  - Batch variance (~0.15-0.20) > multi-seed std trong cùng batch (0.07-0.13)
+- **Thay thế đã cân nhắc:**
+  - Giữ Phase 1 number: reviewer sẽ bắt inconsistency khi thấy fair rerun khác
+  - Chạy thêm multi-seed cho D1 full 8 scenes: tốn ~90 min, đã có multi-seed trên 3 hard scenes đủ
+- **Kết quả:** ✅ Docs/10 Section 13.2 cập nhật D1=20.95. Section 12.9 thêm pointer SUPERSEDED.
+  Multi-seed verify (Section 12.4) vẫn valid trên 3 hard scenes (+0.14 dB confirmed), nhưng
+  không lan ra AVG 8 scenes.
+
+### [2026-04-21] Phase 2 ablation: Anchor dropout dominant, SH degree dropout ngoại biên
+- **Quyết định:** Anchor dropout là cơ chế chính trong DropAnSH, SH degree dropout bổ sung nhỏ
+- **Lý do:**
+  - Phase 2 3-scene: D1-A (anchor only) = 23.52 > D1 (both) = 23.40 > D1-S (SH deg only) = 22.46
+  - D1-S NET HARMFUL khi standalone: thêm SH deg dropout không anchor mất 0.93 dB
+  - Full 8-scene verify: D1-A = 20.93 ≈ D1 = 20.95 (tied, chỉ khác 0.02 dB)
+  - D1-A wins 5/8 scene, D1 cứu **room** (+0.58) — SH deg dropout giúp specular indoor
+- **Thay thế đã cân nhắc:**
+  - Chọn D1-A là final (đơn giản hơn): risk lose room scene
+  - Chọn D1 full (cứu room): thêm 3 flags, marginal AVG gain
+- **Kết quả:** ✅ Lock D1 full là backbone — no catastrophic scene. D1-A = viable simpler variant.
+
+### [2026-04-21] Phase 2b decomposition: Regularization pipeline đã chạm ceiling ~20.95
+- **Quyết định:** Dừng optimize regularization axis, chuyển sang augmentation axis (opacity decay, extend iter, dense init)
+- **Lý do:**
+  - 5 configs (D1, D1-A, E1, E2, E4) test full 8 LLFF scenes
+  - Tất cả AVG trong 0.1 dB: E4=21.02, D1=20.95, D1-A=20.93, E2=20.93, E1=20.92
+  - Per-scene winner count: E1 (4/8), E4 (2/8), D1 (1), D1-A (1)
+  - E4 (pure uniform, no anchor, no SH drop) tied với DropAnSH — đáng chú ý
+  - Ceiling do base pipeline (COLMAP sparse + 10k iter + CRS + informed init) quyết định
+- **Thay thế đã cân nhắc:**
+  - Test thêm anchor sampling strategies: đã đủ data points, thêm không break ceiling
+  - Test larger dropout rates: diminishing returns, có risk hại
+- **Kết quả:** ✅ Ceiling ~20.95 confirmed. Roadmap pivot:
+  - Phase 2c Opacity decay (G5 zombie Gaussian, G3 late-stage) → +0.3-0.8 dB
+  - Phase 2d Extend iter 10k→30k (G8 budget) → +0.5-1.5 dB
+  - Phase 5 Dense init PDCNet+ (G2 coverage) → +1.0-3.0 dB
+  - Phase 4 SH-reliability CRS (G9 novelty) → +0.2-0.5 dB + defensible contribution
+
+### [2026-04-21] Room scene outlier pattern: anchor-only hurts indoor specular
+- **Quyết định:** Ghi nhận room scene cần treatment đặc biệt — chưa ra production change
+- **Lý do:**
+  - Room PSNR ranking: E4 (22.69) > E2 (22.38) > D1 (22.21) >> D1-A (21.62) > E1 (21.46)
+  - Anchor-only configs (D1-A, E1) thua nặng room
+  - SH regularization (E2 freeze, E4 uniform+sh=3) giúp room
+  - Hypothesis: indoor specular-heavy scene → anchor cluster drop phá specular coherence
+- **Thay thế đã cân nhắc:**
+  - Scene-conditional regularizer (detect indoor → disable anchor): overengineering
+  - Reduce anchor rate pa cho room: hack, không generalize
+- **Kết quả:** 📋 Noted. Nếu opacity_decay Phase 2c không giúp room → revisit.
+
+### [2026-04-21] Phase 3 CRS-guided anchor DEFERRED pending 6/9 view evaluation
+- **Quyết định:** Hoãn Phase 3 — test trên ceilinged baseline uninformative
+- **Lý do:**
+  - Regularization ceiling ~20.95 trên 3-view — mọi CRS-guided variant khả năng cao trong noise (±0.1 dB)
+  - Track B đã chỉ "uniform > targeted" trên position signal — CRS-guided anchor có risk tương tự
+  - Phase 3 gain thực sự chỉ đo được khi baseline được raise (dense init hoặc extend iter)
+  - 6/9 view evaluation cần trước để hiểu method scaling behavior
+- **Thay thế đã cân nhắc:**
+  - Chạy Phase 3 trên D1 + A1+B1β + E4 baseline (3 variants): rủi ro marginal gain, weaken paper story
+  - Skip Phase 3 hoàn toàn: mất novelty contribution chính
+- **Kết quả:** 📋 Saved to memory (project_crs_guided_anchor_idea.md). Resume khi:
+  - (a) Đã có kết quả 6/9 view eval, HOẶC
+  - (b) Baseline raise lên ~22-23 dB qua Phase 2c/2d/5
+
+### [2026-04-21] Compute cost awareness từ Phase 2c
+- **Quyết định:** Mọi comparison Phase 2c trở đi PHẢI ghi training time + N_Gaussian + peak VRAM
+- **Lý do:**
+  - Một số mechanism (opacity decay, dense init) thay đổi N_Gaussian đáng kể → không fair so
+    PSNR alone
+  - Phase 2b đã quan sát N_Gauss range 39k-232k giữa scene × config
+  - Paper reviewer thường hỏi trade-off quality vs compute
+- **Kết quả:** Saved to memory (feedback_measure_compute_cost.md). Parse scripts từ Phase 2c
+  phải extract các metric này.
+
+---
+
+### [2026-04-21] Phase 2d Stage A density-aware: NEGATIVE — pivot to CRS-guided
+- **Quyết định:** Abandon density-aware dropout direction (voxel + covariance). Pivot
+  Phase 3 CRS-guided anchor selection.
+- **Lý do:**
+  - D1-A-V (voxel binning density): -0.17 dB AVG vs D1-A baseline 20.93 → 20.76
+  - Thua 6/8 scenes (flower -1.02, leaves -0.52 nặng nhất — scene có texture chi tiết)
+  - Thắng chỉ 2/8 (room/horns — scenes yếu baseline)
+  - D1-A-C (covariance overlap) crashed do Bhattacharyya inf với degenerate Gaussian covariance
+  - Compute cost: +8.3% wall-clock, +7.2% N_Gaussian → double loss
+  - **Root cause:** density counts spatial proximity structure-only. Không phân biệt
+    "dense legitimate" (flower petals cần nhiều Gauss render texture) vs "dense co-adapted"
+    (floater cluster). Signal structure không adequate cho floater detection.
+- **Thay thế đã cân nhắc:**
+  - Fix covariance crash (SVD pseudo-inverse): effort không justified khi voxel đã fail
+  - Try rendering top-K Stage B (CUDA mod): 1-2 ngày dev trên axis đã proven NEGATIVE
+  - Combine density × CRS (reuse voxel code): becomes Phase 3β, đang test song song với 3α
+- **Kết quả:** ✅ Direction abandoned. Phase 3 CRS-guided (pure + combined) đang chạy.
+  Stage B CUDA top-K deferred permanently. Cleanup pending user approval.
+  Chi tiết: docs/10 Section 14.
+
+### [2026-04-21] Phase 3αβ CRS-guided anchor: parallel test pure CRS vs CRS × voxel
+- **Quyết định:** Test 2 CRS-guided strategies song song:
+  - 3α: `p(anchor) ∝ (1 - CRS_i)` — pure CRS signal
+  - 3β: `p(anchor) ∝ voxel_density × (1 - CRS)` — combined quality × structure
+- **Lý do:**
+  - CRS = D_i + R_i là QUALITY signal, phân biệt floater (low CRS) vs surface (high CRS)
+  - Addresses Stage A root cause: không drop dense legitimate surface (high CRS protects)
+  - Reuse `utils/regularizer/density_voxel.py` từ Stage A cho 3β
+  - **Risk reminder:** Track B B2 (uniform dropout × (1-CRS)) đã fail trước → CRS-guided
+    UNIFORM không work. Nhưng ANCHOR khác UNIFORM: cluster drop quanh low-CRS có thể
+    tạo áp lực khác với single-Gauss drop. Chưa biết có escape B2 failure không.
+- **Thay thế đã cân nhắc:**
+  - Chỉ 3α: miss chance stack 2 signals
+  - Chỉ 3β: không biết CRS alone có đủ không
+  - Serial (3α → 3β): lose parallel efficiency khi 2 GPU available
+- **Kết quả:** ✅ Completed 2026-04-21. Verdict MIXED (effectively FLAT).
+  - 3α (CRS-guided anchor): AVG +0.075 dB vs D1-A — trong noise, driven by room +0.919 outlier
+  - 3β (CRS × voxel combined): AVG -0.202 dB, compute +122.9% — rejected
+  - Ceiling 20.95 CHƯA break. D1 backbone locked.
+  - Defensible claim: "CRS-guided anchor benefits indoor floater-prone scenes"
+  - NOT defensible: "CRS-guided anchor > uniform anchor overall"
+  - Chi tiết: docs/10 Section 14.9
+
+### [2026-04-21] Phase 3 MIXED → priority elevate Phase 2c + Phase 5
+- **Quyết định:** Tiếp tục break-ceiling attempts với 2 axis mới:
+  - Phase 2c Opacity decay (HIGH priority, cheap)
+  - Phase 5 Dense init PDCNet+ (HIGH priority, biggest lever)
+- **Lý do:**
+  - Phase 3 không delivered novelty boost kỳ vọng
+  - Ceiling 20.95 trên regularization axis đã confirmed qua Phase 2b + Phase 3
+  - Cần axis khác: continuous pruning pressure (opacity decay) hoặc init coverage (dense init)
+  - Phase 5 importance ELEVATED: trước Phase 3 planning đánh giá 70% verify, giờ cần để compete
+    SOTA numbers vì Phase 3 không cho edge
+- **Thay thế đã cân nhắc:**
+  - Skip 2c, thẳng Phase 5: miss cheap win, Phase 5 có thể fail
+  - Phase 4 SH-reliability trước: novelty track nhưng không break ceiling PSNR
+  - Multi-seed verify 3α: 3α room outlier đã biết, verify chỉ confirm scene-specific
+- **Kết quả:** 🔄 Phase 2c prompt đã viết, launch độc lập. Phase 5 staged (Stage 1 infra có thể
+  start song song). Phase 4 sau khi có PSNR baseline competitive.
+
+---
+
+### [2026-04-24] Phase 2c Opacity Decay: FIRST CEILING BREAK (+0.19 dB)
+- **Quyết định:** Lock D1-O999 là new backbone (DropAnSH + opacity decay 0.999)
+- **Lý do:**
+  - D1-O999 = 21.13 AVG vs D1 baseline 20.95 → **+0.19 dB ngoài noise ±0.15**
+  - Lần đầu config phá ceiling regularization 20.95 (confirmed through Phase 2b 5 variants)
+  - 6/8 scene wins (room +0.40, fortress +0.39, orchids +0.30, trex +0.26)
+  - Chỉ leaves rớt nhẹ -0.14 (fine texture cần Gaussian đầy đủ)
+  - Compute overhead chỉ +5% time, N_Gauss gần như không đổi → double win
+  - Mechanism fill gap "zombie Gaussian" mà CRS + legacy opacity không bắt
+- **Thay thế đã cân nhắc:**
+  - Factor=0.995 (Binocular3DGS default): +0.17 dB (tốt nhưng kém 0.999)
+  - Factor=0.99 aggressive: -0.58 dB catastrophic
+  - Extend densify (Binocular3DGS recipe): -0.24 dB, N_Gauss explode 2-8×
+- **Kết quả:** ✅ BACKBONE UPDATED. D1 → D1-O999. Mọi experiment sau dùng backbone này.
+  Chi tiết: docs/10 Section 15.
+
+### [2026-04-24] Budget-scaling insight — đóng góp NOVEL supporting
+- **Quyết định:** Opacity decay factor MUST scale với training budget — derive rule
+- **Lý do:**
+  - Binocular3DGS dùng 0.995 cho 30k iter → catastrophic khi dùng 10k (-0.58 dB)
+  - Ta derive: 0.999 optimal cho 10k
+  - Rule of thumb: `factor ≈ exp(ln(target_survival) / n_iter)` với target=0.01
+  - Không paper nào note điều này → SUPPORTING novelty
+- **Thay thế đã cân nhắc:**
+  - Copy nguyên config Binocular3DGS: fail thảm với 10k budget
+  - Grid search ngẫu nhiên: không có principled rule
+- **Kết quả:** ✅ Paper-worthy insight ("first to derive budget-aware decay factor
+  for sparse-view 3DGS"). Supporting contribution, không phải main.
+
+### [2026-04-24] Extend-densify REJECTED cho sparse-view 10k
+- **Quyết định:** KHÔNG dùng `densify_until_iter = iterations` style của Binocular3DGS
+- **Lý do:**
+  - D1-O995E test: PSNR -0.24, N_Gauss explode 2.6× avg (leaves 7.7×!)
+  - Binocular3DGS cần extend vì 30k budget + decay aggressive 0.995
+  - Sparse-view 10k budget + gentle decay 0.999 KHÔNG cần compensate population
+  - CRS pruning + DropAnSH anchor đã maintain Gaussian health
+- **Thay thế đã cân nhắc:**
+  - Copy nguyên Binocular3DGS recipe: catastrophic
+  - Partial extend (densify_until 7500): chưa test, likely cũng hại
+- **Kết quả:** ✅ Negative result đáng paper — "Binocular3DGS's extend-densify
+  does not generalize to sparse-view 10k training".
+
+### [2026-04-24] CRS isolation ablation running — critical defensibility test
+- **Quyết định:** Test D1-noCRS-O999 (opacity decay ON, CRS pruning OFF) TRƯỚC khi
+  commit paper narrative với CRS-weighted decay hoặc bất kỳ CRS extension nào
+- **Lý do:**
+  - Risk: opacity decay có thể làm thay CRS's job (kill floater through gradient-less decay)
+  - Nếu CRS redundant với decay → paper story sập (CRS là main contribution của paper)
+  - 3 tests trước (Track B B2, Phase 3α, Phase 2d Stage A) đã cho thấy pattern
+    "CRS weighting selection mechanism → marginal/fail" → cần chứng minh CRS có value
+  - Cheap (8 runs × 6 min = 48 min, 2 GPU parallel ~30 min)
+- **Thay thế đã cân nhắc:**
+  - Skip ablation, commit direct: risk crisis nếu reviewer bắt bug
+  - Multi-seed verify D1-O999 trước: answer question khác, không giải quyết CRS-decay synergy
+- **Kết quả:** ⚠️ COMPLETED — Paper crisis triggered:
+  - D1-noCRS-O999 = 21.21 dB AVG > D1-O999 = 21.13 dB
+  - CRS pruning REMOVED → +0.08 dB tốt hơn (within noise nhưng không hại)
+  - **CRS-as-pruning REDUNDANT với opacity decay** trên backbone hiện tại
+  - → Triggered CRS diagnostic arc (xem entries [2026-04-25] đến [2026-05-04])
+  Chi tiết: docs/10 Section 15.10, docs/11 Section 1-2.
+
+---
+
+### [2026-04-25] Tier A Diagnostic Suite — quantitative CRS signal characterization
+- **Quyết định:** Implement diagnostic methodology để characterize CRS signal quality TRƯỚC khi
+  thử thêm mechanism. Không tweak hyperparams nữa, phải hiểu signal.
+- **Lý do:**
+  - 3 CRS-mechanism failures (B2, Phase 3α, Phase 2d) + CRS isolation redundancy
+    → cần evidence quantitative thay vì hand-wave "CRS có signal"
+  - Nếu signal có ceiling → mọi mechanism mới sẽ fail → cần biết để pivot
+  - Tier A = 4 quantitative tests trên 8 LLFF scenes:
+    - **A1 BC bimodality** (Sarle's coefficient): D, R có shape signal không
+    - **A2 D-R correlation**: 2 components có orthogonal không
+    - **A3 synthetic floater discrimination**: perturb 0.3×depth_range, đo CRS response
+    - **A4 occlusion contamination**: count Gaussian-view pairs với gauss_z > render_z×1.05
+- **Thay thế đã cân nhắc:**
+  - Skip diagnostic, thử mechanism mới: rủi ro lặp lại failure pattern
+  - Single-scene smoke: sparse signal, không generalize
+- **Kết quả:** ✅ Tier A done 8 scenes. Findings:
+  - **D bimodal** (BC > 0.555 in 6/8 scenes) → signal có shape
+  - **R bimodal** mostly (5/8 scenes)
+  - **D-R orthogonal** (correlation < 0.3 in all scenes) → 2 signals capture different info
+  - **A3 floater discrimination**: ✅ CRS DOES drop after perturbation (median Δ = -0.18)
+  - **A4 occlusion contamination**: 36.5% R_i samples bị occluder colors → R noisy
+  - **Conclusion**: Signal có discriminative power nhưng R contaminated. Mechanism failure
+    không giải thích được hoàn toàn bởi signal quality alone.
+  Chi tiết: docs/11 Section 2 (Tier A diagnostic).
+
+---
+
+### [2026-04-26..30] Six CRS mechanism variants — exhaustive ceiling test
+- **Quyết định:** Test 6 CRS architectural variants để confirm/reject "mechanism failure"
+  thay vì giả thuyết "signal failure"
+- **Variants tested (8 LLFF scenes mỗi cái):**
+  1. **6 CRS pruning ablations** (tau ∈ {0.20, 0.25, 0.30, 0.35, 0.40, 0.45}): all marginal/dead
+  2. **C1 — occlusion-aware R**: depth-test trước khi sample GT pixel → AVG **−0.064 dB**
+  3. **C1.5 — depth_range-relative tolerance sweep**: best −0.038 dB (still negative)
+  4. **F-invisible — visibility-streak counter**: 1.3% catch rate, marginal
+  5. **D1G — CRS-gated densification**: AVG +0.028 dB, **REDUNDANT with DECAY** (synergy −0.132)
+  6. **hC — Hybrid RC × D fusion** (proxy RC = opacity × radii × coverage): AVG **−0.079 dB**
+  7. **RNRC L3 — differentiable α-coupling** (proxy RC + EMA + α_eff = α × CRS.detach()):
+     AVG +0.074 dB, STACK +0.163 < DECAY +0.186 alone
+- **Pattern observed:** Δ ceiling +0.07 ± 0.10 dB **across mọi mechanism dùng D+R signal**.
+  Bất kể gate / differentiable / loss-modulating → cùng plateau.
+- **Conclusion:** Bottleneck là **SIGNAL D+R**, không phải mechanism class.
+- **Thay thế đã cân nhắc:**
+  - Stop sau 3 failures: dữ liệu chưa đủ rule out mechanism
+  - Test thêm variants: diminishing returns sau 6 architectural axes
+- **Kết quả:** ✅ Comprehensive negative evidence — defendable claim "consistency-based CRS
+  fundamentally redundant with opacity regularization on this backbone".
+  Chi tiết: docs/11 Section 3-4.
+
+---
+
+### [2026-04-30] Literature survey — breakthrough direction analysis
+- **Quyết định:** Survey 8-15 sparse-view 3DGS papers (2024-2026) để identify novel CRS axis
+  chưa exhausted, thay vì proposing variant #7 trên cùng axis
+- **Lý do:**
+  - 6 variants × 8 scenes ceiling +0.07 → cần fresh insight từ literature
+  - Cần distinguish "axis exhausted" vs "mechanism class exhausted" vs "signal exhausted"
+- **Survey scope:** ICO-GS, CoMapGS, BinocularGS, CuriGS, DropAnSH, DropGaussian, CoR-GS,
+  3DGS-MCMC, PUP 3D-GS, UNG-GS, MVGSR, WildGS-SLAM, Predictive-PU-GS, TriaGS, Opt3DGS, Intern-GS
+- **Findings:**
+  - **SOTA**: ICO-GS 22.20 dB (cycle-depth + feature-MPC), CoMapGS 21.10 (MASt3R covisibility)
+  - **CoMapGS gain +0.65 dB** purely từ per-pixel covisibility loss weight (CoR-GS base)
+  - **ICO-GS gain +0.7+ dB** từ cycle-depth filter (vs plain monodepth)
+  - **Architectural axes CRS chưa touched**:
+    1. **Loss-path** (per-pixel reliability weight) — CoMapGS prove +0.65 với weaker signal
+    2. **SH-degree gating per-Gaussian** — DropAnSH random +0.42, targeted chưa thử
+    3. **Cross-view feature consistency loss** — ICO-GS pattern, CRS-soft mask chưa thử
+    4. **Gradient-magnitude scaling** — chưa paper nào làm per-Gaussian
+  - **Saturated axes**: opacity scaling (DECAY chiếm), densification gate (D1G fail), prune gate
+- **Thay thế đã cân nhắc:**
+  - Skip survey, thử variant #7: lặp pattern, rủi ro confirmation bias
+  - Use survey để clone ICO-GS: không novel, chỉ catch up
+- **Kết quả:** ✅ 4 candidate breakthrough proposals identified. Top recommendation:
+  **Loss-path mechanism với signal upgrade**. Chi tiết: docs/11 Section 5.
+
+---
+
+### [2026-05-02] Signal redesign — D_cycle thay D_DAV2
+- **Quyết định:** Replace D_DAV2 với D_cycle (cycle-depth consistency qua training views)
+- **Lý do D_DAV2 broken:**
+  - Phụ thuộc DAV2 (single-view monodepth, biased)
+  - Chỉ check 1 view tại a time → no multi-view consistency enforcement
+  - Static (DAV2 1 lần preprocessing, không update với training state)
+- **Lý do D_cycle better:**
+  - Dùng rendered depth từ chính Gaussian field → internal, no external prior
+  - Cycle qua 2+ views → enforce multi-view consistency built-in
+  - Dynamic (update mỗi CRS update qua rendered depth)
+  - Occluded points tự nhiên break cycle → handle Gap #2 (occlusion contamination)
+- **Công thức:**
+  ```
+  For pair (a, b):
+    P_a = project(Gaussian → cam_a)
+    d_a = rendered_depth(P_a)
+    P_b = unproject_then_project(P_a, d_a, cam_a → cam_b)
+    d_b = rendered_depth(P_b)
+    P_a' = project_back(P_b, d_b, cam_b → cam_a)
+    cycle_error = ||P_a − P_a'||
+  D_cycle_i = exp(-mean_pairs(cycle_error_i) / σ)
+  ```
+  σ ≈ 5.0 pixels. Warmup 1000 iters (rendered depth chưa stable).
+- **Thay thế đã cân nhắc:**
+  - Foundation model signals (DINOv2 feature, MASt3R correspondence): cost cao
+    (3-4 GB GPU memory + setup overhead). Defer Tier 1 nếu D_cycle work.
+  - D_cycle với DAV2 fusion: complexity tăng, không clear win
+- **Kết quả:** Pending — implement Tier 2-min (xem entry tiếp theo).
+
+---
+
+### [2026-05-04] Tier 2-min — DUAL upgrade: D_cycle + Loss Reweighter (Phase 7 plan)
+- **Quyết định:** Test attempt với DUAL upgrade:
+  - **Signal**: D → D_cycle (xem entry [2026-05-02])
+  - **Mechanism**: gate prune → per-pixel loss reweighter (orthogonal axis với DECAY)
+- **Mechanism details:**
+  ```
+  CRS_pix(p) = Σᵢ Tᵢ(p) · αᵢ(p) · CRSᵢ        (alpha-composite per-Gaussian CRS)
+  w(p) = γ + (1-γ) · CRS_pix(p)               γ ≈ 0.5
+  L_recon = Σ_p w(p) · |I_render(p) - I_GT(p)|
+  ```
+  Stop-gradient trên CRS_pix để tránh degenerate cycle.
+- **Lý do dual upgrade:**
+  - Single-axis tweak (signal only OR mechanism only) → không address ceiling root cause đa nhân
+  - Address 4.5/6 gap simultaneously: #2 (cycle break occlusion), #3 (D_cycle dynamic),
+    #4 (loss path gradient flow), #5 (no DAV2), #6 (pairwise aggregation)
+  - Literature double precedent: D_cycle (ICO-GS +0.7), loss reweighter (CoMapGS +0.65)
+- **Compute analysis:**
+  - Training: ~+10% slowdown (D_cycle compute mỗi 100 iters)
+  - GPU memory: +0 (no foundation model, no feature cache)
+  - Render FPS inference: baseline (CRS chỉ dùng training)
+  - Model storage: baseline (CRS không saved trong PLY)
+- **Commitment criteria (BINARY):**
+  - Δ_T2M ≥ +0.20 → 🟢🟢 BREAKTHROUGH, defendable contribution
+  - Δ_T2M +0.10 ~ +0.20 → 🟢 Solid, ship hoặc upgrade Tier 1 (DINOv2/MASt3R)
+  - Δ_T2M 0 ~ +0.10 → 🟡 Marginal, pivot recipe paper
+  - Δ_T2M ≤ 0 → 🔴 Dead, pivot decisively. KHÔNG đề xuất variant #8.
+- **Ablation matrix (24 NEW runs, ~1.5-2h trên 2 GPU):**
+  - DCYCLE: --use_d_cycle --crs_prune (signal upgrade alone)
+  - LWEIGHT: --use_loss_reweight (mechanism upgrade alone, D+R cũ)
+  - TIER2MIN: cả 2 flags (full)
+  - B0 reuse từ logs cũ
+- **Thay thế đã cân nhắc:**
+  - Tier 1 Full FAMR (DINOv2 + MASt3R): cost 4-5 ngày, 3-4 GB GPU memory bump,
+    risk OOM trên consumer GPU
+  - Tier 3 Vanilla A (mechanism only, D+R cũ): probability thấp hơn (~30% vs ~40%),
+    không address signal ceiling
+  - Pivot ngay không Tier 2-min: bỏ lỡ chance signal upgrade
+- **Kết quả:** Implemented + executed → xem [2026-05-05] Phase 7 result entries.
+  Chi tiết: docs/11 Section 6 (Tier 2-min plan).
+
+---
+
+### [2026-05-05] Phase 7 Tier 2-min EXECUTED — Phase 5 weak backbone result
+- **Quyết định:** Run Tier 2-min ablation (4 configs) trên Phase 5 weak backbone (B0=20.234)
+- **Implementation:** `utils/crs/d_cycle.py` (cycle-depth helpers), `utils/crs/crs_module.py`
+  thêm `render_crs_map` qua color-swap trick (override_color path), `train.py` loss reweighter
+  block. KHÔNG sửa CUDA.
+- **Result (8 LLFF scenes):**
+  | Config | AVG | Δ vs B0 | Per-scene |
+  |--------|-----|---------|-----------|
+  | B0 | 20.234 | 0 | reference |
+  | DCYCLE alone | 20.359 | **+0.125** ⭐ | FIRST CRS variant với clean positive across 9 attempts |
+  | LWEIGHT alone | 20.228 | −0.007 | mechanism neutral |
+  | TIER2MIN combined | 20.269 | +0.035 | synergy −0.083 (redundant) |
+- **Compute:** +0.1-0.2% slowdown across configs, GPU memory unchanged.
+- **Key findings:**
+  1. **D_cycle là first signal upgrade clean positive** — beats 8 prior CRS variants ceiling +0.07
+  2. **Loss reweighter mechanism alone neutral** trên Phase 5 weak backbone
+  3. **Combined TIER2MIN destructive** — synergy −0.083, LW interferes với D_cycle effect
+  4. **Per-scene heterogeneity high**: D_cycle wins floater-prone (trex +0.345, horns +0.327),
+     fails detail/photometric (room −0.067 với LW −0.699 catastrophic)
+- **Verdict:** 🔴 STOP per +0.15 commitment threshold (DCYCLE +0.125 < +0.15) trên backbone này.
+  Nhưng **D_cycle is real signal** → cần verify scale lên strong backbone.
+- **Pending:** Phase 7 Stage 1 trên D1-O999 strong backbone.
+
+---
+
+### [2026-05-06] Phase 7 Stage 1 — D_cycle on D1-O999 strong backbone
+- **Quyết định:** Test Tier 2-min components trên D1-O999 strong backbone (=21.13 với CRS pruning)
+  với 3-config attribution control:
+  - TIER1_DAV2_GATE: D_DAV2 + R_old + CRS prune (reference)
+  - TIER1_DC_GATE: D_cycle + R_old + CRS prune (signal isolation)
+  - TIER1_DC_LW: D_cycle + R_old + Loss Reweighter (signal + mechanism, gate replaced)
+- **Lý do attribution control:** Phase 6 ceiling failure could be EITHER signal OR mechanism
+  bottleneck. Cần 3-config để tách (Issue 2 raised by execution session review).
+- **Result (8 LLFF scenes):**
+  | Config | AVG | Δ vs reference | Note |
+  |--------|-----|----------------|------|
+  | TIER1_DAV2_GATE | 21.178 | 0 | matches Phase 6 D1-O999 ~21.13 + run variance |
+  | TIER1_DC_GATE | 21.163 | **−0.015** | D_cycle FLIPS NEGATIVE on strong backbone |
+  | TIER1_DC_LW | 21.228 | +0.050 | Combined slightly positive |
+  | vs No-CRS (21.21) | — | +0.018 | within noise |
+- **Critical finding:** **D_cycle effect flips sign across backbones**:
+  - Phase 5 weak: +0.125 (positive)
+  - D1-O999 strong: −0.015 (negative)
+  - → D_cycle fills regularization gap on weak backbone, REDUNDANT với DropAnSH+DECAY trên strong backbone
+- **Per-scene pattern:** D_cycle helps floater-prone (horns +0.106, room +0.139), hurts detail
+  (fern −0.070, leaves −0.138, fortress mixed)
+- **Attribution diagnostic:**
+  - Δ_DC_GATE (signal, gate kept): −0.015 (signal alone dead trên strong backbone)
+  - Δ_LW_DC (mechanism, D_cycle kept): +0.065 (LW helps but small)
+  - Δ_combined: +0.050 (within noise vs no-CRS)
+- **Compute:** DC_GATE +2.7%, DC_LW +4.8% slowdown — reasonable.
+- **Verdict:** 🟡 Marginal per analyzer. **Honest interpretation: H_both_dead** —
+  signal + mechanism đều saturated trên strong backbone với D+R formula intact.
+- **Hypothesis cho Phase 8:** R contamination 36.5% may be diluting D_cycle. Fix R first.
+
+---
+
+### [2026-05-07] Phase 8 — Formula Redesign + SH Path 🎉 BREAKTHROUGH
+- **Quyết định:** 3 sub-phases simultaneously với 5-config ablation trên D1-O999 backbone:
+  - **8a: R_visible** (visibility-aware reprojection consistency, fix 36.5% occlusion contamination)
+  - **8b: S_stability** (SH coefficient EMA variance signal — multi-dim CRS adding color path)
+  - **8c: CRS-modulated SH freeze** (per-Gaussian targeted freeze replace global Track A1)
+- **Implementation:**
+  - `utils/crs/sh_stability.py` (NEW): EMA variance tracking
+  - `utils/crs/sh_freeze.py` (NEW): per-Gaussian gradient zeroing on _features_rest
+  - `utils/crs/crs_module.py`: R_visible logic + multi-component CRS formula
+  - `train.py`: hooks for S update + CRS-mod SH freeze (after backward, before optimizer.step)
+- **Formula upgrade:**
+  ```
+  CRS_new = sigmoid(scale × (w_d·D_cycle + w_r·R_visible + w_s·S_stability − threshold))
+  ```
+  3 components address 3 known gaps simultaneously.
+- **Result (8 LLFF scenes, 5 configs × 8 = 40 runs):**
+  | Config | AVG | Component changed | Δ |
+  |--------|-----|-------------------|---|
+  | OLD | 21.178 | reference | 0 |
+  | FIX_R_DAV2 | 21.068 | + R_visible (fix R) | **−0.111** ❌ R alone HURTS |
+  | FIX_R_DC | 21.169 | + D_cycle (with clean R) | +0.102 ✅ D works in clean R |
+  | FIX_RS | 21.146 | + S_stability | −0.023 ⚪ S adds nothing |
+  | **FULL** | **21.335** | + CRS-mod SH freeze | **+0.189** ✅ BIGGEST winner |
+  | **Δ_FULL vs OLD** | — | combined Phase 8 | **+0.156 dB** |
+  | **Δ_FULL vs No-CRS (21.21)** | — | first beat no-CRS | **+0.125 dB** ⭐ |
+- **Compute:** FULL +3.7% slowdown, GPU memory unchanged, render FPS unchanged.
+- **Per-scene pattern (FULL vs OLD):** 5/8 wins
+  - Big wins: room +0.544, horns +0.361, fortress +0.344
+  - Small wins: flower +0.103, leaves +0.019
+  - Marginal loss: fern −0.075, orchids −0.040, trex −0.005
+  - Pattern: scenes có nhiều SH-driven color drift benefit nhất từ targeted freeze
+- **🎉 KEY MILESTONE:** **First CRS variant beat no-CRS recipe by meaningful margin** (+0.125 dB).
+  After 9 prior CRS attempts ceiling at +0.07, Phase 8 finally exceeds.
+- **Attribution insights:**
+  1. **Δ_R = −0.111 dB SURPRISE:** R_visible alone hurts! Visibility filter aggressive →
+     too many Gaussians get neutral fallback → data loss > noise reduction
+  2. **Δ_D = +0.102 dB VINDICATED:** D_cycle works when R is clean (Stage 1 R noise was diluting)
+  3. **Δ_S = −0.023 dB DISAPPOINTING:** SH stability EMA variance không add useful info
+  4. **Δ_M = +0.189 dB WINNER:** CRS-modulated SH freeze (per-Gaussian targeted) > global freeze
+- **Verdict:** 🟡 SOLID — close DOC-GS gap (21.38 vs 21.335 = -0.045, within noise), still −0.865
+  to ICO-GS SOTA. **First defendable CRS contribution** for paper.
+- **Pending decisions:**
+  1. Drop R or simplify formula? (Phase 9 Test 1)
+  2. SH freeze mechanism universal? (Phase 9 Test 2 cross-backbone A1+B1β)
+  3. Stack with big lever (dense init / feature MPC) for SOTA? (future Phase 10)
+- **Chi tiết:** docs/11 Section 7 (Phase 8 result + attribution).
+
+---
+
+### [2026-05-08] Phase 9 EXECUTED — Simplification + Cross-backbone (3 hypotheses ALL non-trivial)
+- **Quyết định:** 5-config ablation test 3 hypotheses từ Phase 8 attribution:
+  - **H1 (drop R):** R_visible component có thể đang dilute D signal — test D-only formula
+  - **H2 (drop S):** S_stability adds nothing (Δ_S = −0.023) — simplify recipe
+  - **H3 (cross-backbone):** CRS-mod SH freeze universal mechanism? Test on A1+B1β backbone
+- **Test 1 — D1-O999 simplification (3 NEW configs, FULL reuse):**
+  | Tag | Components | Tests |
+  |-----|-----------|-------|
+  | FULL (reuse Phase 8) | D + R + S + CRS-mod-freeze | reference 21.335 |
+  | FULL_NoS | D + R + CRS-mod-freeze | H2: drop S |
+  | D_ONLY_FREEZE | D + CRS-mod-freeze (no R, no S) | H1: drop R |
+  | D_ONLY_GATE | D + CRS prune (no R, no S, no SH freeze) | isolate D alone |
+- **Test 2 — A1+B1β cross-backbone (1 NEW config):**
+  | Tag | Backbone | Components | Tests |
+  |-----|----------|-----------|-------|
+  | A1B1_BASELINE | A1+B1β + global SH freeze | reference (~20.96) |
+  | A1B1_BEST | A1+B1β (NO global freeze) + R_visible + D_cycle + CRS-mod freeze | H3: replace global with selective |
+- **Implementation needs:**
+  - `--disable_r_signal` flag: skip R compute, w_d=1 in formula (D-only support)
+  - `--disable_global_sh_freeze` flag: ignore Track A1 freeze when CRS-mod active (cho A1+B1β backbone test)
+  - 2 small flag additions to arguments + small logic changes in update_crs / train.py
+- **Cost:** 32 NEW runs (4 NEW × 8 scenes + A1B1_BASELINE + A1B1_BEST × 8 scenes) ~100 phút 2 GPU
+- **Verdict tree:**
+  - H1 confirmed (drop R win ≥ +0.10) → simplify to D-only recipe
+  - H2 confirmed (drop S neutral ±0.05) → drop S, cleaner formula
+  - H3 confirmed (A1B1_BEST > baseline ≥ +0.15) → SH freeze universal mechanism
+  - Best across all configs > 21.45 → close BinocularGS, push toward SOTA
+- **Result Test 1 (D1-O999 simplification, 8 scenes):**
+  | Config | AVG | Δ vs FULL | Note |
+  |--------|-----|-----------|------|
+  | **FULL (Phase 8 reference)** | **21.335** | 0 | **BEST** — recipe locked |
+  | D_ONLY_GATE (D + gate prune, no SH freeze) | 21.242 | −0.093 | drop SH freeze hurts |
+  | FULL_NoS (drop S) | 21.200 | −0.135 | **drop S HURTS more than alone-effect predicted** |
+  | D_ONLY_FREEZE (drop R + S) | 21.159 | −0.176 | drop both worst |
+- **Result Test 2 (A1+B1β cross-backbone, 8 scenes):**
+  | Config | AVG | Δ |
+  |--------|-----|---|
+  | A1B1_BASELINE | 20.932 | reference (~Track A+B 20.96 ✓) |
+  | A1B1_BEST | 20.983 | +0.051 |
+- **Verdict:**
+  - ❌ **H1 REJECTED**: R contributes (Δ_NoR = −0.041 in leave-one-out)
+  - ❌ **H2 REJECTED**: S contributes via synergy (Δ_NoS = −0.135 — much worse than Phase 8 alone-effect Δ_S = −0.023)
+  - 🟡 **H3 PARTIAL**: SH freeze mechanism works on A1+B1β but smaller gain (+0.051 vs +0.189 on D1-O999)
+- **🔑 KEY INSIGHT — Sequential vs Leave-one-out attribution differs:**
+  - Phase 8 sequential: Δ_S = −0.023 (S adds nothing **alone**)
+  - Phase 9 leave-one-out: Δ_NoS = −0.135 (S **synergize** với mechanism)
+  - → All 4 components (D, R, S, mechanism) **have non-trivial synergy** in FULL recipe
+  - → Combination > sum of parts. **Don't simplify.**
+- **Compute insight:**
+  | Config | AVG train (s) | Backbone |
+  |--------|---------------|----------|
+  | A1B1_BEST | 192.0 (FASTER!) | A1+B1β |
+  | A1B1_BASELINE | 205.2 | A1+B1β |
+  | D1-O999 FULL | 360.7 | D1-O999 (DropAnSH overhead) |
+  → A1+B1β backbone ~2× faster nhưng PSNR thấp hơn 0.35 dB. D1-O999 đáng overhead.
+- **Final conclusion**: Phase 8 FULL recipe (D_cycle + R_visible + S_stability + CRS-mod SH freeze trên D1-O999 backbone) là **optimal**. **CRS axis exhausted** ở 21.335 dB.
+- **SH freeze backbone-aware**: bigger gain trên D1-O999 (DropAnSH) than A1+B1β (sh=1+global freeze). Mechanism effective khi backbone không có SH-control sẵn.
+
+---
+
+### [2026-05-09] CRS axis EXHAUSTED — Phase 10 needed for SOTA gap
+- **Quyết định**: Lock Phase 8 FULL recipe. Pivot Phase 10 với orthogonal axis.
+- **State sau Phase 9:**
+  - Best CRS variant: **21.335 dB** (Phase 8 FULL = D_cycle + R_visible + S_stability + CRS-mod freeze on D1-O999)
+  - vs No-CRS (21.21): **+0.125 dB** (first CRS contribution defendable)
+  - vs DOC-GS (21.38): **−0.045** (within noise, essentially tied)
+  - vs BinocularGS (21.44): **−0.105**
+  - vs ICO-GS SOTA (22.20): **−0.865** (still big gap)
+- **CRS axis saturation evidence:**
+  - 9 architectural variants tested (Phase 6-9)
+  - Phase 8 FULL achieves +0.125 — meaningful but capped
+  - Phase 9 confirms simplification hurts → recipe optimal
+  - Cross-backbone test: SH freeze partial universal, smaller gains elsewhere
+- **For SOTA gap closure** cần lever ngoài CRS:
+  - **Phase 10A — Dense init** (DUSt3R/MASt3R): +1.0-3.0 dB expected, 1-2 ngày impl
+  - **Phase 10B — Feature MPC** (DINO consistency): +0.3-0.7 dB, 2-3 ngày impl
+  - **Phase 10AB — Stack**: combined +1.5-3.5 dB, 3-4 ngày
+- **Trade-off awareness:**
+  - Dense init = orthogonal lever, dilutes "CRS contribution" narrative
+  - Feature MPC = ICO-GS path, novelty boundary unclear
+  - Pure CRS path: Phase 8 +0.125 đã là maximum, không thể push thêm trong scope
+- **Pending decision**: User chọn Phase 10 path (dense init / feature MPC / stack / khác).
+
+---
+
+### [2026-05-07] Phase 10A — DUSt3R Dense Init FAIL hard, axis DEAD
+- **Quyết định**: Bỏ hẳn hướng foundation-model dense init (DUSt3R/MASt3R) cho initial PC. Phase 10A code giữ default OFF, sẽ cleanup sau.
+- **Implementation:**
+  - DUSt3R clone local Windows + install env riêng trên server
+  - Pre-compute dense PC 8 scenes via `scripts/precompute_dust3r.py` (~25 min cache build)
+  - 16-run ablation (AUGMENT/REPLACE × 8 scenes) trên Phase 8 FULL backbone
+  - 6-run diagnostic (FILTER/DENSIFY/BOTH × orchids/leaves) cho hyperparameter tune
+- **Phase 10A main results:**
+  | Config | AVG PSNR | Δ vs P8_FULL | Init Gauss | Final Gauss | Time |
+  |--------|----------|--------------|------------|-------------|------|
+  | P8_FULL (ref) | 21.335 | 0 | ~3K | 87K | 361s |
+  | AUGMENT | 20.436 | **−0.898** | 63K | 125K | 498s (+38%) |
+  | REPLACE | 17.805 | **−3.529** | 49K | 134K | 548s (+52%) |
+- **Diagnostic results (Option B — 2 scenes × 3 configs):**
+  - Best: orchids FILTER (conf 3.0, max 10K, dedupe 0.05) Δ=−0.074 (within noise of 0, NOT ≥ +0.05)
+  - DENSIFY scaling consistently hurts (over-aggressive dropansh_pa 0.05)
+  - leaves catastrophic on all 3 configs (textureless foliage, DUSt3R fails)
+  - **Ceiling ≈ −0.07 dB even with optimal filter** → systematic failure, not tuning
+- **Verdict:** Phase 10A axis DEAD.
+  - ❌ H1 (filter alone): closest to noise floor but never ≥ +0.05 → REJECTED
+  - ❌ H2 (densify scaling): hurts both scenes → REJECTED
+  - ❌ H3 (combined): cancellation effect → REJECTED
+- **Root cause hypothesis:**
+  - DUSt3R points alignment với COLMAP frame có residual error không khắc phục được bằng hyperparameter
+  - Phase 8 recipe calibrated cho ~3K sparse init points → 50K dense init phá vỡ densify/prune dynamics
+  - DUSt3R noise (especially textureless/foliage scenes) inflates Gaussian count nhưng không cải thiện accuracy
+- **Decision:** PIVOT khỏi initial-PC axis. Foundation-model dense init nói chung BỎ HẲN (DUSt3R, MASt3R đều cùng class).
+- **Cleanup:** xóa `output/p10a/`, DUSt3R env, checkpoint, source clone, cache. Code Phase 10A giữ tạm với default OFF cho paper "we tried this" reference.
+
+---
+
+### [2026-05-08] Phase 11 — Loss-axis Exploration (post-Phase-10A pivot)
+- **Quyết định**: Pivot sang loss-axis với external supervision. Sequential evaluation strategy (1 step at a time, abort early if win).
+- **Lý do:**
+  - Phase 10A confirmed initial-PC axis dead (DUSt3R, MASt3R loại)
+  - CRS axis exhausted ở 21.335 (Phase 9)
+  - Loss-axis với external signal là direction còn lại trước khi accept ceiling
+- **4 candidates xếp theo cost-effectiveness:**
+  | # | Pick | Cost | Probability ≥+0.20 | Direct precedent |
+  |---|------|------|---------------------|------------------|
+  | Step 1 | CRS × Covisibility reweight (depth-based, KHÔNG dùng DUSt3R) | 0.5 ngày | 30-35% | CoMapGS +0.65 trên CoR-GS |
+  | Step 2 | Same-view perceptual loss (DINOv2 ViT-S) | 0.5 ngày | 15-25% | LPIPS pattern |
+  | Step 3 | R_feature replace R_visible (CRS signal upgrade) | 0.5-1 ngày | 20-30% | Novel |
+  | Step 4 | True cross-view MPC (forward warp features) | 1-2 ngày | 40-50% | ICO-GS +0.4-0.7 |
+- **Sequential strategy (KHÔNG stack-3 như đề xuất ban đầu):**
+  - Lý do reject stack: Phase 7 precedent — stack-without-diagnostic gây partial cancel −0.083
+  - Sequential cho phép abort sớm nếu Step X win → save partial cost
+  - Best case 1 ngày (Step 1 win), worst case 4 ngày (all fail)
+- **Step 1 specifics — Option C (depth-based, KHÔNG cần DUSt3R cache):**
+  - Forward warp aligned DAV2 depth từ cam A → cam B → check in-bounds + depth consistency
+  - Cov_A[p] = số views B covisible với pixel p của A
+  - Reweight L_phot: w(p) = γ + (1−γ) · min(cov_norm, CRS_pix), γ=0.3
+  - Test diagnostic 1 scene (orchids), Δ ≥ +0.20 → confirm 2 scenes → scale 8
+- **Pivot plan ready (nếu Step 1-3 fail):**
+  - Regularization losses (smoothness/sparsity) — 0.5-1 ngày, ~25%
+  - Depth prior upgrade (DAV2 fine-tune) — 1-2 ngày, ~25%
+  - Render-side tricks (anti-aliasing) — 0.5 ngày, ~15%
+  - Accept ceiling, write up Phase 8 FULL ở 21.335 dB
+- **Workflow rules established:**
+  - Planning session draft prompt only, KHÔNG Write code production trực tiếp
+  - Mọi ablation parallelize 2 GPUs với `&` + `wait`
+  - Diagnostic 1 scene first → confirm 2-3 scenes → scale 8
 
 ---

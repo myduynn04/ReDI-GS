@@ -151,6 +151,11 @@ def compute_depth_consistency(
 def compute_reprojection_consistency(
     xyz: torch.Tensor,
     cameras: list,
+    # ── [CRSGaussian Phase 8a] R_visible — visibility-aware aggregation ──
+    use_r_visible: bool = False,
+    rendered_depths: dict = None,
+    occlusion_tolerance: float = 1.05,
+    min_visible_views: int = 2,
 ) -> torch.Tensor:
     """Tính reprojection consistency R_i cho mỗi Gaussian.
 
@@ -164,16 +169,34 @@ def compute_reprojection_consistency(
     cũng có SH color ổn định → không phân biệt được floater.
     GT color phản ánh scene thật tại pixel projected.
 
+    [CRSGaussian Phase 8a] use_r_visible mode:
+        Tier A4 đo R contamination 36.5% bởi occluder. Khi Gaussian project
+        xuống pixel mà rendered_depth tại đó (frontmost surface) gần camera
+        hơn nhiều so với gauss_z → bị che → GT color sample sai (color của
+        occluder, không phải Gaussian này). use_r_visible filter ra trường
+        hợp đó: chỉ accept view k nếu gauss_z ≤ rendered_z × tolerance.
+
     Args:
         xyz: (N, 3) Gaussian positions trên GPU.
         cameras: list of Camera objects. Cần có .original_image (3,H,W)
                  float [0,1] trên cuda. PseudoCamera không có → bị skip.
+        use_r_visible: [Phase 8a] Bật visibility-aware aggregation.
+            Khi True, cần `rendered_depths` (dict cam.uid → depth map [1,H,W]).
+            Default False → behavior cũ (sample GT bất chấp occlusion).
+        rendered_depths: {cam.uid: tensor [1,H,W] hoặc [H,W]} — rendered depth
+            maps từ current Gaussian field. Dùng khi use_r_visible=True.
+        occlusion_tolerance: tolerance cho frontmost check.
+            gauss_z ≤ rendered_z × tolerance → "frontmost enough", PASS.
+            gauss_z > rendered_z × tolerance → occluded, SKIP view này.
+            Default 1.05 (5% slack — render depth là alpha-weighted, có noise).
+        min_visible_views: tối thiểu N views Gaussian phải visible để compute R.
+            < min → R = 0.5 (neutral, không đủ data). Default 2.
 
     Returns:
         R: (N, 1) tensor float32 trên GPU, range [0, 1].
            R ≈ 1.0: color consistent cross-view (surface).
            R ≈ 0.0: color inconsistent (floater).
-           R = 0.5: visible < 2 cameras, không đủ pair (neutral).
+           R = 0.5: visible < min_visible_views cameras (neutral).
     """
     N = xyz.shape[0]
     device = xyz.device
@@ -182,8 +205,8 @@ def compute_reprojection_consistency(
     valid_cams = [c for c in cameras if hasattr(c, 'original_image')]
     K = len(valid_cams)
 
-    if K < 2:
-        # Không đủ camera để tạo pair → tất cả neutral
+    if K < min_visible_views:
+        # Không đủ camera để có ≥ min_visible_views → tất cả neutral
         return torch.full((N, 1), 0.5, device=device)
 
     # ── Collect GT colors tại projected pixel cho mỗi camera ──
@@ -203,7 +226,7 @@ def compute_reprojection_consistency(
         # world_view_transform lưu column-major → .T về row-major W2C.
         W2C = cam.world_view_transform.T  # (4, 4) GPU
         pts_cam = (W2C @ xyz_hom.T).T     # (N, 4)
-        depth = pts_cam[:, 2]              # (N,)
+        depth = pts_cam[:, 2]              # (N,) — gauss_z trong camera space
 
         fx = fov2focal(cam.FoVx, W)
         fy = fov2focal(cam.FoVy, H)
@@ -222,6 +245,31 @@ def compute_reprojection_consistency(
         if valid.sum() == 0:
             continue
 
+        # ── [CRSGaussian Phase 8a] Frontmost (occlusion) check ──
+        # Sample rendered_depth tại pixel projected của Gaussian.
+        # Nếu rendered_z << gauss_z → có vật khác gần camera hơn che → loại view này.
+        if use_r_visible and rendered_depths is not None and cam.uid in rendered_depths:
+            depth_map = rendered_depths[cam.uid]
+            if depth_map.dim() == 3:
+                depth_map = depth_map.squeeze(0)  # (H, W)
+            # Sample chỉ tại pixel hợp lệ (đã pass valid mask).
+            valid_idx = torch.where(valid)[0]
+            px_v = pixel_x[valid_idx].long().clamp(0, W - 1)
+            py_v = pixel_y[valid_idx].long().clamp(0, H - 1)
+            rendered_z = depth_map[py_v, px_v]  # (M,)
+            gauss_z = depth[valid_idx]           # (M,)
+            # Frontmost: render_z=0 (chưa cover) → coi as frontmost (no occluder).
+            #            gauss_z ≤ render_z × tol → frontmost enough.
+            #            gauss_z > render_z × tol → occluded → SKIP.
+            frontmost = (
+                (rendered_z < 1e-6)
+                | (gauss_z <= rendered_z * occlusion_tolerance)
+            )
+            # Update valid mask: bỏ các Gaussian không frontmost ở view này.
+            valid[valid_idx[~frontmost]] = False
+            if valid.sum() == 0:
+                continue
+
         px = pixel_x[valid].long().clamp(0, W - 1)
         py = pixel_y[valid].long().clamp(0, H - 1)
 
@@ -237,6 +285,7 @@ def compute_reprojection_consistency(
 
     R_sum = torch.zeros(N, 1, device=device)
     pair_count = torch.zeros(N, 1, device=device)
+    visible_count = valid_mask.sum(dim=1)  # (N,) — số camera visible per Gaussian
 
     for k1 in range(K):
         for k2 in range(k1 + 1, K):
@@ -255,10 +304,11 @@ def compute_reprojection_consistency(
             pair_count[both_valid, 0] += 1.0
 
     # ── R_i = 1 - mean_pairwise_diff ──
-    has_pairs = (pair_count > 0).squeeze(1)  # (N,)
+    # [Phase 8a] Enforce min_visible_views: Gaussian phải visible từ ≥ min views.
+    enough_views = visible_count >= min_visible_views  # (N,) bool
+    has_pairs = (pair_count > 0).squeeze(1) & enough_views
 
-    # Gaussian visible < 2 cameras → không có pair → neutral 0.5.
-    # Không đủ thông tin cross-view để đánh giá consistency.
+    # Gaussian không đủ visible views → neutral 0.5 (insufficient data).
     R = torch.full((N, 1), 0.5, device=device)
     R[has_pairs] = 1.0 - R_sum[has_pairs] / pair_count[has_pairs]
     R = R.clamp(0.0, 1.0)
@@ -275,6 +325,135 @@ def compute_reprojection_consistency(
 # ============================================================
 
 
+# ============================================================
+# [CRSGaussian Hướng D MVP] Task: compute_render_contribution
+# File: utils/crs/crs_module.py
+# Mục đích: RC_i = render contribution per-Gaussian (proxy version).
+#   RC = opacity × max(screen-space radii cross views) × view coverage
+# Lưu ý proxy: KHÔNG capture true α·T accumulation (cần CUDA fork).
+# Phase A MVP dùng proxy này để test core hypothesis (L2 EMA + L3 α-couple).
+# Phase B (nếu MVP show signal): thay bằng true α·T từ rasterizer.
+# Được gọi từ: train.py qua compute_crs_rnrc() khi use_rnrc=True
+# ============================================================
+
+
+# ============================================================
+# [CRSGaussian Hướng D MVP] Task: compute_crs_rnrc
+# File: utils/crs/crs_module.py
+# Mục đích: Layer 2 (continuous EMA) + warmup logic cho RNRC.
+#   spawn_iter: tensor [N] — iter mỗi Gaussian được tạo (init/clone/split).
+#   - Iter < rnrc_warmup → CRS = 1 (bypass, scene chưa converge)
+#   - Per-Gaussian age < rnrc_per_gauss_warmup → CRS floor = rnrc_floor
+# Update gaussians._rc_smooth (running EMA của RC) như instance attr.
+# Được gọi từ: train.py mỗi iter khi use_rnrc=True
+# ============================================================
+
+
+@torch.no_grad()
+def compute_crs_rnrc(gaussians, rc_thisstep, opt, iter, spawn_iter=None):
+    """Compute CRS từ RC với continuous EMA + warmup.
+
+    Args:
+        gaussians: GaussianModel (cần ._rc_smooth attr — auto-init nếu chưa có).
+        rc_thisstep: (N,) tensor RC tính từ render hiện tại.
+        opt: OptimizationParams — cần rnrc_beta, rnrc_warmup, rnrc_floor,
+             rnrc_per_gauss_warmup, rnrc_norm_mode.
+        iter: int — iteration hiện tại.
+        spawn_iter: (N,) tensor int — iter mỗi Gaussian được tạo. None → no per-gauss warmup.
+
+    Returns:
+        crs: (N,) tensor float32 GPU, range (0, 1).
+    """
+    device = rc_thisstep.device
+    N = rc_thisstep.shape[0]
+
+    # ── Layer 2: Continuous EMA ──
+    # Auto-init / re-init khi N thay đổi (densify/prune giữa updates).
+    if (not hasattr(gaussians, "_rc_smooth")) or gaussians._rc_smooth.shape[0] != N:
+        gaussians._rc_smooth = rc_thisstep.clone()
+    else:
+        gaussians._rc_smooth = (opt.rnrc_beta * gaussians._rc_smooth
+                                + (1.0 - opt.rnrc_beta) * rc_thisstep)
+
+    rc_smooth = gaussians._rc_smooth
+    rc_pos = rc_smooth[rc_smooth > 0]
+    if rc_pos.numel() == 0:
+        return torch.full((N,), 0.5, device=device)
+
+    # Normalize
+    if opt.rnrc_norm_mode == "p75":
+        denom = torch.quantile(rc_pos, 0.75) + 1e-6
+    else:  # "median"
+        denom = rc_pos.median() + 1e-6
+    rc_norm = (rc_smooth / denom).clamp(0, 2) / 2.0   # ∈ [0, 1]
+
+    # Sigmoid với scale=5 (giống CRS gốc) → range [0.08, 0.92]
+    crs = torch.sigmoid(5.0 * (rc_norm - 0.5))
+
+    # ── Global warmup: first rnrc_warmup iters bypass ──
+    if iter < opt.rnrc_warmup:
+        return torch.ones_like(crs)
+
+    # ── Per-Gaussian warmup: young Gaussians có CRS floor ──
+    if spawn_iter is not None and spawn_iter.shape[0] == N:
+        age = iter - spawn_iter.float()
+        young_mask = age < opt.rnrc_per_gauss_warmup
+        floor_t = torch.full_like(crs, opt.rnrc_floor)
+        crs = torch.where(young_mask, torch.maximum(crs, floor_t), crs)
+
+    return crs
+
+
+@torch.no_grad()
+def compute_render_contribution(gaussians, cameras, render_func, render_args):
+    """RC_i = opacity × normalized(max_radii) × (n_visible / n_views).
+
+    Args:
+        gaussians: GaussianModel (cần .get_xyz, .get_opacity).
+        cameras: list training Camera objects (có .original_image attribute).
+        render_func: hàm render đã import (gaussian_renderer.render).
+        render_args: tuple positional args ngoài (cam, gaussians) — thường (pipe, background).
+
+    Returns:
+        RC: (N,) tensor float32 GPU. Range [0, +∞).
+            Invisible-everywhere (radii=0 ở mọi view) → 0.
+            Surface visible nhiều view, opacity cao → giá trị lớn.
+    """
+    N = gaussians.get_xyz.shape[0]
+    device = gaussians.get_xyz.device
+    max_radii = torch.zeros(N, device=device)
+    visible_count = torch.zeros(N, device=device)
+
+    # Lọc training cams (skip pseudo cams)
+    train_cams = [c for c in cameras if hasattr(c, 'original_image')]
+    n_views = max(len(train_cams), 1)
+
+    for cam in train_cams:
+        pkg = render_func(cam, gaussians, *render_args)
+        # radii: (N,) int32 từ rasterizer, 0 nếu không visible
+        radii = pkg["radii"].float()
+        # visibility_filter: (N,) bool — Gaussian passed culling
+        vis = pkg.get("visibility_filter")
+        if vis is None:
+            vis = radii > 0
+        # Pad nếu shape mismatch (xảy ra khi N tăng giữa renders, hiếm)
+        if radii.shape[0] < N:
+            pad = N - radii.shape[0]
+            radii = torch.cat([radii, torch.zeros(pad, device=device)])
+            vis = torch.cat([vis, torch.zeros(pad, dtype=torch.bool, device=device)])
+        elif radii.shape[0] > N:
+            radii = radii[:N]
+            vis = vis[:N]
+        # Take max screen radii cross views (Gaussian "important" view nhất)
+        max_radii = torch.maximum(max_radii, radii)
+        visible_count += vis.float()
+
+    opacity = gaussians.get_opacity.squeeze()  # (N,)
+    coverage = visible_count / n_views          # (N,) [0, 1]
+    RC = opacity * max_radii * coverage         # (N,) [0, +∞)
+    return RC
+
+
 @torch.no_grad()
 def update_crs(
     gaussians,
@@ -285,11 +464,35 @@ def update_crs(
     w2: float = 0.5,
     scale: float = 5.0,
     ema: float = 0.9,
+    # ── [CRSGaussian Tier 2-min] D_cycle support ──
+    use_d_cycle: bool = False,
+    iter: int = 0,
+    d_cycle_warmup: int = 1000,
+    d_cycle_sigma: float = 5.0,
+    d_cycle_update_freq: int = 100,
+    render_func=None,
+    pipe=None,
+    bg=None,
+    # ── [CRSGaussian Phase 8a] R_visible support ──
+    use_r_visible: bool = False,
+    r_visible_occlusion_tolerance: float = 1.05,
+    r_visible_min_views: int = 2,
+    # ── [CRSGaussian Phase 8b] S_stability support ──
+    use_sh_reliability: bool = False,
+    sh_stability_warmup: int = 1000,
+    sh_stability_ema_beta: float = 0.95,
+    crs_w_s: float = 0.33,
+    # ── [CRSGaussian Phase 9] D-only formula support ──
+    disable_r_signal: bool = False,
+    # ── [CRSGaussian Phase 11 Step 3] R_feature replace R_visible ──
+    use_r_feature: bool = False,
+    dino_cache=None,
 ) -> None:
     """Tính D_i, R_i rồi update gaussians._crs_score in-place bằng EMA.
 
     Công thức:
-        crs_logit = scale * (w1 * D_i + w2 * R_i - 0.5)
+        score      = w1 * D_i + w2 * R_i
+        crs_logit  = scale * (score - 0.5)
         _crs_score = ema * old_logit + (1 - ema) * crs_logit
 
     _crs_score lưu ở logit space. gaussians.get_crs property đã có
@@ -314,22 +517,203 @@ def update_crs(
         ema: EMA decay. Default 0.9.
             Cao hơn → smooth hơn, phản ứng chậm hơn.
             Ablate: {0.8, 0.9, 0.95}
+        use_d_cycle: [Tier 2-min] Replace D_DAV2 với D_cycle (cycle-depth
+            consistency, no DAV2 dependency). Default False (backward compat).
+        iter: current training iteration. Cần cho d_cycle_warmup gating
+            + cache invalidation theo d_cycle_update_freq.
+        d_cycle_warmup: trước iter này dùng D_DAV2 (scene chưa converge,
+            rendered depth chưa stable). Default 1000.
+        d_cycle_sigma: cycle error normalization (pixels) cho exp(-err/σ).
+        d_cycle_update_freq: mỗi N iter mới recompute D_cycle (cache giữa).
+            Lý do: D_cycle render N_cams depth maps → cost cao, cache giảm
+            overhead xuống ~1/N của brute-force compute mỗi iter.
+        render_func, pipe, bg: cần khi use_d_cycle=True để render depth maps.
+            None khi flag OFF — không ảnh hưởng baseline.
     """
     xyz = gaussians.get_xyz  # (N, 3) GPU
 
-    # ── Tính 2 tín hiệu ──
-    D = compute_depth_consistency(xyz, cameras, aligned_depth_dict, depth_range)
-    R = compute_reprojection_consistency(xyz, cameras)
+    # ── [CRSGaussian Phase 9] R compute gating ──
+    # Khi disable_r_signal=True → skip R entirely (formula D-only hoặc D+S).
+    # Tiết kiệm cả compute (no R aggregation) lẫn render (nếu use_r_visible
+    # cũng skip auto vì depend on need_r_compute).
+    need_r_compute = not disable_r_signal
 
-    # ── Weighted average → scale → logit ──
-    # Trừ 0.5 để center quanh 0: D=R=0.5 (neutral) → logit=0 → sigmoid=0.5.
-    # Scale mở rộng range: floater (D≈0, R≈0.33) → logit≈-1.67 → CRS≈0.16
-    #                       surface (D≈1, R≈1.0)  → logit≈2.5  → CRS≈0.92
-    crs_logit = scale * (w1 * D + w2 * R - 0.5)  # (N, 1)
+    # ── [CRSGaussian Phase 8] Pre-render depth maps (shared D_cycle + R_visible) ──
+    # Cả 2 features đều cần rendered depth per cam → render 1 lần, share giữa
+    # compute_D_cycle và compute_reprojection_consistency để tránh double-render.
+    # Chỉ render khi ÍT NHẤT 1 trong 2 features active.
+    shared_depth_maps = None
+    need_depth_render = (
+        (use_d_cycle and iter >= d_cycle_warmup)
+        or (use_r_visible and need_r_compute)
+    ) and render_func is not None
+    if need_depth_render:
+        shared_depth_maps = {}
+        for cam in cameras:
+            if not hasattr(cam, 'original_image'):
+                continue
+            try:
+                pkg = render_func(cam, gaussians, pipe, bg, disable_dropout=True)
+            except TypeError:
+                pkg = render_func(cam, gaussians, pipe, bg)
+            shared_depth_maps[cam.uid] = pkg["depth"].detach()  # (1, H, W)
+
+    # ── [CRSGaussian Tier 2-min] D signal: D_DAV2 vs D_cycle ──
+    # Switch logic:
+    #   use_d_cycle=False (default) → D_DAV2 (behavior cũ, backward compat).
+    #   use_d_cycle=True  AND iter < d_cycle_warmup → D_DAV2 (scene chưa converge,
+    #                                                  D_cycle nhiễu).
+    #   use_d_cycle=True  AND iter ≥ d_cycle_warmup → D_cycle (cached mỗi
+    #                                                  d_cycle_update_freq iter).
+    if use_d_cycle and iter >= d_cycle_warmup and render_func is not None:
+        # Cache D_cycle qua attr gaussians._d_cycle_cache để giảm cost.
+        # Re-compute khi: (a) chưa có cache, (b) shape mismatch (densify/prune),
+        # (c) update_freq period (vd mỗi 100 iter trùng với CRS update interval).
+        N = xyz.shape[0]
+        need_recompute = (
+            not hasattr(gaussians, "_d_cycle_cache")
+            or gaussians._d_cycle_cache is None
+            or gaussians._d_cycle_cache.shape[0] != N
+            or (iter % d_cycle_update_freq == 0)
+        )
+        if need_recompute:
+            from utils.crs.d_cycle import compute_D_cycle
+            D = compute_D_cycle(
+                gaussians, cameras, render_func, pipe, bg, sigma=d_cycle_sigma,
+                depth_maps=shared_depth_maps,  # reuse pre-rendered
+            )
+            gaussians._d_cycle_cache = D.detach()
+        else:
+            D = gaussians._d_cycle_cache
+    else:
+        # Behavior cũ — D_DAV2 (depth consistency với DepthAnything V2 prior).
+        D = compute_depth_consistency(xyz, cameras, aligned_depth_dict, depth_range)
+
+    # ── [CRSGaussian Phase 8a + 9 + 11s3] R signal: feature / visible / disabled ──
+    # disable_r_signal=True (Phase 9) → R=None, formula bỏ qua R hoàn toàn.
+    # use_r_feature=True (Phase 11 Step 3) → DINO patch sim thay GT RGB sim.
+    # use_r_visible=True (Phase 8a) → R_visible với occlusion filter.
+    # Default → R_visible mode legacy (occlusion off).
+    if need_r_compute:
+        if use_r_feature and dino_cache is not None:
+            from utils.crs.r_feature import compute_R_feature
+            R = compute_R_feature(
+                gaussians, cameras, dino_cache,
+                min_visible_views=r_visible_min_views,
+            )
+        else:
+            R = compute_reprojection_consistency(
+                xyz, cameras,
+                use_r_visible=use_r_visible,
+                rendered_depths=shared_depth_maps,
+                occlusion_tolerance=r_visible_occlusion_tolerance,
+                min_visible_views=r_visible_min_views,
+            )
+    else:
+        R = None
+
+    # ── [CRSGaussian Phase 8b] S signal: SH stability (optional 3rd dim) ──
+    # Chỉ kích hoạt sau sh_stability_warmup (cần đủ EMA samples).
+    # update_sh_stability gọi từ train.py mỗi crs_update_interval; ở đây chỉ
+    # READ (compute_S từ EMA đã update) — không trigger thêm computation.
+    S = None
+    if use_sh_reliability and iter >= sh_stability_warmup:
+        from utils.crs.sh_stability import compute_S_stability
+        S = compute_S_stability(gaussians, scale=1.0)  # (N, 1)
+
+    # ── [CRSGaussian Phase 8 + 9] Multi-component CRS formula ──
+    # Auto-normalize weights theo components active:
+    #   D + R + S   (Phase 8 FULL) : w_dr=(1-w_s)/2 each, w_s = crs_w_s
+    #   D + R       (Phase 5/7)    : w1·D + w2·R                 (legacy 2-component)
+    #   D + S       (Phase 9 NoR+S): w_d=(1-w_s),     w_s = crs_w_s
+    #   D only      (Phase 9 NoR)  : score = D directly
+    if R is not None and S is not None:
+        w_s = crs_w_s
+        w_dr = (1.0 - w_s) / 2.0
+        score = w_dr * D + w_dr * R + w_s * S
+    elif R is not None and S is None:
+        score = w1 * D + w2 * R
+    elif R is None and S is not None:
+        w_s = crs_w_s
+        w_d = 1.0 - w_s
+        score = w_d * D + w_s * S
+    else:
+        # D-only formula — Phase 9 D_ONLY_* configs.
+        score = D
+
+    # ── Score → scale → logit ──
+    # Trừ 0.5 để center quanh 0: score=0.5 (neutral) → logit=0 → sigmoid=0.5.
+    # Scale mở rộng range: floater (score≈0.1) → logit≈-2.0 → CRS≈0.12
+    #                       surface (score≈0.9)  → logit≈2.0  → CRS≈0.88
+    crs_logit = scale * (score - 0.5)  # (N, 1)
 
     # ── EMA update trên logit space ──
     # Lần đầu gọi: _crs_score = 0 (init từ T2.2), EMA sẽ kéo về
     # crs_logit thực tế. Sau ~5 lần update (500 iter), EMA ổn định.
     gaussians._crs_score = ema * gaussians._crs_score + (1.0 - ema) * crs_logit
 
-    return D, R  # [CRSGaussian] Return cho diagnostics (crs_diagnostics.py)
+    # ── [CRSGaussian Phase 9] Diagnostic return ──
+    # Khi R=None (Phase 9 D-only), trả neutral tensor thay vì None để giữ
+    # backward compat với diagnostic loggers (log_crs_stability, etc.).
+    R_for_diag = R if R is not None else torch.full_like(D, 0.5)
+    return D, R_for_diag  # [CRSGaussian] Return cho diagnostics (crs_diagnostics.py)
+
+
+# ============================================================
+# [CRSGaussian Tier 2-min] render_crs_map — alpha-composite CRS per pixel
+# File: utils/crs/crs_module.py
+# Mục đích: Render CRS_pix(p) = Σ Tᵢ(p) · αᵢ(p) · CRSᵢ thông qua
+#           override_color path (verified support tại
+#           gaussian_renderer/__init__.py:172/182). Bypass SH eval
+#           sạch (không bias 0.282 hay offset 0.5).
+#           Normalize bằng alpha (=Σαᵢ Tᵢ) để có weighted-AVERAGE
+#           thay vì sum (tránh pixel ít cover bị giả thấp).
+# Được gọi từ: train.py loss reweighter block khi use_loss_reweight=True.
+# ============================================================
+
+
+@torch.no_grad()
+def render_crs_map(gaussians, camera, render_func, pipe, bg):
+    """Render alpha-composited CRS map per pixel — proper weighted average.
+
+    Args:
+        gaussians: GaussianModel — cần .get_crs (N,1) ∈ [0,1].
+        camera: Camera object hiện tại (training viewpoint).
+        render_func: gaussian_renderer.render.
+        pipe: PipelineParams.
+        bg: background tensor (3,) GPU.
+
+    Returns:
+        crs_map: (H, W) tensor float [0, 1] — CRS_pix per pixel.
+                 Pixel coverage thấp (alpha < eps) → fallback CRS = 1.0
+                 (không reweight, hành vi giống pixel reliable).
+    """
+    crs = gaussians.get_crs.detach().clamp(0.0, 1.0)  # (N, 1)
+    N = crs.shape[0]
+    # Broadcast CRS sang 3 channels để feed vào override_color path.
+    # crs_rgb shape (N, 3) — rasterizer trả 3-channel image, ta chỉ cần 1.
+    crs_rgb = crs.expand(N, 3).contiguous()
+
+    # Render qua override_color → bypass SH eval (verified
+    # gaussian_renderer/__init__.py:172/182). disable_dropout=True để
+    # render đầy đủ — không skip Gaussian random như training.
+    pkg = render_func(
+        camera, gaussians, pipe, bg,
+        override_color=crs_rgb, disable_dropout=True,
+    )
+
+    # pkg["render"] shape (3, H, W) — 3 channels equal vì broadcast đầu vào.
+    # Lấy mean để giảm về 1 channel (3 channels giống nhau, mean ổn định).
+    crs_pix_raw = pkg["render"].mean(dim=0)  # (H, W) — Σ αᵢ Tᵢ CRSᵢ
+    alpha = pkg["alpha"].squeeze(0)          # (H, W) — Σ αᵢ Tᵢ (pixel coverage)
+
+    # Normalize: weighted-average thay vì sum.
+    # Pixel cover thấp (alpha → 0): tránh chia 0 → fallback về 1.0 (no reweight).
+    # Lý do fallback 1.0 (không 0): alpha thấp = vùng chưa rendered, không phải
+    # vùng floater. Loss reweighter dùng giá trị này → w(p) = γ + (1-γ)·1 = 1.
+    crs_map = torch.where(
+        alpha > 1e-3,
+        crs_pix_raw / (alpha + 1e-6),
+        torch.ones_like(crs_pix_raw),
+    ).clamp(0.0, 1.0)
+    return crs_map

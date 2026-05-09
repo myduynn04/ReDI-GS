@@ -1,7 +1,10 @@
 # CRSGaussian — Context for Claude Code
 
-> Đọc file này trước khi làm bất kỳ thứ gì.
-> Đọc thêm docs/01_research_summary.md để hiểu đầy đủ methodology.
+> **THỨ TỰ ĐỌC**:
+> 1. **`docs/00_code_session_rules.md`** ← BẮT BUỘC đọc trước khi code (env mapping, coding rules, common pitfalls)
+> 2. File này (CLAUDE.md) — context dự án + công thức cốt lõi
+> 3. `docs/01_research_summary.md` — methodology đầy đủ
+> 4. `docs/03_task_queue.md` — task hiện tại
 
 ---
 
@@ -20,9 +23,63 @@ Ba contribution chính (focus hiện tại: C1 + C2):
 2. **CRS-guided Densification** — adaptive depth loss + position constraint (từ T_densify=500) + multi-signal pruning
 3. ~~**GFS Metric**~~ — [HOLD] Depth RMSE + Floater Ratio — tạm gác
 
-**Bottleneck hiện tại (sau Phase 5):** Train-test gap ~16-18 dB. Pseudo depth loss
-KHÔNG giải quyết được vì pseudo cams không novel (max 3.68° from training cams).
-Đang test Pseudo PHOTOMETRIC loss (Approach 2): detect floater qua parallax photometric mismatch.
+**Status hiện tại (cập nhật 2026-05-08): 🎉 Phase 8 BREAKTHROUGH — first CRS contribution defendable**
+
+**Phase 6 (Apr 2026)** — 8 CRS variants tested, all marginal: 6 pruning ablations, C1 occlusion-aware,
+F-invisible, D1G gate-densify, hC hybrid RC×D, RNRC L3 differentiable. Ceiling +0.07 dB.
+Hypothesis: signal D+R bottleneck, not mechanism class.
+
+**Phase 7 Tier 2-min (May 2026)**:
+- **Phase 5 weak backbone**: DCYCLE alone +0.125 (FIRST CRS variant với clean positive),
+  LWEIGHT alone neutral, combined synergy −0.083 redundant
+- **D1-O999 strong backbone (Stage 1)**: D_cycle FLIPS NEGATIVE (−0.015), combined +0.018 vs no-CRS
+  (within noise). Hypothesis: R contamination 36.5% diluting D_cycle.
+
+**🎉 Phase 8 (May 2026) — Formula Redesign + SH Path BREAKTHROUGH:**
+- Implementation: R_visible (visibility-aware), S_stability EMA, CRS-modulated SH freeze
+- **FULL = 21.335 dB** vs OLD 21.178 (+0.156) vs No-CRS 21.21 (**+0.125** ⭐ first beat!)
+- Attribution:
+  - Δ_R (R_visible alone) = **−0.111** (surprising — data loss > noise reduction)
+  - Δ_D (D_cycle in clean R) = +0.102 (vindicated — R noise was diluting)
+  - Δ_S (S_stability) = −0.023 (neutral)
+  - **Δ_M (CRS-modulated SH freeze) = +0.189** (BIGGEST WINNER)
+- Compute: +3.7% training slowdown, GPU memory + render FPS unchanged
+
+**Phase 9 (May 2026) — Simplification + Cross-backbone DONE:**
+- Test 1 results: ALL simplifications HURT
+  - FULL = 21.335 (BEST), drop S → 21.200 (−0.135), drop R+S → 21.159 (−0.176)
+- Test 2 results: A1B1_BEST 20.983 (+0.051 vs A1B1_BASELINE 20.932)
+- ❌ H1 REJECTED (drop R), ❌ H2 REJECTED (drop S), 🟡 H3 PARTIAL (SH freeze works smaller on A1+B1β)
+- **Key insight**: Sequential Δ ≠ leave-one-out. All 4 components (D, R, S, mechanism) **synergize**
+- → **Phase 8 FULL recipe LOCKED at 21.335 dB. CRS axis exhausted.**
+
+**Phase 10A (May 2026) — DUSt3R Dense Init FAIL hard, axis DEAD:**
+- Implementation: DUSt3R clone + precompute cache + 16-run AUGMENT/REPLACE × 8 scenes
+- Result: AUGMENT Δ=−0.898, REPLACE Δ=−3.529 (catastrophic)
+- 6-run diagnostic (FILTER/DENSIFY/BOTH × orchids+leaves) → ceiling ≈ −0.07 dB even with optimal filter
+- ❌ All 3 hypotheses REJECTED → systematic failure, not tuning
+- Root cause: DUSt3R alignment residual error + Phase 8 recipe calibrated cho ~3K sparse init
+- → **Foundation-model dense init nói chung BỎ HẲN** (DUSt3R, MASt3R same class)
+- Cleanup: env + checkpoint + cache + source removed (~5GB freed). Code Phase 10A giữ default OFF.
+
+**Current state (2026-05-08): Phase 11 — Loss-axis Exploration (sequential strategy)**
+- CRS axis exhausted ở 21.335. Initial-PC axis dead. Loss-axis là direction còn lại.
+- 4 candidates xếp theo cost: Step 1 covisibility (cheapest, in progress) → Step 2 perceptual → Step 3 R_feature → Step 4 cross-view MPC (conditional)
+- Strategy: sequential evaluation, abort early if win. Best case 1 ngày, worst 4 ngày.
+- Pivot ready (if all fail): regularization / depth fine-tune / accept ceiling
+
+**Reference targets (LLFF 3-view):**
+| Method | PSNR | Note |
+|--------|------|------|
+| Phase 8 FULL | 21.335 | first CRS variant defendable, current best |
+| No-CRS Tier1 | 21.21 | D1-noCRS-O999 |
+| DOC-GS | 21.38 | gap −0.045 (within noise) |
+| BinocularGS | 21.44 | gap −0.105 |
+| **ICO-GS (SOTA)** | **22.20** | **gap −0.865** |
+
+**To break SOTA:** Phase 11 loss-axis với external supervision (covisibility / perceptual / R_feature / cross-view MPC). Honest probability ~40% best-single ≥ +0.20.
+
+Xem **docs/11_crs_diagnostic_redesign.md** cho full arc + Phase 7-9 details.
 
 ---
 
@@ -248,6 +305,61 @@ if dataset.use_pseudo_photo_loss and iteration >= dataset.pseudo_photo_start_ite
 - Mỗi ý tưởng = 1 file → dễ tìm, dễ xoá nếu fail
 - Import line + gate block là **interface clean** giữa main loop và feature
 
+### Quy tắc 13 — DỌN DẸP khi hướng đi bị reject
+
+Sau khi test một hướng (feature mới, ablation, diagnostic) và **quyết định KHÔNG dùng** (kết quả không improve, hoặc trade-off không đáng), PHẢI dọn dẹp để không tốn dung lượng và giảm noise khi grep/review sau này.
+
+**Khi hướng bị REJECT, cần xóa:**
+
+1. **Script ablation/test** trong `scripts/` — `.sh` và `.py` wrappers chỉ dùng cho hướng đó
+2. **Module implementation** trong `utils/.../<feature>.py` nếu feature tách file riêng
+3. **Flags trong `arguments/__init__.py`** nếu chỉ feature đó dùng
+4. **Gating block** trong `train.py`/renderer — revert về baseline
+5. **Output dirs** `output/<ablation_name>/` (nặng, nhiều GB)
+6. **Log dirs** `logs/<ablation_name>/` (nhẹ nhưng vẫn nên dọn)
+
+**KHÔNG xóa:**
+- `docs/<task>_results.md` — giữ để ghi nhớ đã test gì + lý do reject
+- Log cuối của ablation cuối (`summary` output) — reference cho paper discussion
+
+**Quy trình reject + cleanup:**
+
+```bash
+# 1. Ghi chú kết quả + lý do vào docs/decisions_log.md
+echo "## 2026-04-XX — DropAnSH rejected" >> docs/decisions_log.md
+echo "Test 3 scenes: D1/D2/D3 ≤ B0 (không improve). Skip Phase 2." >> docs/decisions_log.md
+
+# 2. Xóa files
+rm scripts/ablation_dropansh_phase1.sh
+rm scripts/smoke_test_dropansh.py
+rm utils/regularizer/dropansh.py
+
+# 3. Revert code production
+# - Remove gate block trong gaussian_renderer/__init__.py
+# - Remove 8 flags trong arguments/__init__.py (PipelineParams)
+# - Remove bookkeeping trong train.py (nếu thêm riêng cho feature)
+# → Verify bằng grep: grep -r "DropAnSH" . (phải empty)
+
+# 4. Xóa output + logs
+rm -rf output/ablation_dropansh
+rm -rf output/verify_dropansh_off_*
+rm -rf logs/ablation_dropansh
+rm -f logs/verify_dropansh_off*.log
+```
+
+**Khi ACCEPT hướng:**
+- Giữ tất cả (module + flags + gating)
+- Script ablation vẫn giữ trong `scripts/` để reproduce
+- Update default config nếu muốn always-on
+
+**Lý do quy tắc này:**
+- Mỗi experiment thất bại để lại ~100-500MB output checkpoints + PLY
+- Qua 3-5 rounds test → tổng dung lượng dư 2-5GB
+- Code dead không dùng làm noise cho grep + confuse future Claude sessions
+- `grep -r "[CRSGaussian ...]"` trả về code không còn relevant
+
+**Tự đề xuất cleanup**: Sau mỗi task có verdict "không đi tiếp", Claude PHẢI **chủ động hỏi user có xóa không** + liệt kê files/dirs sẽ xóa để user approve trước khi rm.
+
 ---
 
 ## Quy tắc chú thích code — BẮT BUỘC mọi thay đổi
@@ -353,14 +465,44 @@ Phase 5 — DONE
   T5.1-T5.6 ✓ Informed CRS₀ (3-signal: q_reproj+q_depth+q_view)
   Best WG: w_reproj=0.4, w_depth=0.6, w_view=0, ema=0.3, AVG=20.36
 
-Phase 5b — Anti-overfit (Pseudo-View Loss)
-  T5b1  ✗ Pseudo DEPTH loss — NOT WORKING
-        Root cause: pseudo cams chỉ cách training cams 0.3-3.68°
-        (max 3.68° / 10000 cams, 0% pass threshold 5°)
-        → Reference = duplicate training depth signal
-  T5b2  ← NEXT: Pseudo PHOTOMETRIC loss (Approach 2)
-        Reference = warped GT image, detect floater qua parallax
-        Lambda sweep: {0.005, 0.01, 0.02, 0.05}
+Phase 5b — Anti-overfit (Pseudo-View Loss) — DONE/SUPERSEDED
+  T5b1  ✗ Pseudo DEPTH loss — NOT WORKING (pseudo cams not novel)
+  T5b2  ✗ Pseudo PHOTOMETRIC loss — không vượt baseline đáng kể
+
+Phase 6 — CRS Diagnostic & Mechanism Exhaustion — DONE
+  T6.1  ✓ Tier A diagnostic suite (BC bimodality, A3 floater, A4 occlusion 36.5%)
+  T6.2  ✓ 8 CRS mechanism variants tested, all ceiling +0.07 ± 0.10 dB
+  T6.3  ✓ Literature survey 17 papers → loss-path + signal upgrade selected
+
+Phase 7 — CRS Tier 2-min: D_cycle + Loss Reweighter — DONE
+  T7.1  ✓ Phase 5 weak backbone: DCYCLE +0.125 (first CRS positive)
+  T7.2  ✓ Stage 1 D1-O999 strong: D_cycle FLIPS −0.015, +0.018 vs no-CRS noise
+        → R contamination hypothesis cho Phase 8
+
+Phase 8 — Formula Redesign + SH Path — DONE 🎉
+  T8.1  ✓ R_visible + S_stability + CRS-modulated SH freeze implemented
+  T8.2  ✓ 5-config × 8 scenes ablation (40 runs)
+        FULL = 21.335 (+0.125 vs No-CRS) — first CRS contribution defendable
+        Attribution: Δ_R=−0.111, Δ_D=+0.102, Δ_S=−0.023, Δ_M=+0.189 (winner)
+
+Phase 9 — Simplification + Cross-backbone — DONE (2026-05-08)
+  T9.1  ✓ Test 1: ALL simplifications HURT, FULL recipe LOCKED at 21.335
+  T9.2  ✓ Test 2: A1B1_BEST +0.051 (smaller gain on A1+B1β)
+  T9.3  ✓ H1/H2 REJECTED, H3 PARTIAL — components synergize
+
+Phase 10 — DUSt3R Dense Init — DONE (FAILED, axis DEAD, 2026-05-07)
+  T10.1 [x] DUSt3R wrapper + 16-run AUGMENT/REPLACE → Δ=−0.898/−3.529
+  T10.1c [x] Diagnostic 6-run FILTER/DENSIFY/BOTH → ceiling −0.07
+  → Foundation-model dense init BỎ HẲN. Cleanup done.
+
+Phase 11 — Loss-axis Exploration — CURRENT (sequential, 2026-05-08)
+  T11.1 [~] Step 1: CRS × Covisibility reweight (depth-based) — IN PROGRESS
+  T11.2 [ ] Step 2: Same-view perceptual (DINOv2)
+  T11.3 [ ] Step 3: R_feature replace R_visible
+  T11.4 [ ] Step 4: Cross-view MPC (conditional)
+  Goal: break Phase 8 ceiling 21.335. Best-single probability ≥+0.20 ≈ 40%.
+
+Phase 12 — Full Experiments (deferred)
 ```
 
 ---

@@ -220,15 +220,267 @@
 
 ---
 
-## PHASE 8 — Full Experiments
+## PHASE 6 — CRS Diagnostic & Mechanism Exhaustion (2026-04 → 2026-04-30)
+
+> **Triệu chứng kích hoạt:** Phase 2c CRS isolation cho thấy D1-noCRS-O999 = 21.21 dB > D1-O999
+> = 21.13 dB → CRS pruning REDUNDANT với opacity decay. Paper crisis trigger.
+
+### Phase 6.1 — Tier A diagnostic suite
+
+| # | Task | Kết quả | Ghi chú |
+|---|------|---------|---------|
+| T6.1.1 | Implement utils/crs/tier_a_diag.py — A1/A3/A4 functions | [x] Done | BC bimodality, synthetic floater, occlusion test |
+| T6.1.2 | Run Tier A trên 8 LLFF scenes | [x] Done | 8 scenes × 4 iter checkpoints (1100/3000/5000/10000) |
+| T6.1.3 | Verdict tổng hợp | [x] D, R bimodal (BC > 0.555 in 6/8). D-R orthogonal. A3 floater discrimination ✓. **A4 occlusion contamination 36.5%** | Signal có shape, R noisy |
+
+### Phase 6.2 — CRS mechanism variants exhaustive test
+
+| # | Variant | AVG ΔPSNR vs B0 | Verdict |
+|---|---------|-----------------|---------|
+| T6.2.1 | 6 CRS pruning ablations (tau sweep) | ≤ +0.05 | dead |
+| T6.2.2 | C1 occlusion-aware R (depth-test) | −0.064 | worse |
+| T6.2.3 | C1.5 depth_range-relative tolerance sweep | best −0.038 | dead |
+| T6.2.4 | F-invisible visibility-streak (out-of-frustum 1.3% catch) | marginal | dead |
+| T6.2.5 | D1G CRS-gated densification | +0.028 | REDUNDANT vs DECAY (synergy −0.132) |
+| T6.2.6 | Stack D1G + DECAY 0.999 | +0.082 (vs DECAY +0.186 alone) | sub-additive |
+| T6.2.7 | hC Hybrid RC × D fusion (proxy RC) | **−0.079** | worse than B0 |
+| T6.2.8 | RNRC L3 differentiable α-coupling | +0.074 | STACK +0.163 < DECAY +0.186 |
+
+**Pattern**: Δ ceiling +0.07 ± 0.10 dB across 7 mechanisms với D+R signal → **signal saturation**.
+
+### Phase 6.3 — Literature survey & breakthrough proposals
+
+| # | Task | Kết quả |
+|---|------|---------|
+| T6.3.1 | Survey 8-15 sparse-view 3DGS papers (2024-2026) | [x] Done — 17 papers reviewed |
+| T6.3.2 | Identify saturated vs unexplored axes | Saturated: opacity, densification, prune. Unexplored: loss-path, SH-gating, feature MPC |
+| T6.3.3 | 4 candidate breakthrough proposals | A (loss reweighter), B (SH gating), C (CRS-MPC), D (pseudo-view α) |
+| T6.3.4 | Top recommendation | **Loss-path mechanism + signal upgrade (D_cycle)** |
+
+---
+
+## PHASE 7 — CRS Tier 2-min: D_cycle + Loss Reweighter (DONE)
+
+> **Mục tiêu**: Last attempt cho CRS line với dual upgrade (signal + mechanism).
+> **Commitment**: Δ ≥ +0.20 breakthrough, ≥ +0.10 solid, < +0.10 → pivot recipe paper.
+> **Compute target**: <+15% training time, +0 GB GPU memory bump, baseline render FPS.
+> **Xem chi tiết**: docs/11_crs_diagnostic_redesign.md
+
+### Phase 7.1 — Implementation (Python only, NO CUDA)
+
+| # | Task | Kết quả | Ghi chú |
+|---|------|---------|---------|
+| T7.1.1 | arguments/__init__.py — flags use_d_cycle + use_loss_reweight + 4 hyperparams | [ ] | Default OFF, ablation-friendly |
+| T7.1.2 | utils/crs/crs_module.py — compute_D_cycle() | [ ] | Cycle warping qua training view pairs, dùng rendered depth |
+| T7.1.3 | utils/crs/crs_module.py — render_crs_map() (color-swap trick) | [ ] | Alpha-composite CRS_i without CUDA modification |
+| T7.1.4 | utils/crs/crs_module.py — modify update_crs() để dùng D_cycle khi flag on | [ ] | Warmup logic (D_DAV2 trước iter 1000) |
+| T7.1.5 | train.py — apply per-pixel loss weight với CRS_pix | [ ] | Stop-gradient, cache mỗi 100 iters |
+
+### Phase 7.2 — Smoke tests (BẮT BUỘC trước ablation)
+
+| # | Test | Pass criterion |
+|---|------|----------------|
+| T7.2.1 | Smoke 1: Flag OFF byte-identical | PSNR fern khớp B0 ± 0.05 dB, không log "[Tier2-min]" |
+| T7.2.2 | Smoke 2: D_cycle only ON | Training stable, D_cycle_med > 0, log appear sau iter 1000 |
+| T7.2.3 | Smoke 3: Loss reweighter only ON | CRS_map_mean ∈ [0.3, 0.8], Loss_w_mean ∈ [0.5, 1.0] |
+| T7.2.4 | Smoke 4: Full Tier 2-min ON | Training stable, all logs hợp lý |
+
+### Phase 7.3 — Ablation matrix (24 NEW runs, B0 reuse)
+
+| Tag | use_d_cycle | use_loss_reweight | Mục đích |
+|-----|-------------|-------------------|----------|
+| B0 | (REUSE) | (REUSE) | baseline |
+| DCYCLE | ON | OFF | signal upgrade alone (vẫn dùng prune) |
+| LWEIGHT | OFF | ON | mechanism upgrade alone (D+R cũ) |
+| **TIER2MIN** | **ON** | **ON** | **full Tier 2-min (combined)** |
+
+8 scenes × 3 NEW configs = 24 runs ~1.5-2h trên 2 GPU.
+
+### Phase 7.4 — Compute & efficiency reporting (REQUIRED)
+
+| Metric | Target |
+|--------|--------|
+| Training time / scene | < 12 phút (baseline ~10) |
+| Peak GPU memory | bằng baseline (no foundation model) |
+| Final N_gaussians | report per scene |
+| Render FPS | bằng baseline (CRS không touch inference) |
+| Model storage (PLY) | bằng baseline |
+
+### Phase 7.5 — Verdict & results
+
+**Phase 7 Original (Phase 5 weak backbone, B0=20.234):**
+- DCYCLE +0.125 (FIRST CRS variant clean positive across 9 attempts)
+- LWEIGHT −0.007 (mechanism alone neutral)
+- TIER2MIN combined +0.035 (synergy −0.083 redundant)
+- Verdict 🔴 STOP per +0.15 threshold trên backbone này
+
+**Phase 7 Stage 1 (D1-O999 strong backbone, OLD=21.178):**
+- TIER1_DC_GATE −0.015 (D_cycle FLIPS NEGATIVE on strong backbone)
+- TIER1_DC_LW +0.050 (combined within noise)
+- vs No-CRS (21.21) +0.018 (within noise)
+- Verdict 🟡 H_both_dead (signal + mechanism saturated với D+R intact)
+- **Hypothesis cho Phase 8: R contamination 36.5% diluting D_cycle → fix R first**
+
+---
+
+## PHASE 8 — Formula Redesign + SH Path (DONE 🎉 BREAKTHROUGH)
+
+> **Trigger:** Phase 7 Stage 1 hypothesis — R contamination dilutes D_cycle. Fix R + add S signal +
+> CRS-modulated SH freeze mechanism.
+
+### Phase 8.1 — Implementation (4 NEW files + modifications)
+
+| # | Task | File | Status |
+|---|------|------|--------|
+| T8.1.1 | R_visible (visibility-aware reprojection) | utils/crs/crs_module.py modify | [x] Done |
+| T8.1.2 | S_stability EMA variance signal | utils/crs/sh_stability.py NEW | [x] Done |
+| T8.1.3 | CRS-modulated SH freeze | utils/crs/sh_freeze.py NEW | [x] Done |
+| T8.1.4 | Multi-component CRS formula update | utils/crs/crs_module.py update_crs | [x] Done |
+| T8.1.5 | train.py hooks (S update + SH freeze) | train.py modify | [x] Done |
+| T8.1.6 | 5-config ablation runner | scripts/p8_master.sh | [x] Done |
+| T8.1.7 | Attribution analyzer | scripts/p8_analyze.py | [x] Done |
+
+### Phase 8.2 — Ablation results (5 configs × 8 scenes = 40 runs)
+
+| Config | Components | AVG | Δ vs OLD |
+|--------|-----------|-----|----------|
+| OLD | D_DAV2 + R_old | 21.178 | 0 |
+| FIX_R_DAV2 | + R_visible (R fix only) | 21.068 | **−0.111** ❌ R alone HURTS |
+| FIX_R_DC | + D_cycle (with clean R) | 21.169 | +0.102 ✅ D vindicated |
+| FIX_RS | + S_stability | 21.146 | −0.023 ⚪ S adds nothing |
+| **FULL** | + CRS-mod SH freeze | **21.335** | **+0.156** |
+
+**vs No-CRS reference (21.21):** FULL = +0.125 dB (first CRS variant beat no-CRS!)
+
+**Compute:** FULL +3.7% slowdown, GPU memory unchanged, render FPS unchanged.
+
+### Phase 8.3 — Attribution insights
+
+| Component | Δ alone | Verdict |
+|-----------|---------|---------|
+| Δ_R (R_visible) | −0.111 | ❌ Hurts alone (data loss > noise reduction) |
+| Δ_D (D_cycle in clean R) | +0.102 | ✅ Works when R cleaned |
+| Δ_S (S_stability) | −0.023 | ⚪ Neutral, doesn't help |
+| **Δ_M (CRS-mod SH freeze)** | **+0.189** | **✅ BIGGEST WINNER** |
+
+🎉 **First CRS contribution defendable** sau 9 prior attempts ceiling +0.07 dB.
+
+---
+
+## PHASE 9 — Simplification + Cross-backbone confirmation (DONE)
+
+> **Goal:** Test 3 hypotheses từ Phase 8 attribution + close DOC-GS/BinocularGS gap.
+> Best Phase 9 variant target ≥21.45 dB (close BinocularGS 21.44).
+
+### Phase 9.1 — Test 1: D1-O999 simplification (3 NEW configs + FULL reuse)
+
+| # | Task | Hypothesis | Status |
+|---|------|-----------|--------|
+| T9.1.1 | FULL_NoS = D + R + CRS-mod-freeze | H2: S adds nothing | [ ] |
+| T9.1.2 | D_ONLY_FREEZE = D + CRS-mod-freeze | H1: drop R helps | [ ] |
+| T9.1.3 | D_ONLY_GATE = D + CRS prune (no SH freeze) | Isolate D signal alone | [ ] |
+
+### Phase 9.2 — Test 2: A1+B1β cross-backbone (1 NEW config)
+
+| # | Task | Hypothesis | Status |
+|---|------|-----------|--------|
+| T9.2.1 | A1B1_BASELINE = A1+B1β baseline (verify ~20.96) | reference | [ ] |
+| T9.2.2 | A1B1_BEST = A1+B1β (no global freeze) + Phase 8 components | H3: SH freeze universal mechanism | [ ] |
+
+### Phase 9.3 — Implementation needs
 
 | # | Task | Status |
 |---|------|--------|
-| T8.1 | LLFF 8 scenes × baselines | |
-| T8.2 | DTU 15 scenes × baselines | |
-| T8.3 | Blender 8 scenes × baselines | |
-| T8.4 | Compile Table 1 (PSNR/SSIM/LPIPS) | |
-| T8.5 | Compile Table 2 (Depth RMSE / Floater Ratio) [HOLD] | |
+| T9.3.1 | `--disable_r_signal` flag (D-only formula support) | [ ] |
+| T9.3.2 | `--disable_global_sh_freeze` flag (replace Track A1 with CRS-mod) | [ ] |
+| T9.3.3 | scripts/p9_master.sh + scripts/p9_analyze.py | [ ] |
+
+### Phase 9.4 — Result (executed 2026-05-08)
+
+**Test 1 — D1-O999 simplification:**
+| Config | AVG | Δ vs FULL |
+|--------|-----|-----------|
+| **FULL (Phase 8)** | **21.335** | 0 BEST |
+| D_ONLY_GATE | 21.242 | −0.093 |
+| FULL_NoS | 21.200 | −0.135 |
+| D_ONLY_FREEZE | 21.159 | −0.176 |
+
+**Test 2 — A1+B1β cross-backbone:**
+| Config | AVG | Δ |
+|--------|-----|---|
+| A1B1_BASELINE | 20.932 | reference |
+| A1B1_BEST | 20.983 | +0.051 |
+
+**Verdict:**
+- ❌ H1 REJECTED — R contributes (Δ_NoR = −0.041)
+- ❌ H2 REJECTED — S synergize với mechanism (Δ_NoS = −0.135)
+- 🟡 H3 PARTIAL — SH freeze works on A1+B1β but smaller (+0.051 vs +0.189 on D1-O999)
+
+**Key insight:** Sequential delta (Phase 8) ≠ leave-one-out (Phase 9). Phase 8 said "S adds nothing alone" (−0.023), Phase 9 says "removing S hurts" (−0.135). All 4 components (D, R, S, mechanism) **synergize** in FULL recipe.
+
+→ **Phase 8 FULL recipe LOCKED at 21.335 dB. Don't simplify. CRS axis exhausted.**
+
+---
+
+## PHASE 10 — DUSt3R Dense Init — DONE (FAILED, axis DEAD)
+
+**Status (2026-05-07):** Pivot khỏi initial-PC axis. DUSt3R/MASt3R/foundation-model dense init nói chung loại bỏ.
+
+| # | Task | Status | Kết quả |
+|---|------|--------|---------|
+| T10.1a | Implement DUSt3R wrapper + precompute cache | [x] Done | 8 scenes pre-computed |
+| T10.1b | Run AUGMENT/REPLACE × 8 scenes ablation | [x] Done | AUGMENT Δ=−0.898, REPLACE Δ=−3.529 |
+| T10.1c | Diagnostic — FILTER/DENSIFY/BOTH × 2 scenes | [x] Done | Best Δ=−0.074 (orchids FILTER), still < +0.05 noise floor |
+| T10.1d | Decision Phase 10A | [x] DEAD | All hyperparameter combos fail. Systematic, not tuning. |
+
+**Verdict:** DUSt3R dense init không phải orthogonal lever. Ceiling ≈ −0.07 dB even with optimal filter.
+
+**Cleanup:**
+- ✅ DUSt3R env removed
+- ✅ Checkpoint + source + cache deleted (~3-5 GB freed)
+- ⏸ Code Phase 10A giữ default OFF cho paper reference
+
+Xem **decisions_log [2026-05-07] Phase 10A — DUSt3R Dense Init FAIL hard**.
+
+---
+
+## PHASE 11 — Loss-axis Exploration (CURRENT)
+
+**Strategy**: Sequential evaluation. Test cheapest first, abort early if win, pivot if all fail.
+
+**Pre-flight (DONE 2026-05-08):**
+- Phase 10A cleanup
+- Workflow rules: planning session draft prompts only, 2-GPU parallel ablations
+- `docs/00_code_session_rules.md` bootstrap doc tạo cho session mới
+
+| # | Step | Lever | Cost | Probability ≥+0.20 | Status |
+|---|------|-------|------|---------------------|--------|
+| T11.1 | **Step 1** — CRS × Covisibility reweight (depth-based) | Per-pixel weight cov_norm × CRS_pix on L_phot | 0.5 ngày | 30-35% | [~] **IN PROGRESS** |
+| T11.2 | Step 2 — Same-view perceptual (DINOv2) | Cosine distance feat_render vs feat_GT same view | 0.5 ngày | 15-25% | [ ] pending |
+| T11.3 | Step 3 — R_feature replace R_visible | CRS signal upgrade: DINO patch instead of RGB | 0.5-1 ngày | 20-30% | [ ] pending |
+| T11.4 | Step 4 — Cross-view MPC (true) | Forward warp features qua views, ICO-GS adapted | 1-2 ngày | 40-50% | [ ] conditional |
+
+**Decision threshold per step:** Δ ≥ +0.20 confirm 2 scenes → scale 8 → DONE. Else next step.
+
+**Pivot plan (if T11.1-T11.4 all fail):**
+| Direction | Cost | Probability ≥+0.10 |
+|-----------|------|---------------------|
+| Regularization (smoothness/sparsity) | 0.5-1 ngày | ~25% |
+| Depth prior upgrade (DAV2 fine-tune) | 1-2 ngày | ~25% |
+| Render-side tricks (anti-aliasing) | 0.5 ngày | ~15% |
+| Accept Phase 8 FULL ceiling (21.335) | 0 | — |
+
+---
+
+## PHASE 12 — Full Experiments (deferred until Phase 11 done)
+
+| # | Task | Status |
+|---|------|--------|
+| T12.1 | LLFF 8 scenes × baselines (with best CRS variant) | (pending Phase 11 verdict) |
+| T12.2 | DTU 15 scenes × baselines | (pending) |
+| T12.3 | Blender 8 scenes × baselines | (pending) |
+| T12.4 | Compile Table 1 (PSNR/SSIM/LPIPS + compute metrics) | (pending) |
+| T12.5 | Compile Table 2 (Depth RMSE / Floater Ratio) [HOLD] | |
 
 ---
 

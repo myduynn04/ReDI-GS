@@ -56,10 +56,18 @@ from utils.regularizer import (
 )
 # ── [CRSGaussian T2.6] CRS module ──
 from utils.crs import update_crs
+# ── [CRSGaussian Hướng D MVP] RNRC compute helpers ──
+from utils.crs.crs_module import compute_render_contribution, compute_crs_rnrc
 # ── [CRSGaussian] CRS diagnostics ──
 from utils.crs.crs_diagnostics import (
     log_di_ri_scatter, log_crs_stability,
     render_crs_heatmap, log_dav2_noise, log_pruning_stats
+)
+# [CRSGaussian Tier A] Formula-level diagnostics — gated bởi --tier_a_diag
+from utils.crs.tier_a_diag import (
+    tier_a_dump_distributions,
+    tier_a_synthetic_floater_test,
+    tier_a_occlusion_test,
 )
 
 def seed_everything(seed):
@@ -83,6 +91,13 @@ def training(dataset, opt, pipe, args):
     gaussians = GaussianModel(args)
     scene = Scene(args, gaussians, shuffle=False)
     print(f"scene.bounds is {scene.bounds}")
+    # ── [CRSGaussian Phase 10A] Log số Gaussian khởi đầu ──
+    # COLMAP-only baseline: ~3000 (LLFF 3-view). DUSt3R augment: ~30k+.
+    # DUSt3R replace: ~50k. Dùng để verify dense init đã apply đúng.
+    n_initial = gaussians.get_xyz.shape[0]
+    print(f"[Phase 10A] Initial Gaussians: {n_initial}")
+    if tb_writer is not None:
+        tb_writer.add_scalar('phase10a/initial_gaussians', n_initial, 0)
     gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
@@ -127,6 +142,43 @@ def training(dataset, opt, pipe, args):
         log_dav2_noise(aligned_depth_dict, allCameras,
                        dataset.source_path, dataset.n_views,
                        depth_range, tb_writer)
+
+    # ── [CRSGaussian Phase 11 Bundle (Steps 2/3/4)] DINOv2 init ──
+    # Load DINO ViT-S/14 (88 MB ckpt) + extract GT patch features per train cam.
+    # Shared cho 3 features: perceptual loss (Step 2), R_feature (Step 3),
+    # cross-view MPC (Step 4). 1 lần init, reuse mỗi iter.
+    # Default OFF cả 3 → block skip → no model load, no overhead.
+    dino_wrapper, dino_cache = None, None
+    if (dataset.use_perceptual_dino
+            or dataset.use_r_feature
+            or dataset.use_feature_mpc):
+        from utils.feature.dino_wrapper import DINOWrapper, FeatureCache
+        dino_wrapper = DINOWrapper(model_name="dinov2_vits14", device="cuda")
+        dino_cache = FeatureCache(dino_wrapper, scene.getTrainCameras())
+        print(f"[Phase 11 Bundle] DINOv2 ViT-S/14 loaded; "
+              f"cache: {len(dino_cache)} cams × {dino_cache.feature_dim}d "
+              f"× {dino_cache.grid_shape[0]}×{dino_cache.grid_shape[1]} patches")
+
+    # ── [CRSGaussian Phase 11 Step 1] Precompute covisibility maps ──
+    # One-shot: forward-warp aligned depth_A → depth_B cho mỗi cặp (A, B),
+    # đếm số views consistent at each pixel của A. Camera poses fixed →
+    # cov_maps không cần update trong loop. Reuse aligned_depth_dict.
+    # Default OFF → cov_maps=None → block compose (Section B) skip.
+    cov_maps = None
+    if dataset.use_coreliability_reweight and dataset.use_depth_prior:
+        from utils.loss.covisibility_depth import compute_covisibility_maps
+        cov_maps = compute_covisibility_maps(
+            cameras=allCameras,
+            aligned_depths=aligned_depth_dict,
+            depth_consistency_thr=dataset.coreliability_depth_consistency_thr,
+        )
+        n_views_total = len(allCameras)
+        n_cov = sum(int((m > 0).sum().item()) for m in cov_maps.values())
+        n_total_pixels = sum(int(m.numel()) for m in cov_maps.values())
+        cov_frac = n_cov / max(n_total_pixels, 1)
+        print(f"[Phase 11 Step 1] cov_maps: {len(cov_maps)} cams, "
+              f"max_cov={n_views_total - 1}, "
+              f"covisible_pixel_frac={cov_frac:.3f}")
 
     # ── [CRSGaussian T5.5] Informed CRS₀ initialization ──
     # Option C: compute sau Scene() init, overwrite _crs_score trực tiếp.
@@ -242,9 +294,9 @@ def training(dataset, opt, pipe, args):
             RenderDict[f"radii_gs{i}"] = RenderDict[f"render_pkg_gs{i}"]["radii"]
             RenderDict[f"dropout_mask_gs{i}"] = RenderDict[f"render_pkg_gs{i}"]["dropout_mask"]
 
-        # ── [CRSGaussian Track B] Log drop rate (TB mỗi 500 iter, console mỗi 1000) ──
-        # Chỉ log khi thực sự có dropout (mask không None).
-        if getattr(pipe, "use_dropout", False):
+        # ── [CRSGaussian Track B+DropAnSH] Log combined drop rate ──
+        # Combined mask = B1 AND DropAnSH. Log cả 2 flags để biết source.
+        if getattr(pipe, "use_dropout", False) or getattr(pipe, "use_dropansh", False):
             _dm = RenderDict.get("dropout_mask_gs0", None)
             if _dm is not None:
                 _drop_rate_actual = 1.0 - _dm.float().mean().item()
@@ -253,16 +305,181 @@ def training(dataset, opt, pipe, args):
                     tb_writer.add_scalar('dropout/n_kept', int(_dm.sum().item()), iteration)
                     tb_writer.add_scalar('dropout/n_total', _dm.shape[0], iteration)
                 if iteration % 1000 == 0:
-                    print(f"[DIAG Track B] iter={iteration} drop_rate={_drop_rate_actual:.3f} "
+                    _src = []
+                    if getattr(pipe, "use_dropout", False): _src.append("B1")
+                    if getattr(pipe, "use_dropansh", False): _src.append("DropAnSH")
+                    print(f"[DIAG Dropout {'+'.join(_src)}] iter={iteration} "
+                          f"drop_rate={_drop_rate_actual:.3f} "
                           f"kept={int(_dm.sum().item())}/{_dm.shape[0]}")
 
         # Loss
         for i in range(args.gaussiansN):
+            image_i = RenderDict[f"image_gs{i}"]
+
+            # ── [CRSGaussian Tier 2-min] Loss reweighter — per-pixel CRS weight ──
+            # Gated: --use_loss_reweight AND iter ≥ d_cycle_warmup (reuse warmup
+            # vì cùng prerequisite: CRS đã ổn định) AND i==0 (CRS gắn vào gs0).
+            # Default OFF → weight_map=None → fall back loss_photometric cũ.
+            # Cache: per-cam dict, refresh mỗi lossw_render_freq iter của CAM ĐÓ
+            #         (mỗi cam được train ~1/N_cam số iter → effective refresh
+            #          ≈ N_cam × lossw_render_freq global iters).
+            weight_map = None
+            if (opt.use_loss_reweight
+                    and iteration >= opt.d_cycle_warmup
+                    and i == 0):
+                gs0 = GsDict["gs0"]
+                if not hasattr(gs0, "_crs_map_cache_dict"):
+                    gs0._crs_map_cache_dict = {}
+                    gs0._crs_map_render_iter = {}
+                cam_uid = viewpoint_cam.uid
+                last_iter = gs0._crs_map_render_iter.get(cam_uid, -10**9)
+                # Re-render khi: (a) chưa cache cho cam này, (b) đã quá freq iters,
+                # (c) shape mismatch (densify/prune đổi N_gauss → phải refresh).
+                cached = gs0._crs_map_cache_dict.get(cam_uid)
+                need_recompute = (
+                    cached is None
+                    or (iteration - last_iter) >= opt.lossw_render_freq
+                )
+                if need_recompute:
+                    from utils.crs.crs_module import render_crs_map as _rcm
+                    # Dùng background (deterministic) thay vì bg (có thể random)
+                    # để CRS map ổn định giữa các iter.
+                    _crs_map = _rcm(gs0, viewpoint_cam, render, pipe, background)
+                    gs0._crs_map_cache_dict[cam_uid] = _crs_map.detach()
+                    gs0._crs_map_render_iter[cam_uid] = iteration
+                    cached = gs0._crs_map_cache_dict[cam_uid]
+                # w(p) = γ + (1-γ) · CRS_pix(p), clamp [γ, 1.0]
+                # γ=0.5 default → w ∈ [0.5, 1.0]: pixel reliable giữ loss đầy đủ,
+                # pixel unreliable giảm loss tối đa 50%, KHÔNG triệt tiêu (gradient
+                # vẫn flow → late-bloomer recoverable, không như gate prune cứng).
+                weight_map = (
+                    opt.lossw_gamma + (1.0 - opt.lossw_gamma) * cached
+                ).clamp(opt.lossw_gamma, 1.0)
+
+            # ── [CRSGaussian Phase 11 Step 1] Covisibility-based weight ──
+            # Override / set weight_map từ cov_maps + (optional) CRS_pix combine.
+            # Gated: use_coreliability_reweight, cov_maps đã build, áp dụng cho gs0.
+            # Nếu Phase 7 (use_loss_reweight) cũng bật, Phase 11 OVERRIDE — tránh
+            # double-reweight. Diagnostic A1 chạy Phase 11 standalone (Phase 7 OFF).
+            if (dataset.use_coreliability_reweight
+                    and cov_maps is not None
+                    and viewpoint_cam.uid in cov_maps
+                    and i == 0):
+                from utils.loss.covisibility_depth import compute_reliability_weight
+                n_others = max(len(scene.getTrainCameras()) - 1, 1)
+                cov_norm = cov_maps[viewpoint_cam.uid].float() / n_others  # (H, W) ∈ [0, 1]
+
+                crs_pix_for_weight = None
+                if dataset.coreliability_combine_crs:
+                    # Reuse Phase 7 cache nếu có sẵn (rerender expensive),
+                    # else render fresh CRS map.
+                    gs0 = GsDict["gs0"]
+                    cam_uid = viewpoint_cam.uid
+                    if (hasattr(gs0, "_crs_map_cache_dict")
+                            and cam_uid in gs0._crs_map_cache_dict):
+                        crs_pix_for_weight = gs0._crs_map_cache_dict[cam_uid]
+                    else:
+                        from utils.crs.crs_module import render_crs_map as _rcm
+                        crs_pix_for_weight = _rcm(
+                            gs0, viewpoint_cam, render, pipe, background)
+
+                weight_map = compute_reliability_weight(
+                    cov_norm, crs_pix_for_weight,
+                    gamma=dataset.coreliability_gamma,
+                    combine_mode=dataset.coreliability_combine_mode,
+                )
+                # ── Section C: TB log ──
+                if (tb_writer is not None and iteration % 100 == 0):
+                    tb_writer.add_scalar(
+                        'phase11s1/mean_weight',
+                        float(weight_map.mean().item()),
+                        iteration)
+
             if not bg_mask is None:
-                LossDict[f"loss_gs{i}"] = loss_photometric(RenderDict[f"image_gs{i}"], gt_image, opt=opt, valid=(~bg_mask).float())
-                LossDict[f"loss_gs{i}"] += (RenderDict[f"alpha_gs{i}"][bg_mask]**2).mean()
+                valid = (~bg_mask).float()
+                if weight_map is not None:
+                    # Combined: valid binary × weight continuous.
+                    # Manual weighted L1 — chia theo sum(weights) để giữ scale
+                    # tương thích l1_loss baseline (mean over weighted region).
+                    w3 = (weight_map.unsqueeze(0) * valid).expand(3, -1, -1)
+                    Ll1 = (w3 * torch.abs(image_i - gt_image)).sum() / (w3.sum() + 1e-6)
+                    # SSIM dùng valid mask binary (không weighted) — SSIM per-window
+                    # khó kết hợp continuous weight, giữ tiêu chuẩn để không bias.
+                    L_phot = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image_i, gt_image, mask=valid))
+                else:
+                    L_phot = loss_photometric(image_i, gt_image, opt=opt, valid=valid)
+                LossDict[f"loss_gs{i}"] = L_phot + (RenderDict[f"alpha_gs{i}"][bg_mask]**2).mean()
             else:
-                LossDict[f"loss_gs{i}"] = loss_photometric(RenderDict[f"image_gs{i}"], gt_image, opt=opt)
+                if weight_map is not None:
+                    w3 = weight_map.unsqueeze(0).expand(3, -1, -1)
+                    Ll1 = (w3 * torch.abs(image_i - gt_image)).sum() / (w3.sum() + 1e-6)
+                    LossDict[f"loss_gs{i}"] = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image_i, gt_image))
+                else:
+                    LossDict[f"loss_gs{i}"] = loss_photometric(image_i, gt_image, opt=opt)
+
+            # ── [CRSGaussian Phase 11 Step 2] Same-view perceptual loss DINOv2 ──
+            # Render image_i (gradient-enabled) → DINO patch features → so với
+            # GT cached features cùng cam. Distance cosine/L1. Optional weight
+            # per-patch bằng CRS_pix Phase 7 (cache reuse, không re-render).
+            # Áp dụng cho gs0 only. Cost ~10-20ms/iter, gated freq=5 → average ~3ms.
+            if (i == 0
+                    and dataset.use_perceptual_dino
+                    and dino_cache is not None
+                    and iteration >= dataset.perceptual_dino_start_iter
+                    and iteration % dataset.perceptual_dino_freq == 0):
+                from utils.loss.perceptual_dino import perceptual_loss_dino
+                crs_pix_for_perc = None
+                if dataset.perceptual_dino_crs_weight:
+                    gs0 = GsDict["gs0"]
+                    cam_uid = viewpoint_cam.uid
+                    if (hasattr(gs0, "_crs_map_cache_dict")
+                            and cam_uid in gs0._crs_map_cache_dict):
+                        crs_pix_for_perc = gs0._crs_map_cache_dict[cam_uid]
+                L_perc = dataset.lambda_perceptual_dino * perceptual_loss_dino(
+                    image_i, viewpoint_cam.uid, dino_cache, dino_wrapper,
+                    mode=dataset.perceptual_dino_mode,
+                    crs_pix=crs_pix_for_perc,
+                )
+                LossDict[f"loss_gs{i}"] = LossDict[f"loss_gs{i}"] + L_perc
+                if tb_writer is not None and iteration % 100 == 0:
+                    tb_writer.add_scalar(
+                        'phase11s2/perceptual',
+                        float(L_perc.item()), iteration)
+
+            # ── [CRSGaussian Phase 11 Step 4] Cross-view feature MPC ──
+            # Forward warp F_B từ neighbor cam_B sang cam_A (current viewpoint)
+            # bằng aligned depth + camera geometry; so với F_A_render qua
+            # cosine sim. Cross-view consistency tại feature level.
+            # Cần aligned_depth_dict (--use_depth_prior). Skip nếu valid_frac
+            # < threshold (camera baseline lớn → ít overlap).
+            if (i == 0
+                    and dataset.use_feature_mpc
+                    and dino_cache is not None
+                    and dataset.use_depth_prior
+                    and viewpoint_cam.uid in aligned_depth_dict
+                    and iteration >= dataset.feature_mpc_start_iter
+                    and iteration % dataset.feature_mpc_freq == 0):
+                from utils.loss.feature_mpc_crossview import (
+                    feature_mpc_loss, find_nearest_other_cam,
+                )
+                neighbor = find_nearest_other_cam(viewpoint_cam, allCameras)
+                if neighbor is not None and neighbor.uid in dino_cache.cache:
+                    L_mpc, valid_mask = feature_mpc_loss(
+                        image_i, viewpoint_cam, neighbor,
+                        aligned_depth_dict[viewpoint_cam.uid],
+                        dino_cache, dino_wrapper,
+                    )
+                    valid_frac = float(valid_mask.float().mean().item())
+                    if valid_frac >= dataset.feature_mpc_min_valid_frac:
+                        L_mpc_w = dataset.lambda_feature_mpc * L_mpc
+                        LossDict[f"loss_gs{i}"] = LossDict[f"loss_gs{i}"] + L_mpc_w
+                        if tb_writer is not None and iteration % 100 == 0:
+                            tb_writer.add_scalar(
+                                'phase11s4/feature_mpc',
+                                float(L_mpc.item()), iteration)
+                            tb_writer.add_scalar(
+                                'phase11s4/valid_frac',
+                                valid_frac, iteration)
 
         if not args.onlyrgb:
             if iteration % args.sample_pseudo_interval == 0 and iteration <= args.end_sample_pseudo:
@@ -443,8 +660,38 @@ def training(dataset, opt, pipe, args):
                     and iteration > opt.T_warmup
                     and iteration % opt.crs_update_interval == 0):
                 _t0 = time.time()
-                D_diag, R_diag = update_crs(gaussians, allCameras, aligned_depth_dict,
-                                            depth_range, ema=opt.crs_ema_decay)
+                # ── [CRSGaussian Tier 2-min] D signal switch ──
+                # Khi --use_d_cycle bật, update_crs sẽ thay D_DAV2 bằng D_cycle
+                # (cycle-depth qua training views, no DAV2). Cần render_func +
+                # pipe + background để render N_cams depth maps cho cycle test.
+                # Cache trong gaussians._d_cycle_cache, refresh mỗi
+                # opt.d_cycle_update_freq iter (default 100, trùng CRS interval).
+                D_diag, R_diag = update_crs(
+                    gaussians, allCameras, aligned_depth_dict,
+                    depth_range, ema=opt.crs_ema_decay,
+                    use_d_cycle=opt.use_d_cycle,
+                    iter=iteration,
+                    d_cycle_warmup=opt.d_cycle_warmup,
+                    d_cycle_sigma=opt.d_cycle_sigma,
+                    d_cycle_update_freq=opt.d_cycle_update_freq,
+                    render_func=render,
+                    pipe=pipe,
+                    bg=background,
+                    # ── [CRSGaussian Phase 8a] R_visible ──
+                    use_r_visible=opt.use_r_visible,
+                    r_visible_occlusion_tolerance=opt.r_visible_occlusion_tolerance,
+                    r_visible_min_views=opt.r_visible_min_views,
+                    # ── [CRSGaussian Phase 8b] S_stability ──
+                    use_sh_reliability=opt.use_sh_reliability,
+                    sh_stability_warmup=opt.sh_stability_warmup,
+                    sh_stability_ema_beta=opt.sh_stability_ema_beta,
+                    crs_w_s=opt.crs_w_s,
+                    # ── [CRSGaussian Phase 11 Step 3] R_feature ──
+                    use_r_feature=dataset.use_r_feature,
+                    dino_cache=dino_cache,
+                    # ── [CRSGaussian Phase 9] D-only formula ──
+                    disable_r_signal=opt.disable_r_signal,
+                )
                 crs_update_time_total += time.time() - _t0
                 # Log CRS distribution
                 crs_vals = gaussians.get_crs.detach()
@@ -457,6 +704,29 @@ def training(dataset, opt, pipe, args):
                           f"max={crs_vals.max():.4f} | "
                           f"<0.35={( crs_vals < 0.35).sum().item()} | "
                           f">0.65={(crs_vals > 0.65).sum().item()}")
+
+                # ── [CRSGaussian Tier 2-min] Logging — D_cycle + Loss reweighter stats ──
+                # Print compact line mỗi 1000 iter khi flag bật. Giúp debug
+                # khi compare ablation: D distribution, weight map mean, N_gauss.
+                if (opt.use_d_cycle or opt.use_loss_reweight) and iteration % 1000 == 0:
+                    _msg = f"[T2min] iter={iteration} N={gaussians.get_xyz.shape[0]}"
+                    if opt.use_d_cycle:
+                        _msg += (
+                            f" | D_med={D_diag.median().item():.3f}"
+                            f" D_p10={torch.quantile(D_diag, 0.1).item():.3f}"
+                            f" D_p90={torch.quantile(D_diag, 0.9).item():.3f}"
+                        )
+                    if opt.use_loss_reweight:
+                        # Weight map mean across cached cams (proxy cho overall reweight strength)
+                        _gs0 = GsDict["gs0"]
+                        if hasattr(_gs0, "_crs_map_cache_dict") and _gs0._crs_map_cache_dict:
+                            _w_means = []
+                            for _m in _gs0._crs_map_cache_dict.values():
+                                _w_means.append(_m.mean().item())
+                            if _w_means:
+                                _w_avg = sum(_w_means) / len(_w_means)
+                                _msg += f" | CRSmap_mean={_w_avg:.3f} cached_cams={len(_w_means)}"
+                    print(_msg)
 
                 # [CRSGaussian] DIAG 2 — CRS stability (mỗi CRS update)
                 log_crs_stability(gaussians, D_diag, R_diag, iteration, tb_writer)
@@ -471,6 +741,32 @@ def training(dataset, opt, pipe, args):
                     render_crs_heatmap(gaussians, allCameras[0],
                                        render, pipe, background,
                                        iteration, diag_dir)
+
+                # ── [CRSGaussian Tier A] Formula diagnostics ──
+                # Gated bởi --tier_a_diag. Chỉ dump tại các iter milestone
+                # quy định trong --tier_a_diag_iters (default 1100,3000,5000,10000).
+                # Read-only — không sửa training behavior.
+                if dataset.tier_a_diag:
+                    try:
+                        tier_a_iters = [int(x) for x in dataset.tier_a_diag_iters.split(',')]
+                    except Exception:
+                        tier_a_iters = [1100, 3000, 5000, 10000]
+                    if iteration in tier_a_iters:
+                        tier_a_dir = f"{dataset.model_path}/tier_a_diag"
+                        # A1: dump D, R, CRS, opacity tensors
+                        tier_a_dump_distributions(
+                            gaussians, D_diag, R_diag, iteration, tier_a_dir
+                        )
+                        # A3: synthetic floater discrimination
+                        tier_a_synthetic_floater_test(
+                            gaussians, allCameras, aligned_depth_dict, depth_range,
+                            iteration, tier_a_dir,
+                        )
+                        # A4: occlusion contamination
+                        tier_a_occlusion_test(
+                            gaussians, allCameras, render, pipe, background,
+                            iteration, tier_a_dir,
+                        )
 
             # Densification
             if  iteration < opt.densify_until_iter:
@@ -538,18 +834,106 @@ def training(dataset, opt, pipe, args):
                             log_pruning_stats(_n_before, _n_after, iteration, tb_writer)
                     densify_time_total += time.time() - _t0
 
+            # ── [CRSGaussian Hướng D MVP] RNRC update (post-densify) ──
+            # Đặt SAU densify_and_prune để tránh shape mismatch giữa
+            # max_radii2D / combined_mask đã tính từ render (line ~565)
+            # và N sau khi RNRC prune.
+            # Mode-specific:
+            #   "L1g":  snapshot every 100 iter, prune at snapshot
+            #   "L12g": continuous EMA every iter, prune every iter
+            #   "full": continuous EMA + Layer 3 differentiable α-coupling (next iter render)
+            # Gated bởi --use_rnrc (default OFF → behavior cũ).
+            if opt.use_rnrc:
+                if opt.rnrc_mode == "L1g":
+                    do_rnrc_update = (iteration % 100 == 0)
+                else:
+                    do_rnrc_update = True
+                if do_rnrc_update:
+                    rc_thisstep = compute_render_contribution(
+                        gaussians, allCameras, render, (pipe, background))
+                    spawn_iter_t = getattr(gaussians, "spawn_iter", None)
+                    crs_rnrc = compute_crs_rnrc(
+                        gaussians, rc_thisstep, opt, iteration, spawn_iter_t)
+                    gaussians._crs_rnrc = crs_rnrc
+                    # Layer 3 toggle for renderer (đọc ở iter sau)
+                    gaussians._rnrc_l3_active = (opt.rnrc_mode == "full")
+                    # L1g/L12g: pruning gate (sau warmup)
+                    if opt.rnrc_mode in ("L1g", "L12g") and iteration > opt.rnrc_warmup:
+                        prune_mask_rnrc = (crs_rnrc < opt.rnrc_tau)
+                        if prune_mask_rnrc.any().item():
+                            gaussians.prune_points(prune_mask_rnrc, iteration)
+                    # Log
+                    if iteration % 1000 == 0:
+                        print(f"[RNRC] iter {iteration} mode={opt.rnrc_mode}: "
+                              f"RC_med={rc_thisstep.median().item():.4f}, "
+                              f"CRS_med={crs_rnrc.median().item():.4f}, "
+                              f"CRS_p10={crs_rnrc.quantile(0.1).item():.4f}, "
+                              f"N_gauss={gaussians.get_xyz.shape[0]}")
+
+            # ── [CRSGaussian Phase 8c] CRS-modulated SH freeze ──
+            # Per-Gaussian thay thế global freeze_sh_after. Zero out
+            # _features_rest.grad cho Gaussians có CRS < tau_freeze.
+            # Phải gọi SAU densification + RNRC (modify Gaussian count),
+            # TRƯỚC optimizer.step() để zero grad có effect.
+            # Default OFF (use_crs_modulated_sh_freeze=False) → no-op.
+            if opt.use_crs_modulated_sh_freeze:
+                from utils.crs.sh_freeze import apply_crs_modulated_sh_freeze
+                for i in range(args.gaussiansN):
+                    apply_crs_modulated_sh_freeze(
+                        GsDict[f"gs{i}"],
+                        iter=iteration,
+                        freeze_start=opt.crs_freeze_start,
+                        tau_freeze=opt.crs_freeze_tau,
+                    )
+
             # Optimizer step
             if iteration < opt.iterations:
                 for i in range(args.gaussiansN):
                     GsDict[f"gs{i}"].optimizer.step()
                     GsDict[f"gs{i}"].optimizer.zero_grad(set_to_none = True)
 
+            # ── [CRSGaussian Phase 8b] SH stability EMA tracking ──
+            # Update EMA mean + variance của _features_rest mỗi crs_update_interval
+            # iter (đồng bộ với CRS update). Gọi SAU optimizer.step() để EMA
+            # capture trạng thái post-update của SH coefficients.
+            # Default OFF (use_sh_reliability=False) → no-op.
+            if (opt.use_sh_reliability
+                    and iteration > opt.sh_stability_warmup
+                    and iteration % opt.crs_update_interval == 0):
+                from utils.crs.sh_stability import update_sh_stability
+                for i in range(args.gaussiansN):
+                    update_sh_stability(
+                        GsDict[f"gs{i}"],
+                        beta=opt.sh_stability_ema_beta,
+                    )
+
+            # ── [CRSGaussian Phase 2c] Opacity decay hook ──
+            # Multiply opacity mỗi iter sau densify_from_iter → continuous pressure.
+            # Khác CRS pruning (sparse, mỗi 100 iter): decay liên tục giúp zombie
+            # Gaussian opacity giảm dần → bị loại tự nhiên bởi legacy opacity prune
+            # hoặc CRS prune.
+            # Gated bởi --use_opacity_decay (default False) → baseline không đổi.
+            if (dataset.use_opacity_decay
+                    and iteration > opt.densify_from_iter):
+                for i in range(args.gaussiansN):
+                    GsDict[f"gs{i}"].opacity_decay(factor=dataset.opacity_decay_factor)
+                # One-shot extend densify — Binocular3DGS style (densify suốt training)
+                if (dataset.opacity_decay_extend_densify
+                        and iteration == opt.densify_from_iter + 1):
+                    opt.densify_until_iter = opt.iterations
+
             # ── [CRSGaussian DIAG E1] Freeze SH hook ──
             # Sau iter opt.freeze_sh_after → set lr=0 cho f_dc + f_rest.
             # Gọi sau optimizer.step() để step cuối trước freeze vẫn dùng
             # lr bình thường (gradient flow vẫn có, chỉ không update tiếp).
             # freeze_sh() tự idempotent (self._sh_frozen flag) nên gọi lặp OK.
-            if opt.freeze_sh_after > 0 and iteration >= opt.freeze_sh_after:
+            #
+            # [CRSGaussian Phase 9] disable_global_sh_freeze=True → bypass global
+            # freeze hoàn toàn (cho A1B1_BEST config: thay global freeze bằng
+            # CRS-modulated per-Gaussian freeze).
+            if (opt.freeze_sh_after > 0
+                    and iteration >= opt.freeze_sh_after
+                    and not opt.disable_global_sh_freeze):
                 for i in range(args.gaussiansN):
                     GsDict[f"gs{i}"].freeze_sh()
 
@@ -783,6 +1167,9 @@ if __name__ == "__main__":
 
     parser.add_argument("--save_log_images", action="store_true")
 
+    # [CRSGaussian multi-seed] verify CUDA noise — default=42 giữ backward-compat
+    parser.add_argument('--seed', type=int, default=42)
+
     # parser.add_argument("--absdensify", action="store_true")
 
     args = parser.parse_args(sys.argv[1:])
@@ -799,7 +1186,7 @@ if __name__ == "__main__":
 
     print("Optimizing " + args.model_path)
 
-    seed_everything(42)
+    seed_everything(args.seed)
 
     # Initialize system state (RNG)
     safe_state(args.quiet)

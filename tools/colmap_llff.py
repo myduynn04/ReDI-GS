@@ -245,5 +245,8 @@ def pipeline(scene, base_path, n_views):
     sys.stdout.flush()
 
 
-for scene in ['fern', 'flower', 'fortress', 'horns', 'leaves', 'orchids', 'room', 'trex']:
-    pipeline(scene, base_path='/home/aidev/workspace/representation-3d/duyen/CoR-GS/data/nerf_llff_data/', n_views=3)
+if __name__ == '__main__':
+    # [CRSGaussian] Guard để `from colmap_llff import pipeline` không trigger
+    # loop này — tránh race condition + xóa 3_views có sẵn.
+    for scene in ['fern', 'flower', 'fortress', 'horns', 'leaves', 'orchids', 'room', 'trex']:
+        pipeline(scene, base_path='/home/aidev/workspace/representation-3d/duyen/CoR-GS/data/nerf_llff_data/', n_views=3)

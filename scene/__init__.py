@@ -50,10 +50,12 @@ class Scene:
         if os.path.exists(os.path.join(args.source_path, "sparse")):
             if args.source_path.find('llff') != -1:
                 print("############ load llff ############")
-                scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval, args.n_views, rand_pcd=args.rand_pcd)
+                # [CRSGaussian Phase 10A] thread `args` để dense init hook đọc được
+                # use_dense_init / dust3r_cache_dir / dense_init_mode / ... .
+                scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval, args.n_views, rand_pcd=args.rand_pcd, args=args)
             elif args.source_path.find('mipnerf360') != -1:
                 print("############ load mipnerf360 ############")
-                scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval, args.n_views, rand_pcd=args.rand_pcd)
+                scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval, args.n_views, rand_pcd=args.rand_pcd, args=args)
             elif args.source_path.find('DTU') != -1:
                 print("############ load DTU ############")
                 scene_info = sceneLoadTypeCallbacks["DTU"](args.source_path, args.images, args.eval, args.n_views, rand_pcd=args.rand_pcd)
