@@ -91,13 +91,11 @@ def training(dataset, opt, pipe, args):
     gaussians = GaussianModel(args)
     scene = Scene(args, gaussians, shuffle=False)
     print(f"scene.bounds is {scene.bounds}")
-    # ── [CRSGaussian Phase 10A] Log số Gaussian khởi đầu ──
-    # COLMAP-only baseline: ~3000 (LLFF 3-view). DUSt3R augment: ~30k+.
-    # DUSt3R replace: ~50k. Dùng để verify dense init đã apply đúng.
-    n_initial = gaussians.get_xyz.shape[0]
-    print(f"[Phase 10A] Initial Gaussians: {n_initial}")
-    if tb_writer is not None:
-        tb_writer.add_scalar('phase10a/initial_gaussians', n_initial, 0)
+    # ── [CRSGaussian Phase 10A] Log số Gaussian khởi đầu — DISABLED for bisect ──
+    # n_initial = gaussians.get_xyz.shape[0]
+    # print(f"[Phase 10A] Initial Gaussians: {n_initial}")
+    # if tb_writer is not None:
+    #     tb_writer.add_scalar('phase10a/initial_gaussians', n_initial, 0)
     gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
@@ -686,9 +684,9 @@ def training(dataset, opt, pipe, args):
                     sh_stability_warmup=opt.sh_stability_warmup,
                     sh_stability_ema_beta=opt.sh_stability_ema_beta,
                     crs_w_s=opt.crs_w_s,
-                    # ── [CRSGaussian Phase 11 Step 3] R_feature ──
-                    use_r_feature=dataset.use_r_feature,
-                    dino_cache=dino_cache,
+                    # ── [CRSGaussian Phase 11 Step 3] R_feature — DISABLED for bisect ──
+                    # use_r_feature=dataset.use_r_feature,
+                    # dino_cache=dino_cache,
                     # ── [CRSGaussian Phase 9] D-only formula ──
                     disable_r_signal=opt.disable_r_signal,
                 )
