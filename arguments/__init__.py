@@ -173,6 +173,18 @@ class ModelParams(ParamGroup):
         self.feature_mpc_freq                = 10       # cost reduction
         self.feature_mpc_min_valid_frac      = 0.3      # skip nếu < 30% patch valid
 
+        # ── [CRSGaussian Phase 11 Step 5] TV depth regularizer (edge-preserving) ──
+        # Penalize depth jumps trong vùng image smooth (= floater drift), giữ
+        # depth jumps tại object boundary (= edge thật). Anti-overfit: smooth
+        # depth field → giảm test blur. Cost ~1-2ms/iter (tensor diff only).
+        # Prerequisites: 'depth_gs0' in RenderDict (auto-true với gaussiansN=1).
+        # Default OFF → behavior y hệt Phase 8 FULL.
+        self.use_tv_depth                    = False
+        self.lambda_tv_depth                 = 0.005
+        self.tv_depth_mode                   = "edge_preserving"  # "plain" | "edge_preserving"
+        self.tv_depth_alpha                  = 10.0
+        self.tv_depth_start_iter             = 1000
+
         # ── [CRSGaussian Phase 11 Step 1] Depth-based covisibility reweight ──
         # Per-pixel weight cho L_phot từ (a) covisibility — số views thấy điểm 3D
         # tại pixel (forward-warp aligned DAV2 depth) + (b) optional combine

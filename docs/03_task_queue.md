@@ -444,31 +444,53 @@ Xem **decisions_log [2026-05-07] Phase 10A — DUSt3R Dense Init FAIL hard**.
 
 ---
 
-## PHASE 11 — Loss-axis Exploration (CURRENT)
+## PHASE 11 — Loss-axis + Anti-overfit Exploration (CURRENT)
 
-**Strategy**: Sequential evaluation. Test cheapest first, abort early if win, pivot if all fail.
+**Strategy update 2026-05-09**: Multi-seed protocol (3 seeds × 8 scenes paired) cho mọi step. Min detectable Δ ≈ ±0.10 dB. Variance discovery (atomicAdd ±1.3 dB single-scene) → paired comparison cancel common-mode noise.
 
-**Pre-flight (DONE 2026-05-08):**
-- Phase 10A cleanup
-- Workflow rules: planning session draft prompts only, 2-GPU parallel ablations
-- `docs/00_code_session_rules.md` bootstrap doc tạo cho session mới
+**Pre-flight (DONE 2026-05-09):**
+- cuDNN+atomicAdd non-determinism discovered → multi-seed locked
+- timm migration cho DINOv2 (Python 3.8 compatible)
+- Variance band documented (decisions_log [2026-05-09])
 
-| # | Step | Lever | Cost | Probability ≥+0.20 | Status |
-|---|------|-------|------|---------------------|--------|
-| T11.1 | **Step 1** — CRS × Covisibility reweight (depth-based) | Per-pixel weight cov_norm × CRS_pix on L_phot | 0.5 ngày | 30-35% | [~] **IN PROGRESS** |
-| T11.2 | Step 2 — Same-view perceptual (DINOv2) | Cosine distance feat_render vs feat_GT same view | 0.5 ngày | 15-25% | [ ] pending |
-| T11.3 | Step 3 — R_feature replace R_visible | CRS signal upgrade: DINO patch instead of RGB | 0.5-1 ngày | 20-30% | [ ] pending |
-| T11.4 | Step 4 — Cross-view MPC (true) | Forward warp features qua views, ICO-GS adapted | 1-2 ngày | 40-50% | [ ] conditional |
+| # | Step | Lever | Cost | Verdict | Status |
+|---|------|-------|------|---------|--------|
+| T11.1 | **Step 1** — CRS × Covisibility reweight (depth-based) | Per-pixel weight cov_norm × CRS_pix on L_phot | 0.5d + 5h test | 🟡 **MARGINAL** (cross-batch Δ +0.014) | [x] **DONE** |
+| T11.2 | Step 2 — Same-view perceptual DINO | Cosine distance feat_render vs feat_GT same view | 0.5d + 3h | ❌ **REJECTED** (Δ −0.046 ± 0.056) | [x] **DONE** |
+| T11.3 | Stack (S1+S2) — synergy test | Both flags ON simultaneously | 3h | ❌ **REJECTED** (no synergy, Δ_Synergy −0.063) | [x] **DONE** |
+| T11.4 | **Step 4** — Cross-view MPC + Step 5 TV depth (parallel) | Anti-overfit: geometric depth warping + smooth depth field | 1d + 6h | [~] **IN PROGRESS** | parallel run |
 
-**Decision threshold per step:** Δ ≥ +0.20 confirm 2 scenes → scale 8 → DONE. Else next step.
+**Phase 11 Step 1 verdict — MARGINAL keep default OFF:**
+- Cross-batch N=48 combined Δ ≈ +0.0135 (effectively zero)
+- Code kept default OFF, documented for paper "we explored, signal within noise"
 
-**Pivot plan (if T11.1-T11.4 all fail):**
-| Direction | Cost | Probability ≥+0.10 |
-|-----------|------|---------------------|
-| Regularization (smoothness/sparsity) | 0.5-1 ngày | ~25% |
-| Depth prior upgrade (DAV2 fine-tune) | 1-2 ngày | ~25% |
-| Render-side tricks (anti-aliasing) | 0.5 ngày | ~15% |
-| Accept Phase 8 FULL ceiling (21.335) | 0 | — |
+**Phase 11 Step 2 + Stack verdict — REJECTED:**
+- Perceptual class (feature reweight) exhausted trên Phase 8 FULL
+- Phase 7 LWEIGHT precedent confirmed (similar mechanisms không stack additive)
+
+**Phase 11 Step 4+5 plan (anti-overfit, current):**
+- Test blur diagnosis (2026-05-09): structural overfit gap (~15 dB train-test)
+- Test blur root cause: floater render lệch ở test view
+- **REJECTED** edge-aware/sobel/MS-SSIM (pro-overfit, would widen gap)
+- **APPROVED** Step 4 (cross-view MPC, geometric) + Step 5 (TV depth edge-preserving)
+
+**Decision tree:**
+| Outcome | Action |
+|---------|--------|
+| Step 4 ≥ +0.10 only | 🎯 SHIP Step 4 |
+| TV (Step 5) ≥ +0.10 only | 🎯 SHIP TV |
+| Both ≥ +0.10 → Phase 3 combined | Test stack synergy |
+| Combined ≥ max(alone) + 0.05 | 🎯 SHIP STACK |
+| Combined ≥ max(alone) | 🎯 SHIP MAX SINGLE (simpler) |
+| Combined < max(alone) | ⚠️ STACK NEGATIVE → SHIP MAX |
+| Cả 2 < +0.10 | ❌ ACCEPT CEILING, paper writeup |
+
+**Pivot plan (if Step 4+5 all fail):**
+| Direction | Cost | Note |
+|-----------|------|------|
+| Scale regularizer (Gaussian over-large) | 0.5d | Anti-overfit, address scale-induced blur |
+| Stereo pseudo-view (BinocularGS wider baseline) | 1d | Risk Phase 5b2 reject lặp lại |
+| Accept Phase 8 FULL ceiling (21.335 / 21.15 multi-seed) | 0 | Document negative results: 4 loss-axis explored |
 
 ---
 

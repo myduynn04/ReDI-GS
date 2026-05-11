@@ -1,10 +1,16 @@
 # CRSGaussian — Context for Claude Code
 
-> **THỨ TỰ ĐỌC**:
-> 1. **`docs/00_code_session_rules.md`** ← BẮT BUỘC đọc trước khi code (env mapping, coding rules, common pitfalls)
-> 2. File này (CLAUDE.md) — context dự án + công thức cốt lõi
-> 3. `docs/01_research_summary.md` — methodology đầy đủ
-> 4. `docs/03_task_queue.md` — task hiện tại
+> **IDENTIFY YOUR ROLE FIRST**:
+> - **Planning session** (design, analyze, draft prompts) → đọc **`docs/00a_planning_session.md`**
+> - **Execution session** (implement, code, smoke test) → đọc **`docs/00b_execution_session.md`**
+>
+> **THỨ TỰ ĐỌC SAU ROLE**:
+> 1. File này (CLAUDE.md) — context dự án + công thức cốt lõi
+> 2. `docs/04_decisions_log.md` — verdicts đã có, KHÔNG re-propose rejected
+> 3. `docs/03_task_queue.md` — Phase hiện tại
+> 4. `docs/01_research_summary.md` — methodology đầy đủ
+>
+> Legacy `docs/00_code_session_rules.md` (cũ, merged) — bỏ qua, dùng 00a/00b
 
 ---
 
@@ -62,22 +68,39 @@ Hypothesis: signal D+R bottleneck, not mechanism class.
 - → **Foundation-model dense init nói chung BỎ HẲN** (DUSt3R, MASt3R same class)
 - Cleanup: env + checkpoint + cache + source removed (~5GB freed). Code Phase 10A giữ default OFF.
 
-**Current state (2026-05-08): Phase 11 — Loss-axis Exploration (sequential strategy)**
-- CRS axis exhausted ở 21.335. Initial-PC axis dead. Loss-axis là direction còn lại.
-- 4 candidates xếp theo cost: Step 1 covisibility (cheapest, in progress) → Step 2 perceptual → Step 3 R_feature → Step 4 cross-view MPC (conditional)
-- Strategy: sequential evaluation, abort early if win. Best case 1 ngày, worst 4 ngày.
-- Pivot ready (if all fail): regularization / depth fine-tune / accept ceiling
+**Current state (2026-05-09): Phase 11 — Anti-overfit + Geometric path (Step 4 + 5 parallel)**
+- Methodology lock: **multi-seed (3 seeds × 8 scenes paired) cho mọi ablation**. atomicAdd variance ±1.3 dB single-scene → paired comparison cancel noise.
+- Phase 11 verdicts:
+  - Step 1 (covisibility reweight): 🟡 MARGINAL cross-batch Δ +0.014 → keep default OFF
+  - Step 2 (perceptual DINO same-view): ❌ REJECTED Δ −0.046
+  - Stack (S1+S2): ❌ REJECTED no synergy (Δ_Synergy −0.063)
+  - → Perceptual/reweight class exhausted
+- Test blur diagnosis (2026-05-09): structural overfit gap 15 dB → anti-overfit framework
+- Current ablation:
+  - **Step 4**: Cross-view feature MPC (DINO + depth warping), code ready, ~3h
+  - **Step 5**: TV depth edge-preserving regularizer, code in progress, ~3h
+- Decision: combined ≥ max(alone) + 0.05 → SHIP STACK; combined < max(alone) → ⚠️ STACK NEGATIVE warning
 
 **Reference targets (LLFF 3-view):**
 | Method | PSNR | Note |
 |--------|------|------|
-| Phase 8 FULL | 21.335 | first CRS variant defendable, current best |
+| Phase 8 FULL (paper, 1 sample) | 21.335 | first CRS variant defendable, current best (lucky sample) |
+| **Phase 8 FULL multi-seed** | **~21.16** | **Fair baseline N=24 (3 seeds × 8 scenes), use cho Phase 11 comparison** |
 | No-CRS Tier1 | 21.21 | D1-noCRS-O999 |
 | DOC-GS | 21.38 | gap −0.045 (within noise) |
 | BinocularGS | 21.44 | gap −0.105 |
 | **ICO-GS (SOTA)** | **22.20** | **gap −0.865** |
 
-**To break SOTA:** Phase 11 loss-axis với external supervision (covisibility / perceptual / R_feature / cross-view MPC). Honest probability ~40% best-single ≥ +0.20.
+**Phase 11 results so far (multi-seed paired N=24):**
+| Step | Δ paired | SEM | Verdict |
+|------|----------|-----|---------|
+| Step 1 (covisibility) cross-batch | +0.014 | — | 🟡 MARGINAL |
+| Step 2 (perceptual DINO) | −0.046 | 0.056 | ❌ REJECTED |
+| Stack (S1+S2) | −0.007 | 0.043 | ❌ REJECTED no synergy |
+| Step 4 (cross-view MPC) | — | — | [~] IN PROGRESS |
+| Step 5 (TV depth) | — | — | [~] IN PROGRESS |
+
+**To break SOTA:** Phase 11 Step 4+5 anti-overfit path (cross-view MPC + TV depth). Perceptual class exhausted. Honest probability Step 4+5 stack ~30-40% break test blur ceiling.
 
 Xem **docs/11_crs_diagnostic_redesign.md** cho full arc + Phase 7-9 details.
 
@@ -495,12 +518,15 @@ Phase 10 — DUSt3R Dense Init — DONE (FAILED, axis DEAD, 2026-05-07)
   T10.1c [x] Diagnostic 6-run FILTER/DENSIFY/BOTH → ceiling −0.07
   → Foundation-model dense init BỎ HẲN. Cleanup done.
 
-Phase 11 — Loss-axis Exploration — CURRENT (sequential, 2026-05-08)
-  T11.1 [~] Step 1: CRS × Covisibility reweight (depth-based) — IN PROGRESS
-  T11.2 [ ] Step 2: Same-view perceptual (DINOv2)
-  T11.3 [ ] Step 3: R_feature replace R_visible
-  T11.4 [ ] Step 4: Cross-view MPC (conditional)
-  Goal: break Phase 8 ceiling 21.335. Best-single probability ≥+0.20 ≈ 40%.
+Phase 11 — Loss-axis + Anti-overfit Exploration (2026-05-09)
+  Methodology: multi-seed (3 seeds × 8 scenes paired) ALL ablations
+  T11.1 [x] Step 1: Covisibility reweight       — 🟡 MARGINAL Δ +0.014 → keep OFF
+  T11.2 [x] Step 2: Same-view perceptual DINO   — ❌ REJECTED Δ −0.046
+  T11.3 [x] Stack (S1+S2):                       — ❌ REJECTED no synergy
+  T11.4 [~] Step 4: Cross-view MPC (anti-overfit)— IN PROGRESS
+  T11.5 [~] Step 5: TV depth edge-preserving     — IN PROGRESS (parallel)
+  T11.6 [ ] Optional combined Step 4 + Step 5
+  Goal: break test blur (floater root cause). Combined synergy expected ~30-40%.
 
 Phase 12 — Full Experiments (deferred)
 ```

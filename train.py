@@ -515,6 +515,24 @@ def training(dataset, opt, pipe, args):
             L_depth = 0.05 * pearson_depth_loss(rendered_depth, depth_prior)
             LossDict["loss_gs0"] += L_depth
 
+        # ── [CRSGaussian Phase 11 Step 5] TV depth regularizer ──
+        # Edge-preserving smoothness trên rendered depth: penalize depth jumps
+        # tại smooth image regions (floater drift), giữ jumps tại object edges.
+        # Anti-overfit, cost ~1-2ms/iter. Hooked after Pearson L_depth (cùng
+        # gating scope của rendered depth).
+        if (dataset.use_tv_depth
+                and iteration >= dataset.tv_depth_start_iter
+                and "depth_gs0" in RenderDict):
+            from utils.regularizer.tv_depth import compute_tv_depth_loss
+            L_tv = dataset.lambda_tv_depth * compute_tv_depth_loss(
+                RenderDict["depth_gs0"], gt_image,
+                mode=dataset.tv_depth_mode,
+                alpha=dataset.tv_depth_alpha,
+            )
+            LossDict["loss_gs0"] += L_tv
+            if tb_writer is not None and iteration % 100 == 0:
+                tb_writer.add_scalar('phase11s5/tv_depth', float(L_tv.item()), iteration)
+
         # ── [CRSGaussian Pseudo-depth] Pseudo-view depth loss (Approach 1) ──
         # Module: utils/regularizer/pseudo_depth.py
         # Status: KHÔNG hoạt động — pseudo cams chỉ cách training 0.3-3.68°,

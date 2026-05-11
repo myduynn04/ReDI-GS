@@ -118,27 +118,30 @@ Khi user QUYẾT ĐỊNH bỏ một feature/ablation (đã có verdict NO):
 
 > **Cập nhật mỗi khi xong Phase**, không để stale.
 
-**Date last updated**: 2026-05-08
+**Date last updated**: 2026-05-09
 
 ```
 Phase 0-7  — DONE (xem CLAUDE.md)
 Phase 8    — DONE (BREAKTHROUGH 21.335 dB, +0.125 vs No-CRS)
 Phase 9    — DONE (FULL recipe LOCKED, simplifications HURT)
 Phase 10   — DONE (FAILED, axis DEAD)
-             AUGMENT Δ=−0.898, REPLACE Δ=−3.529, diagnostic ceiling −0.07
-             → Foundation-model dense init BỎ HẲN
+             Foundation-model dense init BỎ HẲN
              Cleanup: env+checkpoint+cache+source removed
-Phase 11   — CURRENT (Loss-axis Exploration, sequential strategy)
-             Step 1 [~] CRS × Covisibility (depth-based, KHÔNG dùng DUSt3R) — IN PROGRESS
-             Step 2 [ ] Same-view perceptual (DINOv2)
-             Step 3 [ ] R_feature replace R_visible
-             Step 4 [ ] Cross-view MPC (conditional)
-             Best-single prob ≥+0.20 ≈ 40%. Pivot ready: regularization / depth fine-tune / accept.
+Phase 11   — CURRENT (Loss-axis + Anti-overfit Exploration)
+             METHODOLOGY: multi-seed (3 seeds × 8 scenes paired) cho MỌI ablation
+                          (atomicAdd variance ±1.3 dB single-scene)
+             Step 1 [x] Covisibility reweight    — 🟡 MARGINAL Δ +0.014 → keep OFF
+             Step 2 [x] Same-view perceptual DINO — ❌ REJECTED Δ −0.046
+             Stack  [x] S1+S2 synergy            — ❌ REJECTED Δ_Syn −0.063
+             Step 4 [~] Cross-view MPC           — IN PROGRESS (anti-overfit, code ready)
+             Step 5 [~] TV depth edge-preserving — IN PROGRESS (anti-overfit, code in dev)
+             Combined optional (if Step 4 + 5 both ≥+0.10)
 Phase 12   — DEFERRED (Full Experiments — chờ Phase 11 verdict)
 ```
 
 **Reference targets (LLFF 3-view PSNR)**:
-- Phase 8 FULL = 21.335 ⭐ project best
+- Phase 8 FULL = 21.335 ⭐ project best (paper, 1 sample)
+- Phase 8 FULL multi-seed mean = 21.15 (N=24, fair baseline)
 - No-CRS Tier1 = 21.21
 - DOC-GS = 21.38
 - BinocularGS = 21.44
@@ -147,7 +150,10 @@ Phase 12   — DEFERRED (Full Experiments — chờ Phase 11 verdict)
 **Active workflow rules (memory-enforced)**:
 - Planning session draft prompts only, KHÔNG Write code production trực tiếp
 - Mọi ablation parallelize 2 GPUs (`&` + `wait`), không single GPU sequential
-- Diagnostic 1 scene first → confirm 2-3 scenes → scale 8 if winner
+- **Multi-seed (3 seeds × 8 scenes paired) cho mọi ablation chính** — single-seed chỉ smoke test
+- Decision threshold: paired Δ ≥ +0.10 (above noise floor) → COMMIT; < +0.05 → REJECT
+- Stack negative warning: combined < max(alone) → ship max single, không stack vô ích
+- **Anti-overfit framework**: test blur ≠ training fit issue. KHÔNG dùng pro-overfit losses (edge-aware photometric, sobel gradient, MS-SSIM)
 
 ---
 

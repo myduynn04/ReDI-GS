@@ -1127,6 +1127,93 @@
 
 ---
 
+### [2026-05-09] cuDNN+atomicAdd variance discovery + Multi-seed protocol locked
+- **Quyết định**: Mọi ablation từ Phase 11 trở đi phải multi-seed (3 seeds × 8 scenes paired). Min detectable Δ ≈ ±0.10 dB.
+- **Discovery**: 3 runs serial cùng seed=42 cùng code → range **1.31 dB** trên room (21.65, 22.96, 22.64). Variance source:
+  - 3DGS rasterizer dùng `diff-gaussian-rasterization` với CUDA `atomicAdd` trong forward/backward
+  - atomicAdd race condition → float sum không associative → bit-by-bit divergence
+  - 10k iter accumulate → PSNR ±0.5-1.3 dB single-scene
+  - `cudnn.deterministic=True` + `cudnn.benchmark=False` KHÔNG đủ (atomicAdd hardware-level non-det)
+- **Hệ quả retrospective**:
+  - Phase 8 paper 21.335 là 1 sample (có thể lucky cao)
+  - "Drift -0.20 vs paper" trong p8_rerun = noise, không phải code regression
+  - Bisect attempts unfeasible (variance > drift signal)
+- **Variance bands locked cho project**:
+  | Setup | Variance | Min Δ detectable |
+  |-------|----------|------------------|
+  | 1 scene × 1 seed | ±1.3 dB | ±1.0 dB |
+  | 8 scenes × 1 seed (avg) | ±0.46 dB | ±0.30 dB |
+  | 8 scenes × 3 seeds (paired) | ±0.10 dB | ±0.10 dB |
+- **Multi-seed pattern**: 3 seeds (42, 137, 9999) × 8 scenes × {A0, A1} = 48 runs ~2.5h on 2 GPUs
+- **Paired Δ comparison**: A0 và A1 cùng (seed, scene) → cancel common-mode variance
+- **Verdict format**: N samples, Δ_mean ± SEM, 95% CI, significant if 0 ∉ CI
+
+---
+
+### [2026-05-09] Phase 11 Step 1 (Covisibility Reweight) — MARGINAL → KEEP code default OFF
+- **Quyết định**: Step 1 cross-batch effect ≈ 0, marginal positive trong batch 2. Keep code default OFF, document as MARGINAL.
+- **Multi-seed batch 1 (Step 1 alone)**:
+  - N=24, Δ_mean = **−0.028 dB**, SEM = 0.047, 95% CI [−0.120, +0.063]
+  - Per-seed Δ_8avg: −0.013, −0.100, +0.028 (mixed direction)
+  - Verdict: NOT significant
+- **Multi-seed batch 2 (Step 1 in 3-config factorial A0/A1/A2)**:
+  - N=24, Δ_S1 mean = **+0.055 dB**, SEM = 0.039, 95% CI [−0.021, +0.132]
+  - Per-seed Δ_8avg: +0.059, +0.100, +0.007 (all positive, borderline)
+  - Verdict: borderline (p_one-tail ≈ 0.08)
+- **Cross-batch combined (N=48)**: Δ_mean ≈ **+0.0135 dB** → effectively zero
+- **Per-scene pattern**: room +0.355 (batch 2 only) but A0_std=0.51 (noisiest scene) → flip-flop direction across batches → noise dominate
+- **Decision**: MARGINAL — code không reject hoàn toàn, không commit. Default OFF, để paper writeup note "we explored covisibility reweight, signal within noise floor".
+
+---
+
+### [2026-05-09] Phase 11 Step 2 (Perceptual DINO same-view) — REJECTED
+- **Quyết định**: Reject Step 2. Cleanup pending (KHÔNG block Step 4/5).
+- **Multi-seed**: N=24, Δ_mean = **−0.046 dB**, SEM = 0.056, 95% CI [−0.155, +0.064]
+  - Per-seed Δ_8avg: −0.016, +0.047, −0.168 (inconsistent direction)
+  - Verdict: NOT significant, slight negative
+- **Per-scene pattern**: 5/8 negative, 3/8 small positive. **room −0.347** worst hit (vs +0.20 trong Step 1 → flip-flop confirm noise)
+- **Implementation**: timm.create_model('vit_small_patch14_dinov2.lvd142m') — official Meta weights, Python 3.8 compatible
+
+---
+
+### [2026-05-09] Phase 11 Stack (Step 1 + Step 2) — REJECTED, no synergy
+- **Quyết định**: Stack S1+S2 không synergize. Phase 7 LWEIGHT precedent confirmed: similar mechanisms (per-pixel/patch reweight) không stack additive.
+- **Multi-seed factorial N=24**:
+  - Δ_S1 (A1−A0) = +0.055 ± 0.039
+  - **Δ_Stack (A2−A0) = −0.007 ± 0.043** (effectively zero)
+  - **Δ_Synergy (A2−A1) = −0.063 ± 0.052** (Step 2 trending HURT Step 1)
+- **Implication**: 2 perceptual-class mechanisms cancel each other. Feature/perceptual class **exhausted** trên Phase 8 FULL backbone.
+- **Pivot direction**: Anti-overfit + geometric mechanism (different axis):
+  - Step 4: Cross-view feature MPC (DINO + depth warping) — geometric, ICO-GS adapted
+  - Step 5: TV depth edge-preserving regularizer — direct floater suppression
+
+---
+
+### [2026-05-09] Test blur diagnosis → anti-overfit framework
+- **Quyết định**: Pivot khỏi pixel-level loss enhancements (edge-aware photometric REJECTED before test). Anti-overfit + geometric path.
+- **User observation**: Color tone ≈ GT trên test renders, nhưng **blur ở high-detail regions**
+- **Diagnosis**:
+  - Train PSNR ~36-38 dB vs Test ~21 dB → gap 15-18 dB = structural overfit
+  - Test blur causes ranked:
+    1. **Floater render lệch** (Gaussian wrong-depth) — main culprit
+    2. Gaussian scale over-large → over-smooth
+    3. SH memorize training colors → no generalize
+- **REJECTED hướng pro-overfit** (would widen gap):
+  - Edge-aware photometric (gradient-weighted L1) — pro-overfit, increases train detail learning
+  - Sobel gradient loss — same class
+  - Per-pixel L1 depth — Phase 4.1 đã reject -3 dB
+  - MS-SSIM — still pixel-level training view
+- **APPROVED hướng anti-overfit**:
+  - **Step 4 cross-view MPC** (~25-35%): depth warping forces correct Gaussian position → eliminate floater
+  - **Step 5 TV depth edge-preserving** (~30-40%): smooth depth field nơi image smooth, giữ edge tại object boundary → direct floater suppression
+- **Decision tree với stack negative warning**:
+  - Combined ≥ max(alone) + 0.05 → SHIP STACK
+  - Combined ≥ max(alone)        → SHIP MAX SINGLE (simpler)
+  - Combined < max(alone)        → ⚠️ STACK NEGATIVE → SHIP MAX SINGLE
+  - Cả 2 < +0.10                 → ACCEPT CEILING, paper writeup
+
+---
+
 ### [2026-05-08] Phase 11 — Loss-axis Exploration (post-Phase-10A pivot)
 - **Quyết định**: Pivot sang loss-axis với external supervision. Sequential evaluation strategy (1 step at a time, abort early if win).
 - **Lý do:**
