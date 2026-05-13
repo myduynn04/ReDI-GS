@@ -68,44 +68,42 @@ Hypothesis: signal D+R bottleneck, not mechanism class.
 - → **Foundation-model dense init nói chung BỎ HẲN** (DUSt3R, MASt3R same class)
 - Cleanup: env + checkpoint + cache + source removed (~5GB freed). Code Phase 10A giữ default OFF.
 
-**Current state (2026-05-12): Phase 13 LFCF + AbsGS Round 1 WINNER 🎯, Round 2 verify pending**
+**Current state (2026-05-13): 🎯🎯 Phase 13 COMMIT WORTHY — Paper writeup phase**
+
 - Methodology lock: **multi-seed (3 seeds × 8 scenes paired) cho mọi ablation**. atomicAdd variance ±1.3 dB single-scene → paired comparison cancel noise.
-- **Phase 11 EXHAUSTED 6/6 REJECTED** (loss-axis dead):
-  - Step 1 (covisibility): 🟡 MARGINAL Δ +0.014 cross-batch — keep code OFF
-  - Step 2 (perceptual DINO): ❌ REJECTED Δ −0.046
-  - Stack S1+S2: ❌ REJECTED no synergy
-  - Step 4 (cross-view MPC): ❌ REJECTED Δ −0.042
-  - Step 5 (TV depth edge-preserving): ❌ REJECTED Δ −0.026
-- **Phase 12 EXHAUSTED 3/3 REJECTED** (position-axis CRS-pull dead):
-  - A1 (full pull): Δ=−0.027
-  - A2 (replace Phase 4): Δ=−0.033
-  - A3 (pull-only): Δ=−0.096
-  - → 9/9 CRS-axis attempts EXHAUSTED. Pivot frequency-axis Phase 13.
-- **🎯 Phase 13 EFA-GS LFCF + AbsGS — Round 1 BREAKTHROUGH (2026-05-12)**:
-  - A0 baseline = 21.172 (verify Phase 8 FULL reproducible)
-  - A1 LFCF alone = 21.187 (Δ=+0.015 NOT SIG)
-  - A2 LFCF no diffscale = 21.152 (Δ=−0.020 NOT SIG)
-  - **A3 LFCF + AbsGS = 21.331 (Δ=+0.159, 95% CI [+0.009, +0.309] SIG)** 🎯
-  - A4 AbsGS alone = 21.203 (Δ=+0.031 NOT SIG)
-  - **Synergy LFCF × AbsGS = +0.112 POSITIVE** (combo 3.5× linear sum)
-  - First commit-worthy CRS-axis improvement in 10/10 attempts
-  - Per-scene: A3 wins 6/8 (esp. horns +0.655), loses 2/8 simple planar (room, trex). A4 complementary on planar.
-  - Design doc: `docs/13_efa_gs_lfcf_design.md` (Section 14 Round 1 results appended)
-- **Round 2 verify IN PROGRESS** (user running):
-  - Seeds 137 + 9999 × 3 configs (A0, A3, **PLUS A4** for complementarity data) × 8 scenes = 48 runs ~3h
-  - Pooled N=24 paired Δ verdict → COMMIT-WORTHY (≥+0.10) → Phase 13.1 tolerance sweep
-- **Code regression** commit `0511edd` (May 9): A0 baseline drift 21.335 → 21.16-21.20. Paper number reproducible từ saved PLYs `output/p8/FULL_*/point_cloud/iteration_10000/`. Paired Δ within-batch cancels common-mode regression → Phase 11/12/13 verdicts VALID.
+- **Phase 11 EXHAUSTED 6/6 REJECTED** (loss-axis dead): Step 1 +0.014 marginal, Step 2 −0.046, Stack −0.007, Step 4 −0.042, Step 5 −0.026.
+- **Phase 12 EXHAUSTED 3/3 REJECTED** (position-axis CRS-pull dead): A1 −0.027, A2 −0.033, A3 −0.096. 9/9 CRS-axis attempts EXHAUSTED → pivot frequency-axis.
+- **🎯🎯 Phase 13 EFA-GS LFCF + AbsGS — COMMIT WORTHY N=24 (2026-05-13)**:
+  | Config | N | PSNR | Δ vs A0 | 95% CI | Verdict |
+  |--------|---|------|---------|--------|---------|
+  | A0 baseline | 24 | 21.166 | — | — | reference |
+  | A1 LFCF alone | 8 | 21.187 | +0.015 | [−0.133, +0.163] | ❌ NOT SIG |
+  | A2 LFCF no diffscale | 8 | 21.152 | −0.020 | [−0.149, +0.110] | ❌ NOT SIG |
+  | **A3 LFCF + AbsGS** | **24** | **21.330** | **+0.164** | **[+0.101, +0.227]** | **🎯 SIG WINNER** |
+  | A4 AbsGS alone | 24 | 21.244 | +0.078 | [+0.009, +0.147] | 🎯 SIG MARGINAL |
+
+  - **All 4 decision criteria PASS**: multi-seed N=24 Δ ≥ +0.10 ✓, CI excludes 0 ✓, 7/8 wins + 1 neutral ✓, per-seed all ≥ +0.10 ✓
+  - **First commit-worthy CRS-axis improvement in 10/10 attempts** (Phase 11 6/6 + Phase 12 3/3 + Phase 13 A1/A2 failed)
+  - **Phase 13 A3 N=24 = 21.330 ≈ Phase 8 paper 1-sample 21.335** BUT multi-seed reproducible
+  - **REVERSAL pattern** (paper main narrative): Phase 12 worst fails (horns −0.241, fortress −0.246, flower −0.180) ↔ Phase 13 best wins (+0.362, +0.101, +0.150) — symmetric mechanism reversal
+  - **Synergy LFCF × AbsGS = +0.071** (74% over linear sum)
+  - Per-scene N=24: horns +0.362 ⭐⭐⭐, orchids +0.224, trex +0.196, flower +0.150, fern +0.144, leaves +0.123, fortress +0.101, room +0.010 (neutral, ZERO hại scenes)
+  - Per-seed A3: 42=+0.159, 137=+0.195, 9999=+0.137 — robust signal
+  - Design doc: `docs/13_efa_gs_lfcf_design.md` (Section 14 Round 1 + Section 15 N=24 FINAL appended)
+- **Phase 13 FULL recipe locked**: Phase 8 FULL components + LFCF (scaler_max=1.5, interval=2, diffscale=ON, tolerance=1e-5) + AbsGS (uncomment line 154 + train.py:1053)
+- **Code regression** commit `0511edd` (May 9): A0 baseline drift 21.335 → 21.16-21.20. Paired Δ within-batch cancels common-mode regression → Phase 11/12/13 verdicts VALID. Paper writeup dùng Phase 13 N=24 fair baseline.
 
 **Reference targets (LLFF 3-view):**
 | Method | PSNR | Note |
 |--------|------|------|
-| Phase 8 FULL (paper, 1 sample) | 21.335 | first CRS variant defendable, current best (lucky sample) |
-| **Phase 8 FULL multi-seed** | **~21.16** | **Fair baseline N=24, baseline cho Phase 11/12/13** |
-| **🎯 Phase 13 A3 (LFCF + AbsGS) seed 42** | **21.331** | **Round 1 SIG winner, Round 2 verify pending** |
-| No-CRS Tier1 | 21.21 | D1-noCRS-O999 |
-| DOC-GS | 21.38 | gap −0.045 (within noise) — Phase 13 A3 đã chạm ngưỡng này |
-| BinocularGS | 21.44 | gap −0.105 — Phase 13 A3 gap −0.109 (close) |
-| **ICO-GS (SOTA)** | **22.20** | **gap −0.865** |
+| Phase 8 FULL (paper, 1 sample) | 21.335 | OLD baseline (lucky single-run) |
+| Phase 8 FULL multi-seed | 21.16 | Fair N=24 (pre-Phase-13) |
+| **🎯🎯 Phase 13 A3 (LFCF + AbsGS) N=24** | **21.330** | **🏆 New committed recipe** — multi-seed reproducible, MATCHES Phase 8 paper 1-run |
+| Phase 13 A4 (AbsGS only) N=24 | 21.244 | SIG marginal — Scenario 2 fallback |
+| No-CRS Tier1 | 21.21 | D1-noCRS-O999 (legacy baseline) |
+| DOC-GS | 21.38 | gap −0.05 (closing) |
+| BinocularGS | 21.44 | gap −0.11 (closing) |
+| **ICO-GS (SOTA)** | **22.20** | gap −0.87 (future work) |
 
 **Phase 11 FINAL results (multi-seed paired N=24):**
 | Step | Δ paired | SEM | Verdict |

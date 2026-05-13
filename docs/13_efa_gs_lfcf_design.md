@@ -1066,3 +1066,136 @@ python scripts/p13_lfcf_multiseed_analyze.py
 **END OF DESIGN DOC.**
 
 **Current status (2026-05-12 post Round 1):** A3 (LFCF + AbsGS) SIG WINNER seed 42. Round 2 verify in progress trên server. Pending pooled N=24 verdict cho Phase 13.1 trigger decision.
+
+---
+
+## Section 15 — N=24 FINAL RESULTS (2026-05-13, 3 seeds × 8 scenes paired) 🎯🎯
+
+### 15.1 Paired Δ summary FINAL
+
+| Config | N | PSNR | Δ vs A0 | SEM | 95% CI | Verdict |
+|---|---|---|---|---|---|---|
+| A0 baseline | 24 | 21.166 | — | — | — | reference |
+| A1 LFCF alone | 8 | 21.187 | +0.015 | 0.075 | [−0.133, +0.163] | ❌ NOT SIG (single-seed) |
+| A2 LFCF no diffscale | 8 | 21.152 | −0.020 | 0.066 | [−0.149, +0.110] | ❌ NOT SIG (single-seed) |
+| **A3 LFCF + AbsGS** | **24** | **21.330** | **+0.164** | **0.032** | **[+0.101, +0.227]** | **🎯 SIG WINNER** |
+| A4 AbsGS alone | 24 | 21.244 | +0.078 | 0.035 | [+0.009, +0.147] | 🎯 SIG MARGINAL |
+
+**Note**: A1 và A2 chỉ chạy seed 42 (N=8) vì Round 2 focus A0/A3/A4 cho complementarity data. A3 và A4 đủ N=24 ✓.
+
+### 15.2 Per-seed consistency (robustness check)
+
+| Seed | A0 | A3 | A4 | Δ_A3 |
+|---|---|---|---|---|
+| 42 | 21.172 | 21.331 | 21.203 | +0.159 |
+| 137 | 21.139 | 21.355 | 21.184 | +0.195 |
+| 9999 | 21.197 | 21.303 | 21.244 | +0.137 |
+
+**3/3 seeds Δ_A3 ≥ +0.10** → signal robust, KHÔNG phải seed-42 artifact.
+
+### 15.3 Per-scene final pattern (N=24)
+
+| Scene | Δ_A3 | Δ_A4 | Geometry type |
+|---|---|---|---|
+| **horns** | **+0.362** ⭐⭐⭐ | −0.119 | Thin antlers (complex HF) |
+| orchids | +0.224 ⭐⭐ | +0.255 | Thin petals/stems |
+| trex | +0.196 ⭐⭐ | +0.220 | Thin bone structure |
+| flower | +0.150 ⭐ | +0.098 | Thin petals + sharp edges |
+| fern | +0.144 ⭐ | +0.138 | Fronds + leaves |
+| leaves | +0.123 ⭐ | +0.131 | Foliage texture |
+| fortress | +0.101 ⭐ | −0.072 | Complex masonry |
+| **room** | **+0.010** | −0.026 | Simple planar (NEUTRAL, not hại) |
+
+**Critical observation**: Round 1 fear over room/trex (Δ_A3 −0.009, −0.038 seed 42) RESOLVED by multi-seed. N=24 final: room flip to neutral +0.010, trex BIG flip +0.196. → Original concern was Round 1 noise, signal underlying positive.
+
+**7/8 wins + 1 neutral + ZERO hại scenes** → uniformly positive across complexity spectrum.
+
+### 15.4 Attribution metrics FINAL (5 deltas)
+
+| Metric | Formula | Value | Interpretation |
+|---|---|---|---|
+| LFCF full effect | Δ_A1 | +0.015 | Neutral alone (N=8) |
+| Diffscale alone | Δ_A1 − Δ_A2 | +0.035 | Neutral (N=8) |
+| **AbsGS bonus on LFCF** | Δ_A3 − Δ_A1 | **+0.149** | BIG positive — LFCF unlocks AbsGS |
+| **AbsGS standalone** | Δ_A4 | **+0.078** | **SIG marginal** (CI [+0.009, +0.147]) |
+| **LFCF × AbsGS synergy** | Δ_A3 − (Δ_A1 + Δ_A4) | **+0.071** | POSITIVE 74% over linear (0.093) |
+
+**Synergy mechanism explained** (paper secondary story):
+- AbsGS catches asymmetric channel-wise gradients → finds RIGHT candidates (alone causes some over-split)
+- LFCF tolerance gates intelligently → prevents over-split on noise (alone signal too weak)
+- Diffscale isotropify → preserves thin geometry through enlarge
+- → Combo reinforces, không phải duplicate
+
+### 15.5 REVERSAL pattern — Paper main narrative
+
+Phase 12 CRS-pull worst failure modes ↔ Phase 13 best wins (symmetric mechanism reversal):
+
+| Scene | Phase 12 CRS-pull Δ | Phase 13 A3 Δ | Reversal magnitude |
+|---|---|---|---|
+| horns | −0.241 (worst) | **+0.362** | **0.603 dB swing** |
+| fortress | −0.246 (worst) | +0.101 | 0.347 |
+| flower | −0.180 | +0.150 | 0.330 |
+| room | +0.221 (winner) | +0.010 | −0.211 (Phase 12 specialist) |
+| fern | +0.185 (winner) | +0.144 | −0.041 (close) |
+
+**Mechanism reversal explained**:
+- Phase 12 CRS-pull: pull centroid TOWARD K-NN neighbors → HẠI thin geometry (K-NN gồm body neighbors → centroid lệch khỏi antler)
+- Phase 13 LFCF diffscale: shrink major axis, enlarge minor → ISOTROPIFY → PROTECT thin geometry (no anisotropic needle distortion)
+- → Same scenes, opposite mechanism, opposite results.
+
+### 15.6 4 decision criteria — ALL PASS
+
+| Criterion | Threshold | Result | ✓/✗ |
+|---|---|---|---|
+| Multi-seed N=24 paired Δ | ≥ +0.10 | +0.164 | ✓ |
+| 95% CI excludes 0 (strict) | lower bound > 0 | [+0.101, +0.227] | ✓ |
+| Per-scene robustness | ≥ 6/8 wins | 7/8 wins + 1 neutral | ✓ |
+| Per-seed consistency | all ≥ +0.10 | seeds 42/137/9999 all ≥ +0.137 | ✓ |
+
+→ **🎯🎯 COMMIT WORTHY**. First CRS-axis breakthrough in 10/10 attempts.
+
+### 15.7 Comparison vs literature
+
+| Method | PSNR | Note |
+|---|---|---|
+| Phase 8 paper (1 sample) | 21.335 | Lucky single-run, NOT reproducible multi-seed |
+| Phase 8 FULL multi-seed | 21.16 | Fair N=24 baseline |
+| **Phase 13 A3 N=24** ⭐ | **21.330** | **First multi-seed reproducible MATCH paper 1-run** |
+| DOC-GS | 21.38 | gap −0.05 (closing) |
+| BinocularGS | 21.44 | gap −0.11 (closing) |
+| ICO-GS SOTA | 22.20 | gap −0.87 (still open, future work) |
+
+### 15.8 Decision: COMMIT + next steps
+
+**Lock Phase 13 A3 as new FULL recipe**:
+```
+Phase 13 FULL = Phase 8 FULL components
+              + LFCF (scaler_max=1.5, interval_times=2, diffscale=ON, tolerance=1e-5)
+              + AbsGS (uncomment line 154 + train.py:1053)
+```
+
+**Production config update**:
+- `arguments/__init__.py`: `self.use_lfcf = True` (default ON, không False nữa)
+- Master scripts: include `--absdensify` flag default
+
+**Next steps**:
+1. **Optional Phase 13.1 tolerance sweep** (~3.5h, per Section 10.4) — paper appendix sensitivity:
+   - 4 tolerance × seed 42 × 8 scenes = 32 runs
+   - Validate 1e-5 trên LLFF 3-view regime
+2. **Optional Direction A λ scaler_max sweep** (~1-2h):
+   - scaler_max ∈ {1.3, 1.5, 1.8, 2.0} × 2 scenes (horns + room)
+   - Paper appendix robustness ("we explored LFCF intensity")
+3. **🎯 Paper writeup START** — 1-2 ngày draft:
+   - Main contribution: Phase 13 FULL recipe (CRS components + frequency-axis LFCF + AbsGS)
+   - Main narrative: REVERSAL pattern (Phase 12 fail modes → Phase 13 fix)
+   - Secondary: Synergy mechanism (LFCF × AbsGS +71% over linear)
+   - Comprehensive ablation: Phase 11 6/6 + Phase 12 3/3 + Phase 13 4 configs (paper appendix)
+   - Gap acknowledgment: ICO-GS 22.20 still open, future work
+
+**KHÔNG cần Direction B (iter 15k stack) hoặc Direction C (per-scene adaptive)** ở v1 paper. Defer to future work.
+
+---
+
+**END OF DESIGN DOC.**
+
+**Final status (2026-05-13):** Phase 13 A3 (LFCF + AbsGS) COMMITTED as new Phase 13 FULL recipe. N=24 Δ=+0.164 SIG, 4/4 decision criteria pass. Paper writeup phase begins.

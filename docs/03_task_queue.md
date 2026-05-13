@@ -483,43 +483,61 @@ Cleanup completed (Rule 13): `utils/loss/crs_pull.py` deleted, scripts annotated
 
 ---
 
-## PHASE 13 — EFA-GS LFCF + AbsGS port (CURRENT, Round 2 verify pending)
+## PHASE 13 — EFA-GS LFCF + AbsGS port (🎯🎯 DONE COMMIT WORTHY 2026-05-13)
 
-**Design doc**: `docs/13_efa_gs_lfcf_design.md` (974+ lines, user approved 2026-05-12)
+**Design doc**: `docs/13_efa_gs_lfcf_design.md` (1100+ lines, Section 15 FINAL appended)
 
-### Round 1 RESULTS (seed 42, N=8 paired, DONE 2026-05-12)
+### FINAL N=24 RESULTS (3 seeds × 8 scenes paired, 2026-05-13)
 
-| Config | PSNR | Δ vs A0 | 95% CI | Verdict |
-|--------|------|---------|--------|---------|
-| A0 (Phase 8 FULL baseline) | 21.172 | — | — | reference |
-| A1 (LFCF alone) | 21.187 | +0.015 | [−0.133, +0.163] | ❌ REJECT |
-| A2 (LFCF no diffscale) | 21.152 | −0.020 | [−0.149, +0.110] | ❌ REJECT |
-| **A3 (LFCF + AbsGS)** | **21.331** | **+0.159** | **[+0.009, +0.309]** | **🎯 SIG WINNER** |
-| A4 (AbsGS alone) | 21.203 | +0.031 | [−0.107, +0.170] | ❌ REJECT |
+| Config | N | PSNR | Δ vs A0 | 95% CI | Verdict |
+|--------|---|------|---------|--------|---------|
+| A0 (Phase 8 FULL baseline) | 24 | 21.166 | — | — | reference |
+| A1 (LFCF alone) | 8 | 21.187 | +0.015 | [−0.133, +0.163] | ❌ NOT SIG |
+| A2 (LFCF no diffscale) | 8 | 21.152 | −0.020 | [−0.149, +0.110] | ❌ NOT SIG |
+| **A3 (LFCF + AbsGS)** | **24** | **21.330** | **+0.164** | **[+0.101, +0.227]** | **🎯 SIG WINNER** |
+| A4 (AbsGS alone) | 24 | 21.244 | +0.078 | [+0.009, +0.147] | 🎯 SIG MARGINAL |
 
-**Attribution**: LFCF × AbsGS synergy = **+0.112** (combo 3.5× linear sum). First commit-worthy CRS-axis improvement in 10 attempts.
+**4 decision criteria ALL PASS** (Section 15.6):
+1. Multi-seed N=24 paired Δ ≥ +0.10 ✓ (+0.164)
+2. 95% CI excludes 0 strict ✓ ([+0.101, +0.227])
+3. Per-scene robustness ≥ 6/8 wins ✓ (7/8 + 1 neutral, ZERO hại)
+4. Per-seed consistency all ≥ +0.10 ✓ (seeds 42/137/9999: +0.159, +0.195, +0.137)
 
-**Per-scene complementarity**: A3 wins 6/8 (esp. thin structures horns +0.655, orchids +0.198, leaves +0.181). A4 wins 5/8 (planar room +0.018, trex +0.211). A3 hại trên simple/planar (room −0.009, trex −0.038).
+**Phase 13 = first CRS-axis breakthrough in 10/10 attempts.** Phase 13 A3 N=24 (21.330) ≈ Phase 8 paper 1-sample (21.335) NHƯNG multi-seed reproducible.
 
-### Round 2 — IN PROGRESS (user running)
+### Tasks completed
 
-| # | Task | Status |
-|---|------|--------|
-| T13.1 | Round 2 verify: A0 + **A3 + A4** × seeds {137, 9999} × 8 scenes = 48 runs ~3h | [~] running |
-| T13.2 | Pooled N=24 analyzer → verdict | [ ] pending Round 2 |
-| T13.3 | **Phase 13.1 Tolerance sweep** (gate: pooled Δ_A3 ≥ +0.10) | [ ] contingent |
-| T13.4 | Update Phase 8 FULL → Phase 13 FULL recipe (if commit) | [ ] |
-| T13.5 | Paper writeup START (if commit) | [ ] |
+| # | Task | Status | Result |
+|---|------|--------|--------|
+| T13.0 | Implementation (Phase 13 port) | [x] DONE | utils/densify/lfcf.py + 8 sửa gaussian_model.py + 3 sửa train.py + 9 flags |
+| T13.1 | Round 1 ablation (seed 42, 5 configs) | [x] DONE 2026-05-12 | A3 Δ=+0.159 SIG seed 42 |
+| T13.2 | Round 2 multi-seed verify (seeds 137+9999, A0/A3/A4) | [x] DONE 2026-05-13 | Pooled N=24 Δ_A3=+0.164 SIG |
+| T13.3 | Pooled N=24 analyzer + verdict | [x] DONE | 🎯🎯 COMMIT WORTHY |
 
-### Decision tree (after Round 2)
+### Next steps (post-commit, ranked by priority)
 
-```
-Pooled N=24 Δ_A3 vs A0:
-  ≥ +0.20 → 🎯 BREAKTHROUGH → Phase 13.1 tolerance sweep + paper writeup
-  +0.10..+0.20 → 🎯 WINNER → Phase 13.1 → paper writeup
-  +0.05..+0.10 → 🟡 MARGINAL → λ scaler_max sweep contingency
-  < +0.05 → ❌ REJECT (unlikely given Round 1 Δ=+0.159 SIG)
-```
+| # | Task | Cost | Type |
+|---|------|------|------|
+| **T13.4** | **Lock Phase 13 A3 as new FULL recipe** (change defaults) | 30 min | code config |
+| T13.5 | Optional Phase 13.1 tolerance sweep (~3.5h, per Section 10.4) | 3.5h | paper appendix sensitivity |
+| T13.6 | Optional Direction A λ scaler_max sweep (~1-2h) | 1-2h | paper appendix robustness |
+| **T13.7** | **🎯 Paper writeup START** | 1-2 ngày draft | main deliverable |
+
+### Paper narrative (Section 15.5)
+
+**Main story — REVERSAL pattern**: Phase 12 CRS-pull worst failure modes (horns −0.241, fortress −0.246, flower −0.180) ↔ Phase 13 best wins (+0.362, +0.101, +0.150) — symmetric mechanism reversal:
+- Phase 12: pull centroid → HẠI thin geometry
+- Phase 13 diffscale: isotropify → PROTECT thin geometry
+
+**Secondary story — Synergy +0.071** (74% over linear): AbsGS catch + LFCF gate + diffscale shape combo.
+
+**Comprehensive ablation**: Phase 11 6/6 + Phase 12 3/3 + Phase 13 4 configs = 13 mechanism classes evaluated, defendable.
+
+**Comparison vs literature**:
+- Phase 13 A3 N=24 = 21.330 (multi-seed reproducible)
+- DOC-GS 21.38 (gap −0.05, closing)
+- BinocularGS 21.44 (gap −0.11, closing)
+- ICO-GS SOTA 22.20 (gap −0.87, future work)
 
 ### Key files
 
