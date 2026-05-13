@@ -1,5 +1,11 @@
 #!/usr/bin/env python
 # ============================================================
+# DEPRECATED 2026-05-11: Phase 10A (DUSt3R dense init) AXIS DEAD
+# Δ=−0.898 AUGMENT / −3.529 REPLACE (catastrophic). Flags removed from
+# arguments/__init__.py — module utils/init/ deleted. Script no longer runnable.
+# Kept for paper reproducibility evidence. See CLAUDE.md Phase 10A results.
+# ============================================================
+# ============================================================
 # [CRSGaussian Phase 10A] Pre-compute DUSt3R dense point cloud per scene.
 # File: scripts/precompute_dust3r.py (NEW)
 #

@@ -484,6 +484,9 @@ def update_crs(
     crs_w_s: float = 0.33,
     # ── [CRSGaussian Phase 9] D-only formula support ──
     disable_r_signal: bool = False,
+    # ── [CRSGaussian Phase 11 Step 3] R_feature replace R_visible ──
+    use_r_feature: bool = False,
+    dino_cache=None,
 ) -> None:
     """Tính D_i, R_i rồi update gaussians._crs_score in-place bằng EMA.
 
@@ -586,18 +589,26 @@ def update_crs(
         # Behavior cũ — D_DAV2 (depth consistency với DepthAnything V2 prior).
         D = compute_depth_consistency(xyz, cameras, aligned_depth_dict, depth_range)
 
-    # ── [CRSGaussian Phase 8a + 9] R signal: visible / disabled ──
+    # ── [CRSGaussian Phase 8a + 9 + 11s3] R signal: feature / visible / disabled ──
     # disable_r_signal=True (Phase 9) → R=None, formula bỏ qua R hoàn toàn.
+    # use_r_feature=True (Phase 11 Step 3) → DINO patch sim thay GT RGB sim.
     # use_r_visible=True (Phase 8a) → R_visible với occlusion filter.
     # Default → R_visible mode legacy (occlusion off).
     if need_r_compute:
-        R = compute_reprojection_consistency(
-            xyz, cameras,
-            use_r_visible=use_r_visible,
-            rendered_depths=shared_depth_maps,
-            occlusion_tolerance=r_visible_occlusion_tolerance,
-            min_visible_views=r_visible_min_views,
-        )
+        if use_r_feature and dino_cache is not None:
+            from utils.crs.r_feature import compute_R_feature
+            R = compute_R_feature(
+                gaussians, cameras, dino_cache,
+                min_visible_views=r_visible_min_views,
+            )
+        else:
+            R = compute_reprojection_consistency(
+                xyz, cameras,
+                use_r_visible=use_r_visible,
+                rendered_depths=shared_depth_maps,
+                occlusion_tolerance=r_visible_occlusion_tolerance,
+                min_visible_views=r_visible_min_views,
+            )
     else:
         R = None
 

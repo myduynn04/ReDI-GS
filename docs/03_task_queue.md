@@ -455,42 +455,132 @@ Xem **decisions_log [2026-05-07] Phase 10A — DUSt3R Dense Init FAIL hard**.
 
 | # | Step | Lever | Cost | Verdict | Status |
 |---|------|-------|------|---------|--------|
-| T11.1 | **Step 1** — CRS × Covisibility reweight (depth-based) | Per-pixel weight cov_norm × CRS_pix on L_phot | 0.5d + 5h test | 🟡 **MARGINAL** (cross-batch Δ +0.014) | [x] **DONE** |
-| T11.2 | Step 2 — Same-view perceptual DINO | Cosine distance feat_render vs feat_GT same view | 0.5d + 3h | ❌ **REJECTED** (Δ −0.046 ± 0.056) | [x] **DONE** |
-| T11.3 | Stack (S1+S2) — synergy test | Both flags ON simultaneously | 3h | ❌ **REJECTED** (no synergy, Δ_Synergy −0.063) | [x] **DONE** |
-| T11.4 | **Step 4** — Cross-view MPC + Step 5 TV depth (parallel) | Anti-overfit: geometric depth warping + smooth depth field | 1d + 6h | [~] **IN PROGRESS** | parallel run |
+| T11.1 | **Step 1** — CRS × Covisibility reweight (depth-based) | Per-pixel weight cov_norm × CRS_pix on L_phot | 0.5d + 5h test | 🟡 **MARGINAL** (cross-batch Δ +0.014) | [x] **DONE** keep code OFF |
+| T11.2 | Step 2 — Same-view perceptual DINO | Cosine distance feat_render vs feat_GT same view | 0.5d + 3h | ❌ **REJECTED** (Δ −0.046 ± 0.056) | [x] **DONE** cleanup pending |
+| T11.3 | Stack (S1+S2) — synergy test | Both flags ON simultaneously | 3h | ❌ **REJECTED** (no synergy, Δ_Synergy −0.063) | [x] **DONE** cleanup script |
+| T11.4 | **Step 4** — Cross-view MPC | Anti-overfit: geometric DINO warp | 1d + 3h | ❌ **REJECTED** (Δ −0.042, incomplete s9999 4 scenes) | [x] **DONE** cleanup pending |
+| T11.5 | **Step 5** — TV depth edge-preserving | Anti-overfit: smooth depth field | 0.5d + 3h | ❌ **REJECTED** (Δ −0.026 ± 0.051) | [x] **DONE** cleanup pending |
 
-**Phase 11 Step 1 verdict — MARGINAL keep default OFF:**
-- Cross-batch N=48 combined Δ ≈ +0.0135 (effectively zero)
-- Code kept default OFF, documented for paper "we explored, signal within noise"
+**Phase 11 LOSS-AXIS EXHAUSTED — 6/6 attempts REJECTED:**
+- All 6 mechanism classes tested multi-seed N=24 paired, none significant
+- Phase 11 Step 1 batch 2 A1 mean = 21.186 (highest, single batch lucky)
+- No A1 mean robustly > 21.20 across batches
+- Ceiling ≈ 21.18 ± 0.05 multi-seed → Phase 8 FULL recipe practical optimum
 
-**Phase 11 Step 2 + Stack verdict — REJECTED:**
-- Perceptual class (feature reweight) exhausted trên Phase 8 FULL
-- Phase 7 LWEIGHT precedent confirmed (similar mechanisms không stack additive)
+**Code regression confirmed (commit 0511edd May 9):**
+- Phase 8 paper 21.335 NOT reproducible from current code
+- 5 batches consistent A0 ≈ 21.16-21.20 (gap −0.155 dB vs paper)
+- Commit message: "mất config phase 8 full được 21.335"
+- Unable to bisect (no git snapshot at Phase 8 ablation working tree)
+- Paired Δ within-batch CANCELS regression → Phase 11 verdicts VALID
+- Accept current baseline; paper 21.335 reproducible từ saved PLYs
 
-**Phase 11 Step 4+5 plan (anti-overfit, current):**
-- Test blur diagnosis (2026-05-09): structural overfit gap (~15 dB train-test)
-- Test blur root cause: floater render lệch ở test view
-- **REJECTED** edge-aware/sobel/MS-SSIM (pro-overfit, would widen gap)
-- **APPROVED** Step 4 (cross-view MPC, geometric) + Step 5 (TV depth edge-preserving)
+## PHASE 12 — DONE REJECT (2026-05-12) → Pivot Phase 13
 
-**Decision tree:**
-| Outcome | Action |
-|---------|--------|
-| Step 4 ≥ +0.10 only | 🎯 SHIP Step 4 |
-| TV (Step 5) ≥ +0.10 only | 🎯 SHIP TV |
-| Both ≥ +0.10 → Phase 3 combined | Test stack synergy |
-| Combined ≥ max(alone) + 0.05 | 🎯 SHIP STACK |
-| Combined ≥ max(alone) | 🎯 SHIP MAX SINGLE (simpler) |
-| Combined < max(alone) | ⚠️ STACK NEGATIVE → SHIP MAX |
-| Cả 2 < +0.10 | ❌ ACCEPT CEILING, paper writeup |
+**Verdict**: CRS-pull 3/3 configs REJECT seed 42 (Δ_A1=−0.027, Δ_A2=−0.033, Δ_A3=−0.096, all 95% CI cross 0). CRS axis 9/9 EXHAUSTED. Pivot frequency-axis EFA-GS LFCF (Phase 13).
 
-**Pivot plan (if Step 4+5 all fail):**
-| Direction | Cost | Note |
-|-----------|------|------|
-| Scale regularizer (Gaussian over-large) | 0.5d | Anti-overfit, address scale-induced blur |
-| Stereo pseudo-view (BinocularGS wider baseline) | 1d | Risk Phase 5b2 reject lặp lại |
-| Accept Phase 8 FULL ceiling (21.335 / 21.15 multi-seed) | 0 | Document negative results: 4 loss-axis explored |
+Cleanup completed (Rule 13): `utils/loss/crs_pull.py` deleted, scripts annotated DEPRECATED, 15 flags removed.
+
+---
+
+## PHASE 13 — EFA-GS LFCF + AbsGS port (CURRENT, Round 2 verify pending)
+
+**Design doc**: `docs/13_efa_gs_lfcf_design.md` (974+ lines, user approved 2026-05-12)
+
+### Round 1 RESULTS (seed 42, N=8 paired, DONE 2026-05-12)
+
+| Config | PSNR | Δ vs A0 | 95% CI | Verdict |
+|--------|------|---------|--------|---------|
+| A0 (Phase 8 FULL baseline) | 21.172 | — | — | reference |
+| A1 (LFCF alone) | 21.187 | +0.015 | [−0.133, +0.163] | ❌ REJECT |
+| A2 (LFCF no diffscale) | 21.152 | −0.020 | [−0.149, +0.110] | ❌ REJECT |
+| **A3 (LFCF + AbsGS)** | **21.331** | **+0.159** | **[+0.009, +0.309]** | **🎯 SIG WINNER** |
+| A4 (AbsGS alone) | 21.203 | +0.031 | [−0.107, +0.170] | ❌ REJECT |
+
+**Attribution**: LFCF × AbsGS synergy = **+0.112** (combo 3.5× linear sum). First commit-worthy CRS-axis improvement in 10 attempts.
+
+**Per-scene complementarity**: A3 wins 6/8 (esp. thin structures horns +0.655, orchids +0.198, leaves +0.181). A4 wins 5/8 (planar room +0.018, trex +0.211). A3 hại trên simple/planar (room −0.009, trex −0.038).
+
+### Round 2 — IN PROGRESS (user running)
+
+| # | Task | Status |
+|---|------|--------|
+| T13.1 | Round 2 verify: A0 + **A3 + A4** × seeds {137, 9999} × 8 scenes = 48 runs ~3h | [~] running |
+| T13.2 | Pooled N=24 analyzer → verdict | [ ] pending Round 2 |
+| T13.3 | **Phase 13.1 Tolerance sweep** (gate: pooled Δ_A3 ≥ +0.10) | [ ] contingent |
+| T13.4 | Update Phase 8 FULL → Phase 13 FULL recipe (if commit) | [ ] |
+| T13.5 | Paper writeup START (if commit) | [ ] |
+
+### Decision tree (after Round 2)
+
+```
+Pooled N=24 Δ_A3 vs A0:
+  ≥ +0.20 → 🎯 BREAKTHROUGH → Phase 13.1 tolerance sweep + paper writeup
+  +0.10..+0.20 → 🎯 WINNER → Phase 13.1 → paper writeup
+  +0.05..+0.10 → 🟡 MARGINAL → λ scaler_max sweep contingency
+  < +0.05 → ❌ REJECT (unlikely given Round 1 Δ=+0.159 SIG)
+```
+
+### Key files
+
+| File | Status | Role |
+|------|--------|------|
+| `utils/densify/lfcf.py` | Implemented | Pure functions: tolerance compare, diffscale, depth-aware split prob |
+| `scene/gaussian_model.py` | Extended | LFCF mode gate trong `densify_and_prune` + LFCF attrs prune/postfix |
+| `arguments/__init__.py` | Extended | 9 LFCF flags + uncomment `absdensify` |
+| `train.py` | Extended | LFCF hook + uncomment `--absdensify` CLI |
+| `scripts/p13_lfcf_multiseed.sh` | Done | 5 configs ablation |
+| `scripts/p13_lfcf_multiseed_analyze.py` | Done | 5-config attribution + 4 paired Δ |
+
+---
+
+## PHASE 12 archive — Improvement attempts pre-Phase-13
+
+User stance (pre-Phase-13 pivot): KHÔNG writeup vội. Try untouched directions.
+
+### Cleanup (parallel với Track 1)
+
+| Item | Action | Status |
+|------|--------|--------|
+| Phase 11 Step 2/4/5 rejected modules | Delete files, hooks, flags | [~] cleanup prompt drafted |
+| Phase 5b rejected modules | Delete pseudo_depth/photo | [~] |
+| DINOv2 wrapper (only used by Step 2/3/4) | Delete | [~] |
+| Step 1 Covisibility (MARGINAL) | KEEP code default OFF | preserved |
+| Phase 7 LWEIGHT | KEEP reference | preserved |
+| Phase 10A code | KEEP for now (separate decision) | preserved |
+
+### Improvement attempts (ranked)
+
+| # | Direction | Probability ≥+0.10 | Cost | Class |
+|---|-----------|---------------------|------|-------|
+| **T12.1** | **Iter budget 15k test** | ~25-30% | 0 code | Quick CLI flag test |
+| T12.2 | Visibility-based prune | ~20-25% | 0.5 ngày | Anti-overfit, different from CRS |
+| **T12.3** | **Mip-Splatting anti-aliasing** | **~30-40%** | 2-3 ngày | Rendering trick, highest probability |
+| T12.4 | Anisotropy regularizer | ~15-20% | 0.5 ngày | Anti-overfit shape |
+| T12.5 | Soft scale regularizer | ~15-20% | 0.3 ngày | Anti-overfit no position move |
+| T12.6 | CRS-pull (user idea) | ~15% | 1-2 ngày | Position-axis, CRS reliability risk |
+| T12.7 | Density-aware densify | ~15-20% | 1 ngày | Untested precedent |
+
+### Decision tree
+
+```
+Phase A: T12.1 (Iter 15k) — instant
+  Δ ≥ +0.10 → scale multi-seed → COMMIT if confirm
+  < +0.05    → Phase B
+
+Phase B: T12.2 (Visibility prune) — 0.5 ngày
+  Δ ≥ +0.10 → confirm → COMMIT
+  Δ < +0.05  → Phase C
+
+Phase C: T12.3 (Mip-Splatting) — 2-3 ngày
+  Δ ≥ +0.10 → COMMIT, strong paper claim
+  < +0.05    → ACCEPT ceiling, writeup with comprehensive negative results
+
+Phase D (fallback): writeup
+  Phase 8 FULL 21.335 paper baseline
+  6 Phase 11 + 3 Phase 12 negative results documented
+  Methodology contribution: multi-seed paired methodology
+```
 
 ---
 

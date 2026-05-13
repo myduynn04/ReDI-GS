@@ -313,19 +313,32 @@ class OptimizationParams(ParamGroup):
         self.disable_r_signal             = False    # True → w_r=0, skip R compute (D-only formula)
         self.disable_global_sh_freeze     = False    # True → bypass freeze_sh_after, dùng CRS-mod freeze thay
 
-        # ── [CRSGaussian Phase 13] LFCF densification (EFA-GS port) ──
-        # Replace standard clone/split với tolerance-based decision +
-        # diffscale isotropify + probabilistic split. Default OFF — behavior
-        # identical Phase 8 FULL khi use_lfcf=False.
-        self.use_lfcf                  = False    # master switch
-        self.lfcf_init_scaling_max     = 1.5      # TaT default — enlarge ceiling
-        self.lfcf_init_scaling_min     = 1.0      # depth-adaptive lower bound
-        self.lfcf_last_scaling_max     = 1.0      # decay target tại densify_until
-        self.lfcf_pow                  = 1.0      # decay rate (linear)
-        self.lfcf_splitting_ub         = 1.0      # split prob upper bound
-        self.lfcf_interval_times       = 2        # LFCF mỗi 2 × densify_interval
-        self.lfcf_tolerance            = 1e-5     # FP-stability tolerance for grad compare
-        self.lfcf_diffscale            = True     # volume-preserving isotropify
+        # ── [CRSGaussian Phase 12] CRS-pull floater transformative loss ──
+        # Pull low-CRS Gaussians toward K-NN gated neighbor centroid + shrink
+        # scale + fade opacity. Position-axis transformative (vs Phase 4 prune
+        # + Phase 8c freeze). Khác cơ chế: Phase 4 xóa, Phase 12 move + soft.
+        # disable_crs_pruning: True → bypass Phase 4 CRS pruning (test CRS-pull
+        # replace prune). Default OFF (Phase 8 FULL prune giữ nguyên).
+        self.disable_crs_pruning        = False
+        # Master switch + λ weights
+        self.use_crs_pull               = False
+        self.lambda_crs_pull            = 0.005   # main pull loss weight
+        self.lambda_crs_pull_scale      = 0.001   # smart scale shrink weight
+        self.lambda_crs_pull_opacity    = 0.001   # opacity fade weight
+        # Floater detection + gating
+        self.crs_pull_tau_floater       = 0.4     # CRS < tau → eligible to pull
+        self.crs_pull_k_search          = 20      # K-NN search candidates
+        self.crs_pull_k_use             = 8       # K-NN final after gating
+        self.crs_pull_tau_surface       = 0.5     # CRS_j > tau_surface qualifies
+        self.crs_pull_margin            = 0.15    # CRS_j > CRS_i + margin
+        self.crs_pull_max_dist_frac     = 0.05    # max neighbor dist × scene_extent
+        self.crs_pull_min_neighbors     = 3       # skip floater if < N valid neighbors
+        # Loss shaping
+        self.crs_pull_huber_delta_frac  = 0.1     # Huber delta × scene_extent
+        # Schedule
+        self.crs_pull_start_iter        = 2000    # bắt đầu sau geometry stable
+        self.crs_pull_ramp_iters        = 500     # linear ramp tránh shock
+        self.crs_pull_update_freq       = 100     # K-NN cache refresh interval
 
         super().__init__(parser, "Optimization Parameters")
 

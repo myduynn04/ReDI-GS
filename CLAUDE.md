@@ -68,39 +68,61 @@ Hypothesis: signal D+R bottleneck, not mechanism class.
 - → **Foundation-model dense init nói chung BỎ HẲN** (DUSt3R, MASt3R same class)
 - Cleanup: env + checkpoint + cache + source removed (~5GB freed). Code Phase 10A giữ default OFF.
 
-**Current state (2026-05-09): Phase 11 — Anti-overfit + Geometric path (Step 4 + 5 parallel)**
+**Current state (2026-05-12): Phase 13 LFCF + AbsGS Round 1 WINNER 🎯, Round 2 verify pending**
 - Methodology lock: **multi-seed (3 seeds × 8 scenes paired) cho mọi ablation**. atomicAdd variance ±1.3 dB single-scene → paired comparison cancel noise.
-- Phase 11 verdicts:
-  - Step 1 (covisibility reweight): 🟡 MARGINAL cross-batch Δ +0.014 → keep default OFF
-  - Step 2 (perceptual DINO same-view): ❌ REJECTED Δ −0.046
-  - Stack (S1+S2): ❌ REJECTED no synergy (Δ_Synergy −0.063)
-  - → Perceptual/reweight class exhausted
-- Test blur diagnosis (2026-05-09): structural overfit gap 15 dB → anti-overfit framework
-- Current ablation:
-  - **Step 4**: Cross-view feature MPC (DINO + depth warping), code ready, ~3h
-  - **Step 5**: TV depth edge-preserving regularizer, code in progress, ~3h
-- Decision: combined ≥ max(alone) + 0.05 → SHIP STACK; combined < max(alone) → ⚠️ STACK NEGATIVE warning
+- **Phase 11 EXHAUSTED 6/6 REJECTED** (loss-axis dead):
+  - Step 1 (covisibility): 🟡 MARGINAL Δ +0.014 cross-batch — keep code OFF
+  - Step 2 (perceptual DINO): ❌ REJECTED Δ −0.046
+  - Stack S1+S2: ❌ REJECTED no synergy
+  - Step 4 (cross-view MPC): ❌ REJECTED Δ −0.042
+  - Step 5 (TV depth edge-preserving): ❌ REJECTED Δ −0.026
+- **Phase 12 EXHAUSTED 3/3 REJECTED** (position-axis CRS-pull dead):
+  - A1 (full pull): Δ=−0.027
+  - A2 (replace Phase 4): Δ=−0.033
+  - A3 (pull-only): Δ=−0.096
+  - → 9/9 CRS-axis attempts EXHAUSTED. Pivot frequency-axis Phase 13.
+- **🎯 Phase 13 EFA-GS LFCF + AbsGS — Round 1 BREAKTHROUGH (2026-05-12)**:
+  - A0 baseline = 21.172 (verify Phase 8 FULL reproducible)
+  - A1 LFCF alone = 21.187 (Δ=+0.015 NOT SIG)
+  - A2 LFCF no diffscale = 21.152 (Δ=−0.020 NOT SIG)
+  - **A3 LFCF + AbsGS = 21.331 (Δ=+0.159, 95% CI [+0.009, +0.309] SIG)** 🎯
+  - A4 AbsGS alone = 21.203 (Δ=+0.031 NOT SIG)
+  - **Synergy LFCF × AbsGS = +0.112 POSITIVE** (combo 3.5× linear sum)
+  - First commit-worthy CRS-axis improvement in 10/10 attempts
+  - Per-scene: A3 wins 6/8 (esp. horns +0.655), loses 2/8 simple planar (room, trex). A4 complementary on planar.
+  - Design doc: `docs/13_efa_gs_lfcf_design.md` (Section 14 Round 1 results appended)
+- **Round 2 verify IN PROGRESS** (user running):
+  - Seeds 137 + 9999 × 3 configs (A0, A3, **PLUS A4** for complementarity data) × 8 scenes = 48 runs ~3h
+  - Pooled N=24 paired Δ verdict → COMMIT-WORTHY (≥+0.10) → Phase 13.1 tolerance sweep
+- **Code regression** commit `0511edd` (May 9): A0 baseline drift 21.335 → 21.16-21.20. Paper number reproducible từ saved PLYs `output/p8/FULL_*/point_cloud/iteration_10000/`. Paired Δ within-batch cancels common-mode regression → Phase 11/12/13 verdicts VALID.
 
 **Reference targets (LLFF 3-view):**
 | Method | PSNR | Note |
 |--------|------|------|
 | Phase 8 FULL (paper, 1 sample) | 21.335 | first CRS variant defendable, current best (lucky sample) |
-| **Phase 8 FULL multi-seed** | **~21.16** | **Fair baseline N=24 (3 seeds × 8 scenes), use cho Phase 11 comparison** |
+| **Phase 8 FULL multi-seed** | **~21.16** | **Fair baseline N=24, baseline cho Phase 11/12/13** |
+| **🎯 Phase 13 A3 (LFCF + AbsGS) seed 42** | **21.331** | **Round 1 SIG winner, Round 2 verify pending** |
 | No-CRS Tier1 | 21.21 | D1-noCRS-O999 |
-| DOC-GS | 21.38 | gap −0.045 (within noise) |
-| BinocularGS | 21.44 | gap −0.105 |
+| DOC-GS | 21.38 | gap −0.045 (within noise) — Phase 13 A3 đã chạm ngưỡng này |
+| BinocularGS | 21.44 | gap −0.105 — Phase 13 A3 gap −0.109 (close) |
 | **ICO-GS (SOTA)** | **22.20** | **gap −0.865** |
 
-**Phase 11 results so far (multi-seed paired N=24):**
+**Phase 11 FINAL results (multi-seed paired N=24):**
 | Step | Δ paired | SEM | Verdict |
 |------|----------|-----|---------|
-| Step 1 (covisibility) cross-batch | +0.014 | — | 🟡 MARGINAL |
-| Step 2 (perceptual DINO) | −0.046 | 0.056 | ❌ REJECTED |
-| Stack (S1+S2) | −0.007 | 0.043 | ❌ REJECTED no synergy |
-| Step 4 (cross-view MPC) | — | — | [~] IN PROGRESS |
-| Step 5 (TV depth) | — | — | [~] IN PROGRESS |
+| Step 1 (covisibility) cross-batch | +0.014 | — | 🟡 MARGINAL keep OFF |
+| Step 2 (perceptual DINO same-view) | −0.046 | 0.056 | ❌ REJECTED |
+| Stack (S1+S2) factorial | −0.007 | 0.043 | ❌ REJECTED no synergy |
+| Step 4 (cross-view feature MPC) | −0.042 | 0.046 | ❌ REJECTED (incomplete s9999 4 scenes) |
+| Step 5 (TV depth edge-preserving) | −0.026 | 0.051 | ❌ REJECTED |
 
-**To break SOTA:** Phase 11 Step 4+5 anti-overfit path (cross-view MPC + TV depth). Perceptual class exhausted. Honest probability Step 4+5 stack ~30-40% break test blur ceiling.
+**Phase 11 verdict**: 6/6 attempts ≈ noise. Loss-axis exhausted on Phase 8 FULL backbone.
+
+**Phase 12 (current): improvement attempts beyond loss-axis**
+- T12.1 Iter budget 15k (0 code, ~25-30%)
+- T12.2 Visibility-based prune (0.5 ngày, ~20-25%)
+- T12.3 Mip-Splatting anti-aliasing (2-3 ngày, ~30-40% highest probability)
+- Fallback: accept ceiling, comprehensive paper writeup
 
 Xem **docs/11_crs_diagnostic_redesign.md** cho full arc + Phase 7-9 details.
 
@@ -518,15 +540,21 @@ Phase 10 — DUSt3R Dense Init — DONE (FAILED, axis DEAD, 2026-05-07)
   T10.1c [x] Diagnostic 6-run FILTER/DENSIFY/BOTH → ceiling −0.07
   → Foundation-model dense init BỎ HẲN. Cleanup done.
 
-Phase 11 — Loss-axis + Anti-overfit Exploration (2026-05-09)
-  Methodology: multi-seed (3 seeds × 8 scenes paired) ALL ablations
+Phase 11 — Loss-axis Exploration — DONE EXHAUSTED (2026-05-11)
+  Methodology: multi-seed (3 seeds × 8 scenes paired) N=24 ALL ablations
   T11.1 [x] Step 1: Covisibility reweight       — 🟡 MARGINAL Δ +0.014 → keep OFF
   T11.2 [x] Step 2: Same-view perceptual DINO   — ❌ REJECTED Δ −0.046
   T11.3 [x] Stack (S1+S2):                       — ❌ REJECTED no synergy
-  T11.4 [~] Step 4: Cross-view MPC (anti-overfit)— IN PROGRESS
-  T11.5 [~] Step 5: TV depth edge-preserving     — IN PROGRESS (parallel)
-  T11.6 [ ] Optional combined Step 4 + Step 5
-  Goal: break test blur (floater root cause). Combined synergy expected ~30-40%.
+  T11.4 [x] Step 4: Cross-view MPC               — ❌ REJECTED Δ −0.042 (partial s9999)
+  T11.5 [x] Step 5: TV depth edge-preserving     — ❌ REJECTED Δ −0.026
+  → 6/6 attempts ≈ noise. Ceiling ≈ 21.18 multi-seed.
+
+Phase 12 — Continue improvement attempts + Cleanup — CURRENT
+  T12.0 [~] Cleanup Phase 11 REJECTED modules + Phase 5b
+  T12.1 [ ] Iter budget 15k test (0 code, ~25-30%)
+  T12.2 [ ] Visibility-based prune (0.5 ngày, ~20-25%)
+  T12.3 [ ] Mip-Splatting anti-aliasing (2-3 ngày, ~30-40% highest prob)
+  Fallback: accept ceiling, comprehensive paper writeup
 
 Phase 12 — Full Experiments (deferred)
 ```

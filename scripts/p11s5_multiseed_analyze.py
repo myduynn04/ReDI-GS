@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# ============================================================
+# DEPRECATED 2026-05-11: Phase 11 Step 5 (TV depth edge-preserving) REJECTED — Δ=−0.026 N=24
+# Flags removed from arguments/__init__.py — script no longer runnable.
+# Kept for paper reproducibility evidence. See CLAUDE.md Phase 11 results.
+# ============================================================
 """[CRSGaussian Phase 11 Step 5] Multi-seed analyzer — TV Depth Edge-Preserving.
 
 Parse logs/p11s5_ms/{A0,A1}_seed{42,137,9999}_<scene>.log → table với:

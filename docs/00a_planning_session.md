@@ -197,21 +197,35 @@ Khi test combined feature (A+B):
 
 ---
 
-## 6. Phase 11 status snapshot (cập nhật 2026-05-09)
+## 6. Phase 11 status snapshot (cập nhật 2026-05-11)
 
+**Phase 11 EXHAUSTED — 6/6 attempts REJECTED:**
 ```
-Step 1 (Covisibility reweight)        🟡 MARGINAL — keep OFF, Δ cross-batch +0.014
+Step 1 (Covisibility reweight)        🟡 MARGINAL — keep code default OFF, Δ +0.014
 Step 2 (Perceptual DINO same-view)    ❌ REJECTED — Δ −0.046
-Stack (S1 + S2)                       ❌ REJECTED — Δ_Synergy −0.063, no synergy
-Step 3 (R_feature replace R_visible)  ⏸ DEFERRED — backbone modification risk
-Step 4 (Cross-view MPC)               [~] IN PROGRESS — anti-overfit
-Step 5 (TV depth edge-preserving)     [~] IN PROGRESS — anti-overfit (NEW)
+Stack (S1 + S2)                       ❌ REJECTED — no synergy Δ −0.063
+Step 4 (Cross-view feature MPC)       ❌ REJECTED — Δ −0.042 (partial s9999)
+Step 5 (TV depth edge-preserving)     ❌ REJECTED — Δ −0.026
 ```
 
-Reference targets:
-- Phase 8 FULL paper (1 sample): 21.335
-- Phase 8 FULL multi-seed mean (N=24): ~21.16 (fair baseline)
-- ICO-GS SOTA: 22.20 (gap −0.865)
+**Phase 12 current (post-loss-axis):**
+```
+T12.0 [~] Cleanup REJECTED Phase 11 + Phase 5b modules
+T12.1 [ ] Iter budget 15k test (0 code, ~25-30%)
+T12.2 [ ] Visibility-based prune (0.5d, ~20-25%)
+T12.3 [ ] Mip-Splatting anti-aliasing (2-3d, ~30-40% highest)
+```
+
+**Code regression note**: Commit `0511edd` (May 9) "mất config phase 8 full 21.335". 
+5 batches consistent A0 ~21.18 (gap −0.155 vs paper). 
+Unable to bisect (no git snapshot). 
+Paired Δ within-batch cancels common-mode → Phase 11 verdicts VALID.
+
+**Reference targets:**
+- Phase 8 FULL paper (1 sample): 21.335 (reproducible từ saved PLYs)
+- **Phase 8 FULL multi-seed mean (N=120 across 5 batches): 21.18 ± 0.05** ⭐ current baseline
+- No-CRS Tier1: 21.21 (paper era)
+- ICO-GS SOTA: 22.20 (gap −1.02 to multi-seed mean)
 
 ---
 

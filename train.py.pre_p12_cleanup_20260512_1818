@@ -14,7 +14,6 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-import math
 import torchvision
 import numpy as np
 import matplotlib.cm as cm
@@ -424,6 +423,32 @@ def training(dataset, opt, pipe, args):
             L_depth = 0.05 * pearson_depth_loss(rendered_depth, depth_prior)
             LossDict["loss_gs0"] += L_depth
 
+        # ── [CRSGaussian Phase 12] CRS-pull floater transformative loss ──
+        # Pull low-CRS Gaussians (floater candidates) toward K-NN gated
+        # neighbor centroid + smart-shrink scale + fade opacity. Position-axis
+        # transformative — KHÁC Phase 4 prune (xóa) và Phase 8c freeze (giữ).
+        # Gated: opt.use_crs_pull + iter >= start_iter. Áp dụng cho gs0 only
+        # (CRS gắn vào gs0). Hook BEFORE backward để gradient flow đúng tới
+        # xyz/scaling/opacity của GsDict["gs0"].
+        if opt.use_crs_pull and iteration >= opt.crs_pull_start_iter:
+            from utils.loss.crs_pull import compute_crs_pull_loss
+            L_crs_pull, diag_pull = compute_crs_pull_loss(
+                GsDict["gs0"], iteration, opt,
+                scene_extent=scene.cameras_extent,
+            )
+            LossDict["loss_gs0"] = LossDict["loss_gs0"] + L_crs_pull
+            if tb_writer is not None and iteration % 100 == 0:
+                tb_writer.add_scalar('phase12/crs_pull_loss',
+                                     float(L_crs_pull.item()), iteration)
+                tb_writer.add_scalar('phase12/pullable_count',
+                                     diag_pull.get('pullable_count', 0), iteration)
+                tb_writer.add_scalar('phase12/active_count',
+                                     diag_pull.get('active_count', 0), iteration)
+                tb_writer.add_scalar('phase12/mean_pull_dist',
+                                     diag_pull.get('mean_pull_dist', 0.0), iteration)
+                tb_writer.add_scalar('phase12/ramp',
+                                     diag_pull.get('ramp', 0.0), iteration)
+
         loss = LossDict["loss_gs0"]
         for i in range(args.gaussiansN):
             LossDict[f"loss_gs{i}"].backward()
@@ -659,50 +684,16 @@ def training(dataset, opt, pipe, args):
                     _pc_cams = allCameras if (dataset.use_depth_prior and opt.use_pos_constraint) else None
                     _pc_depth = aligned_depth_dict if (dataset.use_depth_prior and opt.use_pos_constraint) else None
                     _pc_range = depth_range if (dataset.use_depth_prior and opt.use_pos_constraint) else None
-                    # CRS pruning cần aligned_depth_dict để biết CRS đã được update
-                    _crs_dict = aligned_depth_dict if (dataset.use_depth_prior and opt.use_crs_pruning) else None
+                    # CRS pruning cần aligned_depth_dict để biết CRS đã được update.
+                    # [Phase 12] disable_crs_pruning=True → bypass Phase 4 prune
+                    # (cho A2: test CRS-pull replace prune mà không double-mechanism).
+                    _crs_dict = aligned_depth_dict if (
+                        dataset.use_depth_prior
+                        and opt.use_crs_pruning
+                        and not opt.disable_crs_pruning
+                    ) else None
                     # [CRSGaussian T5.5] Conservative inherit: child CRS₀ = clip(η*parent, 0, 0.5)
                     _eta = dataset.crs_init_eta if dataset.crs_densify_inherit else 0.0
-
-                    # ── [CRSGaussian Phase 13] LFCF opts builder ──
-                    # is_lfcf_iter = True khi (iter % (interval_times × densify_interval) == 0).
-                    # lfcf_opts dict KHÔNG include is_lfcf_iter — separate top-level flag.
-                    # Default OFF (use_lfcf=False) → is_lfcf_iter_now=False → standard path.
-                    is_lfcf_iter_now = False
-                    lfcf_opts = None
-                    cameras_for_lfcf = None
-                    if opt.use_lfcf and iteration < opt.densify_until_iter:
-                        is_lfcf_iter_now = (
-                            iteration % (opt.lfcf_interval_times * opt.densification_interval) == 0
-                        )
-                        if is_lfcf_iter_now:
-                            from utils.densify.lfcf import calculate_training_percent_powered
-                            # Compute decay: scaling multiplier max sẽ decay từ init → last
-                            # qua densify range. percent_lb = log ratio cho exact decay curve.
-                            percent_lb = (
-                                math.log(opt.lfcf_last_scaling_max) / math.log(opt.lfcf_init_scaling_max)
-                                if opt.lfcf_init_scaling_max != 1.0 else 1.0
-                            )
-                            tpp = calculate_training_percent_powered(
-                                iteration, opt.densify_from_iter, opt.densify_until_iter,
-                                opt.lfcf_pow, percent_lb,
-                            )
-                            # splitting_lb decays linear từ 1.0 → 0 over densify range
-                            # → Early training: split aggressive
-                            # → Late training: split conservative (mostly enlarge)
-                            splitting_lb_now = 1.0 - (iteration - opt.densify_from_iter) / max(
-                                opt.densify_until_iter - opt.densify_from_iter, 1
-                            )
-                            lfcf_opts = {
-                                'scaling_multiplier_max': opt.lfcf_init_scaling_max,
-                                'scaling_multiplier_min': opt.lfcf_init_scaling_min,
-                                'training_percent_powered': tpp,
-                                'splitting_ub': opt.lfcf_splitting_ub,
-                                'splitting_lb': splitting_lb_now,
-                                'tolerance': opt.lfcf_tolerance,
-                                'diffscale': opt.lfcf_diffscale,
-                            }
-                            cameras_for_lfcf = allCameras
 
                     for i in range(args.gaussiansN):
                         _n_before = GsDict[f"gs{i}"].get_xyz.shape[0]
@@ -716,11 +707,7 @@ def training(dataset, opt, pipe, args):
                             tau_crs=opt.tau_crs,
                             tau_isolated=opt.tau_isolated,
                             crs_prune_dict=_crs_dict,
-                            eta=_eta,
-                            # ── [Phase 13] LFCF kwargs (default OFF) ──
-                            is_lfcf_iter=is_lfcf_iter_now,
-                            lfcf_opts=lfcf_opts,
-                            cameras_for_lfcf=cameras_for_lfcf)
+                            eta=_eta)
                         _n_after = GsDict[f"gs{i}"].get_xyz.shape[0]
                         # [CRSGaussian] DIAG 5 — Pruning stats
                         if iteration % 500 == 0:
@@ -1063,9 +1050,6 @@ if __name__ == "__main__":
     # [CRSGaussian multi-seed] verify CUDA noise — default=42 giữ backward-compat
     parser.add_argument('--seed', type=int, default=42)
 
-    # [CRSGaussian Phase 13] AbsGS flag auto-registered via OptimizationParams
-    # (arguments/__init__.py:225 self.absdensify=False). DO NOT add here — gây
-    # argparse conflict "conflicting option string: --absdensify".
     # parser.add_argument("--absdensify", action="store_true")
 
     args = parser.parse_args(sys.argv[1:])

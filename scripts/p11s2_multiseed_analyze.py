@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# ============================================================
+# DEPRECATED 2026-05-11: Phase 11 Step 2 (perceptual DINO same-view) REJECTED — Δ=−0.046 N=24
+# Flags removed from arguments/__init__.py — script no longer runnable.
+# Kept for paper reproducibility evidence. See CLAUDE.md Phase 11 results.
+# ============================================================
 """[CRSGaussian Phase 11 Step 2] Multi-seed analyzer — perceptual DINOv2.
 
 Parse logs/p11s2_ms/{A0,A1}_seed{42,137,9999}_<scene>.log → table với:

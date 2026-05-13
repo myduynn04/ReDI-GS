@@ -1,5 +1,10 @@
 #!/bin/bash
 # ============================================================
+# DEPRECATED 2026-05-11: Phase 11 Step 4 (cross-view feature MPC) REJECTED — Δ=−0.042 N=20 partial
+# Flags removed from arguments/__init__.py — script no longer runnable.
+# Kept for paper reproducibility evidence. See CLAUDE.md Phase 11 results.
+# ============================================================
+# ============================================================
 # [CRSGaussian Phase 11 Step 4] Cross-view feature MPC master ablation.
 # 2 configs × 8 scenes = 16 runs.
 #

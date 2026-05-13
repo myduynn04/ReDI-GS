@@ -151,8 +151,20 @@ class GaussianModel:
         # đóng góp của DC drift vs higher-order SH trong overfit.
         self._dc_frozen = False
         self.confidence = torch.empty(0)
-        # self.absdensify = args.absdensify
-        self.absdensify = False
+        # ── [Phase 13] Activate AbsGS dormant code ──
+        # Defensive: args may not have absdensify attr if CLI flag not parsed yet
+        self.absdensify = getattr(args, 'absdensify', False)
+
+        # ── [CRSGaussian Phase 13] LFCF tracking attrs ──
+        # Init empty; populated in training_setup (zero tensors size N).
+        # prev_selected_pts_mask stored as BOOL (not sparse int) — simpler slicing.
+        # Guards via `numel() > 0` in prune_points / add_densification_stats /
+        # densification_postfix — no-op khi LFCF chưa init (use_lfcf=False).
+        self.lff_xyz_grad_accum = torch.empty(0)
+        self.lff_denom = torch.empty(0)
+        self.prev_lff_xyz_grad = torch.empty(0)
+        self.prev_selected_pts_mask_bool = torch.empty(0, dtype=torch.bool)
+        self.split_multiplier = 2.0  # constant per EFA-GS pattern
 
     def capture(self):
         return (
@@ -253,6 +265,19 @@ class GaussianModel:
     def get_covariance(self, scaling_modifier=1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
+    # ── [CRSGaussian Phase 13] In-place scaling delta helper ──
+    # Per EFA-GS pattern (gaussian_model.py:133-146): direct .data modify,
+    # KHÔNG sync optimizer Adam state. Trade-off acknowledged: Adam momentum/
+    # variance cho enlarged Gaussians out-of-sync. EFA-GS authors validated
+    # — keep behavior identical, không thêm sync logic.
+    @torch.no_grad()
+    def set_attributes(self, attribute, mask, changes):
+        """Add changes to attribute[mask] in-place (.data direct modify)."""
+        assert attribute in ["xyz", "scaling", "opacity", "rotation"], \
+            f"attribute {attribute} not allowed for set_attributes"
+        real_attr = "_" + attribute
+        getattr(self, real_attr).data[mask] += changes.to(self._scaling.device)
+
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
@@ -320,6 +345,16 @@ class GaussianModel:
         self.xyz_gradient_accum_abs = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.xyz_gradient_accum_abs_max = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+
+        # ── [Phase 13] LFCF init — safe always (guarded by numel() elsewhere) ──
+        # Init zeros tensors size N. Cost = negligible (~few KB total).
+        # Even if use_lfcf=False, these stay zero — add_densification_stats
+        # parallel accum will run (no-op effect on Phase 8 FULL behavior).
+        N = self.get_xyz.shape[0]
+        self.lff_xyz_grad_accum = torch.zeros((N, 1), device="cuda")
+        self.lff_denom = torch.zeros((N, 1), device="cuda")
+        self.prev_lff_xyz_grad = torch.zeros((N, 1), device="cuda")
+        self.prev_selected_pts_mask_bool = torch.zeros(N, dtype=torch.bool, device="cuda")
 
         l = [
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
@@ -568,6 +603,15 @@ class GaussianModel:
             if hasattr(self, "_crs_rnrc") and self._crs_rnrc.shape[0] == valid_points_mask.shape[0]:
                 self._crs_rnrc = self._crs_rnrc[valid_points_mask]
 
+            # ── [CRSGaussian Phase 13] LFCF attrs slicing — ADD, không xóa existing ──
+            # Guard via numel() — no-op khi LFCF chưa init (use_lfcf=False ở phase 8).
+            if self.lff_xyz_grad_accum.numel() > 0:
+                self.lff_xyz_grad_accum = self.lff_xyz_grad_accum[valid_points_mask]
+                self.lff_denom = self.lff_denom[valid_points_mask]
+                self.prev_lff_xyz_grad = self.prev_lff_xyz_grad[valid_points_mask]
+            if self.prev_selected_pts_mask_bool.numel() > 0:
+                self.prev_selected_pts_mask_bool = self.prev_selected_pts_mask_bool[valid_points_mask]
+
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
@@ -598,13 +642,17 @@ class GaussianModel:
         return optimizable_tensors
 
     def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling,
-                              new_rotation, parent_crs_logits=None, eta=0.0):
+                              new_rotation, parent_crs_logits=None, eta=0.0,
+                              new_prev_selected_bool=None):
         """Append new Gaussians vào model + optimizer.
 
         Args:
             parent_crs_logits: (M, 1) tensor hoặc None — CRS logit của parents.
                 [CRSGaussian T5.4] Dùng khi crs_densify_inherit=True.
             eta: float — inherit factor. 0.0 = neutral (behavior cũ).
+            new_prev_selected_bool: (M,) bool tensor — [Phase 13] LFCF prev_selected
+                state cho new Gaussians. None (non-LFCF path) → default False.
+                LFCF split children pass True (just got "selected" via split).
         """
         d = {"xyz": new_xyz,
              "f_dc": new_features_dc,
@@ -655,6 +703,29 @@ class GaussianModel:
             new_spawn = torch.full((new_xyz.shape[0],), cur_iter,
                                     device="cuda", dtype=torch.int32)
             self.spawn_iter = torch.cat([self.spawn_iter, new_spawn], dim=0)
+
+        # ── [CRSGaussian Phase 13] LFCF attrs append cho new Gaussians ──
+        # Note: xyz_gradient_accum/denom RESET to zeros (size N_total) above.
+        # lff_xyz_grad_accum/lff_denom theo cùng pattern (reset to zeros).
+        # prev_lff_xyz_grad: KHÔNG reset — append zeros (children chưa có history).
+        # prev_selected_pts_mask_bool: append per new_prev_selected_bool kwarg.
+        if self.lff_xyz_grad_accum.numel() > 0:
+            n_total = self.get_xyz.shape[0]
+            n_new = new_xyz.shape[0]
+            new_zeros = torch.zeros((n_new, 1), device="cuda")
+            self.lff_xyz_grad_accum = torch.zeros((n_total, 1), device="cuda")
+            self.lff_denom = torch.zeros((n_total, 1), device="cuda")
+            self.prev_lff_xyz_grad = torch.cat([self.prev_lff_xyz_grad, new_zeros], dim=0)
+
+            if new_prev_selected_bool is not None:
+                # LFCF split children: inherit "selected" state from parent (True)
+                appendee = new_prev_selected_bool.to(device="cuda")
+            else:
+                # Standard path (clone/split): children not in LFCF selection
+                appendee = torch.zeros(n_new, dtype=torch.bool, device="cuda")
+            self.prev_selected_pts_mask_bool = torch.cat(
+                [self.prev_selected_pts_mask_bool, appendee], dim=0
+            )
 
 
     def proximity(self, scene_extent, N = 3):
@@ -778,29 +849,97 @@ class GaussianModel:
 
 
     # [CRSGaussian T5.4] +eta param cho conservative CRS inherit → chain xuống clone/split
+    # [Phase 13] +is_lfcf_iter/lfcf_opts/cameras_for_lfcf cho LFCF mode (default OFF)
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, iter,
                           cameras=None, aligned_depth_dict=None, depth_range=None,
                           T_warmup=1000, tau_crs=0.35, tau_isolated=0.1,
-                          crs_prune_dict=None, eta=0.0):
+                          crs_prune_dict=None, eta=0.0,
+                          is_lfcf_iter=False, lfcf_opts=None, cameras_for_lfcf=None):
         # ── [CRSGaussian Hướng D MVP] Lưu iter để densification_postfix track spawn ──
         self._densify_current_iter = int(iter)
 
-        grads = self.xyz_gradient_accum / self.denom
-        grads[grads.isnan()] = 0.0
+        if is_lfcf_iter and lfcf_opts is not None:
+            # ── [CRSGaussian Phase 13] LFCF path ──
+            # Replace standard clone+split với tolerance-based decision + diffscale.
+            # Uses separate lff_xyz_grad_accum (parallel to standard grad accum).
+            from utils.densify.lfcf import compute_lfcf_decisions
 
-        grads_abs = self.xyz_gradient_accum_abs / self.denom
-        grads_abs[grads_abs.isnan()] = 0.0
-        ratio = (torch.norm(grads, dim=-1) >= max_grad).float().mean()
-        Q = torch.quantile(grads_abs.reshape(-1), 1 - ratio)
+            denom_safe = self.lff_denom.clamp(min=1.0)
+            grads = self.lff_xyz_grad_accum / denom_safe
+            grads[grads.isnan()] = 0.0
 
-        # [CRSGaussian T4.1] Truyền depth constraint params xuống clone/split.
-        # cameras=None → skip constraint (backward compat khi không dùng --use_depth_prior).
-        self.densify_and_clone(grads, max_grad, grads_abs, Q, extent,
-                               cameras=cameras, aligned_depth_dict=aligned_depth_dict, depth_range=depth_range,
-                               eta=eta)
-        self.densify_and_split(grads, max_grad, grads_abs, Q, extent, iter,
-                               cameras=cameras, aligned_depth_dict=aligned_depth_dict, depth_range=depth_range,
-                               eta=eta)
+            result = compute_lfcf_decisions(
+                grads=grads,
+                prev_lff_xyz_grad=self.prev_lff_xyz_grad,
+                prev_selected_pts_mask_bool=self.prev_selected_pts_mask_bool,
+                xyz=self.get_xyz,
+                scaling=self._scaling.data,
+                cameras=cameras_for_lfcf,
+                grad_threshold=max_grad,
+                **lfcf_opts,  # scaling_multiplier_max/min, training_percent_powered,
+                              # splitting_ub, splitting_lb, tolerance, diffscale
+            )
+
+            enlarged_mask = result['enlarged_mask']
+            splitted_mask = result['splitted_mask']
+            enlarged_changes = result['enlarged_scaling_changes']
+            splitted_changes = result['splitted_scaling_changes']
+            log_mult = result['log_scaling_multiplier']
+            interval_coef = result['interval_coef']
+            selected_now_bool = result['selected_pts_mask_bool']
+
+            # Apply enlarge (in-place .data modify, no optimizer sync — EFA-GS pattern)
+            if enlarged_mask.any():
+                self.set_attributes("scaling", enlarged_mask, enlarged_changes)
+
+            # Apply split shrink trên parents + probabilistic lottery
+            if splitted_mask.any():
+                self.set_attributes("scaling", splitted_mask, splitted_changes)
+
+                # Probabilistic split lottery (depth-aware, EFA-GS:653-655)
+                prob = (
+                    interval_coef * (lfcf_opts['splitting_ub'] - lfcf_opts['splitting_lb'])
+                    + lfcf_opts['splitting_lb']
+                ).squeeze(-1)
+                lottery = torch.rand_like(prob) <= prob
+                final_split = splitted_mask & lottery
+
+                if final_split.any():
+                    self._lfcf_split_children(
+                        final_split, log_mult, eta, lfcf_opts['diffscale'],
+                        selected_now_at_call_time=selected_now_bool,
+                    )
+                else:
+                    # Không có split children → save selected state ngay
+                    self.prev_selected_pts_mask_bool = selected_now_bool
+            else:
+                self.prev_selected_pts_mask_bool = selected_now_bool
+
+            # Save grads cho next LFCF iter tolerance compare
+            self.prev_lff_xyz_grad = grads.clone()
+
+            # Reset LFCF accumulator (post-LFCF iter — fresh for next interval)
+            self.lff_xyz_grad_accum.zero_()
+            self.lff_denom.zero_()
+
+        else:
+            # ── Standard path (Phase 8 FULL unchanged 100%) ──
+            grads = self.xyz_gradient_accum / self.denom
+            grads[grads.isnan()] = 0.0
+
+            grads_abs = self.xyz_gradient_accum_abs / self.denom
+            grads_abs[grads_abs.isnan()] = 0.0
+            ratio = (torch.norm(grads, dim=-1) >= max_grad).float().mean()
+            Q = torch.quantile(grads_abs.reshape(-1), 1 - ratio)
+
+            # [CRSGaussian T4.1] Truyền depth constraint params xuống clone/split.
+            # cameras=None → skip constraint (backward compat khi không dùng --use_depth_prior).
+            self.densify_and_clone(grads, max_grad, grads_abs, Q, extent,
+                                   cameras=cameras, aligned_depth_dict=aligned_depth_dict, depth_range=depth_range,
+                                   eta=eta)
+            self.densify_and_split(grads, max_grad, grads_abs, Q, extent, iter,
+                                   cameras=cameras, aligned_depth_dict=aligned_depth_dict, depth_range=depth_range,
+                                   eta=eta)
 
         # ── Legacy pruning (3DGS gốc) — giữ nguyên ──
         prune_mask = (self.get_opacity < min_opacity).squeeze()
@@ -845,12 +984,98 @@ class GaussianModel:
         torch.cuda.empty_cache()
 
 
+    # ============================================================
+    # [CRSGaussian Phase 13] LFCF split children helper
+    # Source: EFA-GS gaussian_model.py:657-672 (split children gen)
+    # Khác EFA-GS:
+    #   - N=1 children per parent (LFCF default)
+    #   - CRS inherit T5.5 via parent_crs_logits + eta
+    #   - Children prev_selected_bool = True (just got "selected" via split)
+    # ============================================================
+    def _lfcf_split_children(self, splitted_mask, log_scaling_multiplier, eta, diffscale,
+                              selected_now_at_call_time):
+        """Generate split children + prune parents (LFCF path).
+
+        Args:
+            splitted_mask: (N_before,) bool — parents to split
+            log_scaling_multiplier: (N_before, 1) — per-Gaussian log mult
+            eta: float — CRS inherit factor (T5.5 conservative)
+            diffscale: bool — pass-through to stds computation
+            selected_now_at_call_time: (N_before,) bool — selection mask
+                tại thời điểm vào LFCF iter (lưu vào prev_selected_pts_mask_bool)
+        """
+        from utils.densify.lfcf import compute_split_stds_diffscale
+        from utils.general_utils import build_rotation
+
+        N_before = self.get_xyz.shape[0]
+        n_new = int(splitted_mask.sum().item())
+        if n_new == 0:
+            return
+
+        # ── Compute LFCF stds (diffscale-aware) ──
+        # Use activated scaling (get_scaling = exp(_scaling)) for std cho normal sampling
+        stds = compute_split_stds_diffscale(
+            self.get_scaling[splitted_mask],
+            log_scaling_multiplier[splitted_mask],
+            diffscale, self.split_multiplier,
+        )
+        stds = torch.where(torch.isnan(stds), torch.full_like(stds, 1e-3), stds)
+
+        # ── Generate children (N=1 per parent) ──
+        means = torch.zeros((stds.size(0), 3), device="cuda")
+        samples = torch.normal(mean=means, std=stds)
+        rots = build_rotation(self._rotation[splitted_mask])
+        new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[splitted_mask]
+        new_scaling = self.scaling_inverse_activation(self.get_scaling[splitted_mask])
+        new_rotation = self._rotation[splitted_mask]
+        new_features_dc = self._features_dc[splitted_mask]
+        new_features_rest = self._features_rest[splitted_mask]
+        new_opacity = self._opacity[splitted_mask]
+
+        # ── CRS inherit via T5.5 (parent_crs_logits + eta) ──
+        parent_crs = self._crs_score[splitted_mask] if eta > 0 else None
+
+        # ── Save updated prev_selected BEFORE postfix (postfix concats children) ──
+        # selected_now_at_call_time là (N_before,) bool — gán trực tiếp.
+        # Children sẽ được append True (per EFA-GS pattern line 557) trong postfix
+        # qua new_prev_selected_bool kwarg.
+        self.prev_selected_pts_mask_bool = selected_now_at_call_time
+        children_prev_selected = torch.ones(n_new, dtype=torch.bool, device="cuda")
+
+        # ── densification_postfix appends children + handles CRS inherit + LFCF attrs ──
+        self.densification_postfix(
+            new_xyz, new_features_dc, new_features_rest,
+            new_opacity, new_scaling, new_rotation,
+            parent_crs_logits=parent_crs, eta=eta,
+            new_prev_selected_bool=children_prev_selected,
+        )
+
+        # ── Prune parents (children survive — placed AFTER parents trong tensor) ──
+        N_after = self.get_xyz.shape[0]
+        assert N_after == N_before + n_new, \
+            f"LFCF split shape mismatch: N_after={N_after} vs N_before+n_new={N_before + n_new}"
+        prune_mask = torch.cat([
+            splitted_mask,                                          # (N_before,) — prune parents
+            torch.zeros(n_new, dtype=torch.bool, device="cuda"),    # children survive
+        ], dim=0)
+        self.prune_points(prune_mask, iter=self._densify_current_iter)
+
+
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter, :2], dim=-1,
                                                              keepdim=True)
         self.xyz_gradient_accum_abs[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,2:], dim=-1, keepdim=True)
         self.xyz_gradient_accum_abs_max[update_filter] = torch.max(self.xyz_gradient_accum_abs_max[update_filter], torch.norm(viewspace_point_tensor.grad[update_filter,2:], dim=-1, keepdim=True))
         self.denom[update_filter] += 1
+
+        # ── [Phase 13] LFCF parallel grad accumulation (guarded by numel) ──
+        # Track LFCF accumulator parallel với standard. Cost: 1 extra norm + add.
+        # Reset trong densification_postfix sau densify (cùng pattern standard).
+        if self.lff_xyz_grad_accum.numel() > 0:
+            self.lff_xyz_grad_accum[update_filter] += torch.norm(
+                viewspace_point_tensor.grad[update_filter, :2], dim=-1, keepdim=True
+            )
+            self.lff_denom[update_filter] += 1
         
     
     

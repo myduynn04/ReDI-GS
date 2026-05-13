@@ -478,24 +478,45 @@ OK edge-preserving verified
 
 ---
 
-## 12. Phase 11 status snapshot (cập nhật 2026-05-09)
+## 12. Phase 11 status snapshot (cập nhật 2026-05-11)
 
+**Phase 11 EXHAUSTED — 6/6 attempts REJECTED:**
 ```
-Step 1 Covisibility  🟡 MARGINAL — keep code default OFF
-Step 2 Perceptual   ❌ REJECTED
-Stack (S1+S2)        ❌ REJECTED
-Step 3 R_feature    ⏸ DEFERRED
-Step 4 Cross-view MPC [~] IN PROGRESS
-Step 5 TV depth     [~] IN PROGRESS (new, anti-overfit)
+Step 1 Covisibility       🟡 MARGINAL — keep code default OFF
+Step 2 Perceptual DINO    ❌ REJECTED → cleanup pending
+Stack (S1+S2)             ❌ REJECTED → cleanup script pending
+Step 4 Cross-view MPC     ❌ REJECTED → cleanup pending
+Step 5 TV depth EP        ❌ REJECTED → cleanup pending
+Step 3 R_feature          ⏸ DEFERRED → cleanup pending (commented out kwargs)
 ```
 
-Active code files Phase 11:
-- `utils/loss/covisibility_depth.py` (Step 1, default OFF)
-- `utils/feature/dino_wrapper.py` (timm-migrated DINOv2)
-- `utils/loss/perceptual_dino.py` (Step 2, default OFF)
-- `utils/crs/r_feature.py` (Step 3, default OFF)
-- `utils/loss/feature_mpc_crossview.py` (Step 4, default OFF)
-- `utils/regularizer/tv_depth.py` (Step 5, in progress)
+**Phase 12 current — cleanup + new attempts:**
+```
+T12.0 [~] Cleanup Phase 11 REJECTED + Phase 5b modules
+T12.1 [ ] Iter budget 15k test (0 code change)
+T12.2 [ ] Visibility-based prune (NEW module)
+T12.3 [ ] Mip-Splatting anti-aliasing (CUDA rasterizer mod)
+```
+
+**Code files post-cleanup (planned):**
+
+KEEP:
+- `utils/loss/covisibility_depth.py` (Step 1, MARGINAL keep OFF)
+- Phase 8 FULL components in `utils/crs/` (winning recipe)
+- Phase 7 LWEIGHT code in `train.py` (reference)
+- Phase 10A code (separate decision later)
+
+DELETE (Rule 13):
+- `utils/loss/perceptual_dino.py` (Step 2)
+- `utils/loss/feature_mpc_crossview.py` (Step 4)
+- `utils/regularizer/tv_depth.py` (Step 5)
+- `utils/feature/dino_wrapper.py` (only used by deleted Step 2/3/4)
+- `utils/feature/__init__.py`
+- `utils/crs/r_feature.py` (Step 3 deferred indef)
+- `utils/regularizer/pseudo_*.py` (Phase 5b rejected)
+- `scripts/p11s2_*`, `p11s4_*`, `p11s5_*`, `p11s12_*` (rejected)
+
+**Code regression note**: Phase 8 paper 21.335 NOT reproducible from current code (gap −0.155 vs paper, commit `0511edd` admitted "mất config"). Paper PLY còn saved tại `output/p8/FULL_*/point_cloud/iteration_10000/`. Accept multi-seed mean 21.18 as fair baseline.
 
 ---
 

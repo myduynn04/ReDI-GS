@@ -1,5 +1,10 @@
 #!/bin/bash
 # ============================================================
+# DEPRECATED 2026-05-11: Phase 11 Stack (S1+S2) REJECTED — Δ_Synergy=−0.063 N=24 no synergy
+# Flags removed from arguments/__init__.py — script no longer runnable.
+# Kept for paper reproducibility evidence. See CLAUDE.md Phase 11 results.
+# ============================================================
+# ============================================================
 # [CRSGaussian Phase 11 Step 1+2 Stack] Multi-seed ablation — 3 configs same batch.
 # 3 seeds × 8 scenes × 3 configs (A0/A1/A2) = 72 runs.
 #

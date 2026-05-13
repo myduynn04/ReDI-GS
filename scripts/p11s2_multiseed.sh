@@ -1,5 +1,10 @@
 #!/bin/bash
 # ============================================================
+# DEPRECATED 2026-05-11: Phase 11 Step 2 (perceptual DINO same-view) REJECTED — Δ=−0.046 N=24
+# Flags removed from arguments/__init__.py — script no longer runnable.
+# Kept for paper reproducibility evidence. See CLAUDE.md Phase 11 results.
+# ============================================================
+# ============================================================
 # [CRSGaussian Phase 11 Step 2] Multi-seed ablation — perceptual DINOv2.
 # 3 seeds × 8 scenes × 2 configs (A0/A1) = 48 runs.
 #

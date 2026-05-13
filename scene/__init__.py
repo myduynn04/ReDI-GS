@@ -50,7 +50,6 @@ class Scene:
         if os.path.exists(os.path.join(args.source_path, "sparse")):
             if args.source_path.find('llff') != -1:
                 print("############ load llff ############")
-                # [CRSGaussian Phase 10A] args threading — DISABLED for bisect (revert to Phase 8 era)
                 scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval, args.n_views, rand_pcd=args.rand_pcd)
             elif args.source_path.find('mipnerf360') != -1:
                 print("############ load mipnerf360 ############")

@@ -1247,3 +1247,189 @@
   - Diagnostic 1 scene first → confirm 2-3 scenes → scale 8
 
 ---
+
+### [2026-05-11] Phase 11 Step 5 (TV depth edge-preserving) — REJECTED
+- **Quyết định**: Reject Step 5. Cleanup pending (Rule 13).
+- **Multi-seed N=24 paired**:
+  - Δ_mean = **−0.0262 dB**, SEM = 0.051, 95% CI [−0.126, +0.074]
+  - Verdict: NOT significant
+- **Per-seed Δ_8avg** (3 seeds):
+  - seed 42: +0.093
+  - seed 137: −0.053
+  - seed 9999: −0.119
+  - Inconsistent direction → noise dominate
+- **Per-scene Δ pattern**: 5/8 negative, 3/8 positive
+  - Positive: flower +0.245, leaves +0.200, room −0.045 (after complete)
+  - Negative: horns −0.249, trex −0.183, fortress −0.100, fern −0.054, orchids −0.024
+- **A0 mean (N=24, balanced)**: 21.185 (consistent với previous batches)
+- **A1 mean (N=24)**: 21.158 → no improvement
+- **Honest probability**: TV depth was anti-overfit candidate. Failure suggests Phase 8 FULL backbone near-optimal cho sparse-view 3DGS với current rasterizer.
+
+---
+
+### [2026-05-11] Phase 11 LOSS-AXIS EXHAUSTED — 6/6 attempts REJECTED
+- **Final state**: 6 Phase 11 mechanism classes tested multi-seed N=24 paired, none significant
+- **Comprehensive ablation table**:
+  | Step | Mechanism | Δ paired | Verdict |
+  |------|-----------|---------|---------|
+  | Step 1 (Covisibility reweight) cross-batch | Per-pixel weight cov×CRS | +0.014 | MARGINAL keep OFF |
+  | Step 2 (Perceptual DINO same-view) | Loss term feature distance | −0.046 | REJECTED |
+  | Stack S1+S2 | Combined reweight | −0.007 | REJECTED |
+  | Step 4 (Cross-view feature MPC) | Geometric + DINO warp | −0.042 | REJECTED |
+  | Step 5 (TV depth edge-preserving) | Anti-overfit regularizer | −0.026 | REJECTED |
+- **Highest A1 mean achieved**: Step 1 batch 2 = 21.186 (single batch lucky, Δ=+0.055 borderline)
+- **No A1 mean robustly above 21.20** → ceiling ≈ 21.18 ± 0.05
+- **Methodology validated**: Multi-seed N=24 paired min detectable Δ ±0.10 dB; atomicAdd variance ±1.3 dB single-scene cancelled by paired comparison
+- **Anti-overfit framework validated**: REJECTED pro-overfit candidates before testing → save cost
+- **Implication**: Phase 8 FULL recipe = practical ceiling cho CRSGaussian backbone LLFF 3-view
+
+---
+
+### [2026-05-11] Code regression confirmed — Phase 8 paper 21.335 NOT reproducible
+- **Evidence**: 5 multi-seed batches N=120 consistent A0 ≈ 21.16-21.20
+  - p8_rerun 21.150, p11s1 A0 21.156, p11s2 A0 21.196, p11s12 A0 21.131, p11s4 A0 21.18
+- **Gap to paper**: −0.155 dB systematic (5/5 batches below paper)
+- **Probability pure noise**: < 5% → real code regression
+- **Root cause**: Commit `0511edd` (May 9) message literally states "mất config phase 8 full được 21.335"
+- **Suspect files**: `gaussian_renderer/__init__.py` +101 lines (combined dropout B1+DropAnSH refactor, MOST suspect), `scene/gaussian_model.py` +44, `scene/__init__.py` +6 (already reverted)
+- **NOT caused by xformers fiasco (May 10)**: pre-xformers 21.150 ≈ post-rollback 21.18
+- **Unable to bisect**: No git snapshot of Phase 8 ablation working tree (May 4)
+- **Decision**: Accept current baseline 21.18 multi-seed mean. Phase 8 paper 21.335 reproducible từ saved PLYs `output/p8/FULL_*/point_cloud/iteration_10000/`
+- **Implication for Phase 11**: Paired Δ within-batch cancels common-mode regression → all 6 verdicts REMAIN VALID
+
+---
+
+### [2026-05-11] Decision: Continue improvement, NOT writeup yet
+- **User stance**: Không writeup vội, tiếp tục cải thiện
+- **Untouched directions ranked**:
+  | Direction | Probability ≥+0.10 | Cost | Class |
+  |-----------|---------------------|------|-------|
+  | Mip-Splatting anti-aliasing | ~30-40% | 2-3 ngày | Rendering trick |
+  | Iter budget 15k | ~25-30% | 0 code | Hyperparameter |
+  | Visibility-based prune | ~20-25% | 0.5 ngày | Anti-overfit prune |
+  | Anisotropy regularizer | ~15-20% | 0.5 ngày | Anti-overfit shape |
+  | Soft scale regularizer | ~15-20% | 0.3 ngày | Anti-overfit no position |
+  | CRS-pull (user idea) | ~15% | 1-2 ngày | Position-axis, risky |
+  | Density-aware densify | ~15-20% | 1 ngày | Untested |
+- **Track approach (parallel)**:
+  - Track 1 CHEAP: Iter 15k test → 0 code, instant
+  - Track 2 MEDIUM: Visibility-prune nếu Track 1 neutral
+  - Track 3 HIGH: Mip-Splatting nếu cả 2 fail
+- **Cleanup planned (Rule 13)** parallel với Track 1:
+  - DELETE: `utils/loss/perceptual_dino.py`, `feature_mpc_crossview.py`, `tv_depth.py`, `utils/feature/dino_wrapper.py`, `utils/crs/r_feature.py`, `utils/regularizer/pseudo_*.py`
+  - DELETE scripts: p11s2_*, p11s4_*, p11s5_*, p11s12_*
+  - Remove flags + train.py hooks
+  - KEEP: Phase 11 Step 1 covisibility (MARGINAL), Phase 7 LWEIGHT (reference), Phase 10A code (separate decision)
+- **Risk**: Sau 6 rejections, probability remaining directions giảm. Anti-aliasing có precedent strong (Mip-Splatting +0.5 dB) → worth attempting.
+
+---
+
+### [2026-05-12] Phase 12 CRS-pull REJECTED → Pivot frequency-axis EFA-GS LFCF
+- **Phase 12 CRS-pull Round 1 (seed 42, N=8 paired)**: 3/3 configs REJECT
+  - A1 (full pull) Δ=−0.027, 95% CI [−0.155, +0.100], NOT SIG
+  - A2 (replace Phase 4 prune) Δ=−0.033, NOT SIG
+  - A3 (pull-only) Δ=−0.096, NOT SIG (gần SIG-NEG)
+- **Hypothesis verdict**:
+  - Scale+Opacity contribution = Δ_A1 − Δ_A3 = +0.068 → softening cần thiết
+  - Replace prune = full → Phase 4 dispensable trong A2 context
+- **Per-scene pattern**: CRS-pull hại thin/complex (horns −0.241, fortress −0.246, flower −0.180), giúp planar (room +0.221, fern +0.185). Pull mechanism BLUR thin structures vì K-NN target không define được "surface" trên geometry mảnh.
+- **Phase 11 + 12 combined verdict**: 9/9 attempts trên CRS axis (loss-axis 5 + position-axis 3 + R_feature deferred 1) → axis EXHAUSTED.
+- **Quyết định**: Skip Phase 12 multi-seed verify (pattern clear, tiết kiệm 2-3.5h). Pivot direction.
+- **New direction: EFA-GS LFCF port (Phase 13)**
+  - Densify-axis CHƯA THỬ trong CRSGaussian → orthogonal Phase 11/12
+  - TaT regime evidence +0.17~+0.22 (similar low-PSNR forward-facing)
+  - Diffscale volume-preserving isotropify → direct fix Phase 12 thin-structure failure
+  - Mip-Splatting LOẠI: custom CUDA conflict + TaT regression −0.94
+  - Design doc: `docs/13_efa_gs_lfcf_design.md`
+- **Probability honest**: 45-50% commit-worthy (last CRS-axis attempt). Reject branch: pivot writeup "comprehensive 10-mechanism ablation methodology".
+
+---
+
+### [2026-05-12] Phase 13 LFCF + AbsGS Round 1 — A3 WINNER (first commit-worthy CRS-axis in 10 attempts) 🎯
+- **Round 1 config**: seed 42 × 8 scenes × 5 configs (A0/A1/A2/A3/A4) = 40 runs ~4.5h
+- **8-scene avg PSNR + paired Δ vs A0 (N=8)**:
+  | Config | PSNR | Δ vs A0 | 95% CI | Verdict |
+  |--------|------|---------|--------|---------|
+  | A0 (Phase 8 FULL baseline) | 21.172 | — | — | (reference) |
+  | A1 (LFCF alone) | 21.187 | +0.015 | [−0.133, +0.163] | NOT SIG |
+  | A2 (LFCF no diffscale) | 21.152 | −0.020 | [−0.149, +0.110] | NOT SIG |
+  | **A3 (LFCF + AbsGS)** | **21.331** | **+0.159** | **[+0.009, +0.309]** | **🎯 SIG WINNER** |
+  | A4 (AbsGS alone) | 21.203 | +0.031 | [−0.107, +0.170] | NOT SIG |
+- **Attribution (5 metrics)**:
+  - LFCF full effect: +0.015 (neutral alone)
+  - Diffscale contribution (Δ_A1 − Δ_A2): +0.035 (neutral)
+  - AbsGS bonus on LFCF (Δ_A3 − Δ_A1): **+0.144 BIG**
+  - AbsGS standalone: +0.031 (neutral alone)
+  - **LFCF × AbsGS synergy** (Δ_A3 − (Δ_A1 + Δ_A4)): **+0.112 POSITIVE**
+  - → Combo gấp 3.5× linear sum (0.046 → 0.159). Synergy REAL, không phải additive noise.
+- **Per-scene complementarity**:
+  - A3 wins 6/8: fern +0.110, flower +0.098, fortress +0.078, horns **+0.655 ⭐**, leaves +0.181, orchids +0.198
+  - A3 loses 2/8: room −0.009, trex −0.038 (simple/planar scenes)
+  - A4 wins 5/8 complementary (fern, leaves, orchids, room, trex) — A4 BIG hurt fortress −0.292 + horns −0.232 (LFCF rescues)
+- **Significance**: First time trong 10/10 attempts (Phase 11 6/6 + Phase 12 3/3 + Phase 13 A0/A1/A2/A4 4/4) có 95% CI N=8 KHÔNG cross 0. CRS axis bound 21.16 broken (21.16 → 21.33 single-seed).
+- **Risk factors**:
+  - Single-seed Round 1 — variance band rộng, 95% CI [+0.009] gần 0
+  - horns +0.655 contribute 41% của 8-avg gain → seed-42 lucky sample risk
+  - A4 alone neutral nhưng A3 = A1 + A4 + synergy → cần verify synergy stable across seeds
+- **Decision per design doc Section 10.1**: Δ_A3 = +0.159 ∈ WINNER band (+0.10..+0.20) → **Round 2 multi-seed verify**
+- **Round 2 plan (user running)**:
+  - Seeds 137 + 9999 × 3 configs (A0, A3, **PLUS A4** for complementarity) × 8 scenes = 48 runs ~3h
+  - PLUS A4 = deviation từ design doc, capture complementarity data cho paper
+  - Pooled N=24 paired Δ_A3 ≥ +0.10 → COMMIT-WORTHY → Phase 13.1 tolerance sweep
+- **Implication for paper**: Nếu Round 2 confirm — Phase 8 FULL recipe upgrade thành Phase 13 FULL = D_cycle + R_visible + S_stability + CRS-mod SH freeze + LFCF + AbsGS. Frequency-axis contribution defendable.
+
+---
+
+### [2026-05-13] 🎯🎯 Phase 13 N=24 FINAL — COMMIT WORTHY (first CRS-axis breakthrough)
+- **Round 2 complete**: seeds 137 + 9999 × {A0, A3, A4} × 8 scenes = 48 runs DONE
+- **Pooled N=24 (3 seeds × 8 scenes paired):**
+  | Config | PSNR | Δ vs A0 | SEM | 95% CI | Verdict |
+  |--------|------|---------|-----|--------|---------|
+  | A0 baseline | 21.166 | — | — | — | reference |
+  | A1 LFCF alone (N=8) | 21.187 | +0.015 | 0.075 | [−0.133, +0.163] | ❌ NOT SIG |
+  | A2 LFCF no diffscale (N=8) | 21.152 | −0.020 | 0.066 | [−0.149, +0.110] | ❌ NOT SIG |
+  | **A3 LFCF + AbsGS** | **21.330** | **+0.164** | **0.032** | **[+0.101, +0.227]** | **🎯 SIG WINNER** |
+  | A4 AbsGS alone | 21.244 | +0.078 | 0.035 | [+0.009, +0.147] | 🎯 SIG MARGINAL |
+- **Per-seed consistency A3** (all ≥ +0.10 — robust signal, không seed-artifact):
+  - seed 42: +0.159
+  - seed 137: +0.195
+  - seed 9999: +0.137
+- **Per-scene final pattern (N=24)**:
+  - horns: +0.362 ⭐⭐⭐ (thin antlers — biggest gain, design doc tiên đoán đúng)
+  - orchids: +0.224 ⭐⭐ (thin stems)
+  - trex: +0.196 ⭐⭐ (thin bone)
+  - flower: +0.150, fern: +0.144, leaves: +0.123, fortress: +0.101 ⭐
+  - room: +0.010 (NEUTRAL — Round 1 −0.084 was noise, multi-seed cancel)
+  - → **7/8 wins meaningfully + 1 neutral. ZERO hại scenes** (Round 1 fear over room/trex resolved by N=24)
+- **Attribution N=24**:
+  - LFCF alone: +0.015 (not sig)
+  - AbsGS alone: +0.078 SIG marginal
+  - Diffscale: +0.035 (neutral N=8)
+  - **AbsGS bonus on LFCF**: +0.149
+  - **LFCF × AbsGS synergy**: +0.071 POSITIVE (74% over linear 0.093)
+- **REVERSAL pattern** (paper main narrative): Phase 12 CRS-pull worst failure modes ↔ Phase 13 best wins symmetric:
+  - horns: Phase12 −0.241 → Phase13 +0.362 (reversal 0.603)
+  - fortress: Phase12 −0.246 → Phase13 +0.101 (reversal 0.347)
+  - flower: Phase12 −0.180 → Phase13 +0.150 (reversal 0.330)
+  - → Symmetric mechanism reversal: CRS-pull pull centroid HẠI thin geometry; LFCF diffscale isotropify PROTECT thin geometry.
+- **4 decision criteria ALL PASS**:
+  1. Multi-seed N=24 paired Δ ≥ +0.10 ✓ (+0.164)
+  2. 95% CI excludes 0 strict ✓ ([+0.101, +0.227])
+  3. Per-scene robustness ≥6/8 wins ✓ (7/8 + 1 neutral)
+  4. Per-seed consistency all ≥ +0.10 ✓ (3 seeds: +0.159, +0.195, +0.137)
+- **Comparison vs literature**:
+  - Phase 8 paper 1-sample = 21.335 (lucky single-run)
+  - **Phase 13 A3 N=24 = 21.330 ⭐ matches paper single-run BUT multi-seed reproducible**
+  - DOC-GS 21.38 (gap −0.05 closing)
+  - BinocularGS 21.44 (gap −0.11 closing)
+  - ICO-GS SOTA 22.20 (gap −0.87 still open)
+- **Quyết định**:
+  - **COMMIT Phase 13 A3 as new FULL recipe** = Phase 8 FULL components + LFCF (scaler=1.5, interval=2, diffscale=ON, tolerance=1e-5) + AbsGS (uncomment)
+  - Lock `use_lfcf=True` + `--absdensify` default trong production config
+  - KEEP `--absdensify` infrastructure forever — A4 SIG marginal alone (Scenario 2 fallback nếu LFCF revert)
+- **Next steps**:
+  1. Optional Phase 13.1 tolerance sweep (~3.5h) — paper appendix sensitivity (per design doc Section 10.4)
+  2. Optional Direction A λ scaler_max sweep ({1.3, 1.5, 1.8, 2.0} × 2 scenes, ~1-2h) — paper appendix robustness
+  3. **Paper writeup START** — Phase 13 = first defendable CRS-axis contribution post-Phase-8
+
+---
