@@ -327,6 +327,16 @@ class OptimizationParams(ParamGroup):
         self.lfcf_tolerance            = 1e-5     # FP-stability tolerance for grad compare
         self.lfcf_diffscale            = True     # volume-preserving isotropify
 
+        # ── [CRSGaussian Phase 13.2.5] GDAGS coherence-weighted densify ──
+        # Gradient-Direction-Aware policy (ICLR 2026, verified GDAGS:526-527):
+        #   consistency = grads/grads_abs ; weight = 0.8+25·(1−c)^15
+        #   clone dùng grads/weight, split grads*weight (asymmetric coherence).
+        # Default False → A3 byte-identical (Gate-2 PASS 8/8 TRACTION 2026-05-17).
+        # GHI CHÚ: GCR=grads/grads_abs KHÔNG orthogonal với AbsGS → đây là
+        # policy A/B swap trên trục AbsGS proven, KHÔNG +feature. LFCF path
+        # KHÔNG đụng. Auto-register --use_gdags (mirror --absdensify :225).
+        self.use_gdags                 = False    # master switch (default OFF)
+
         super().__init__(parser, "Optimization Parameters")
 
 

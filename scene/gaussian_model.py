@@ -154,6 +154,10 @@ class GaussianModel:
         # ── [Phase 13] Activate AbsGS dormant code ──
         # Defensive: args may not have absdensify attr if CLI flag not parsed yet
         self.absdensify = getattr(args, 'absdensify', False)
+        # ── [Phase 13.2.5] GDAGS coherence-weighted densify (mirror absdensify) ──
+        # Default False → A3 byte-identical. Khi True: standard-path densify
+        # dùng GDAGS coherence-weight thay AbsGS-OR. LFCF path KHÔNG đụng.
+        self.use_gdags = getattr(args, 'use_gdags', False)
 
         # ── [CRSGaussian Phase 13] LFCF tracking attrs ──
         # Init empty; populated in training_setup (zero tensors size N).
@@ -756,7 +760,8 @@ class GaussianModel:
         padded_grad = torch.zeros((n_init_points), device="cuda")
         padded_grad[:grads.shape[0]] = grads.squeeze()
         selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
-        if self.absdensify:
+        # [Phase 13.2.5] GDAGS active → bỏ AbsGS-OR (xem densify_and_clone).
+        if self.absdensify and not self.use_gdags:
             padded_grad_abs = torch.zeros((n_init_points), device="cuda")
             padded_grad_abs[:grads_abs.shape[0]] = grads_abs.squeeze()
             selected_pts_mask_abs = torch.where(padded_grad_abs >= grad_abs_threshold, True, False)
@@ -814,7 +819,9 @@ class GaussianModel:
                           eta=0.0):
         # Extract points that satisfy the gradient condition
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
-        if self.absdensify:
+        # [Phase 13.2.5] GDAGS active → bỏ AbsGS-OR (GDAGS thay bằng
+        # coherence-weighted grads truyền vào, KHÔNG OR abs-quantile).
+        if self.absdensify and not self.use_gdags:
             selected_pts_mask_abs = torch.where(torch.norm(grads_abs, dim=-1) >= grad_abs_threshold, True, False)
             selected_pts_mask = torch.logical_or(selected_pts_mask, selected_pts_mask_abs)
         selected_pts_mask = torch.logical_and(selected_pts_mask,
@@ -932,12 +939,25 @@ class GaussianModel:
             ratio = (torch.norm(grads, dim=-1) >= max_grad).float().mean()
             Q = torch.quantile(grads_abs.reshape(-1), 1 - ratio)
 
+            # [Phase 13.2.5] GDAGS coherence-weighted threshold (gated, default OFF).
+            # use_gdags=False → clone_g/split_g = grads → 100% identical Phase 8.
+            # use_gdags=True  → clone dùng grads/weight, split grads*weight
+            #                   (AbsGS-OR đã tắt trong clone/split khi use_gdags).
+            if self.use_gdags:
+                from utils.densify.gdags import compute_gdags_weight
+                w = compute_gdags_weight(grads, grads_abs)
+                clone_g = grads / w
+                split_g = grads * w
+            else:
+                clone_g = grads
+                split_g = grads
+
             # [CRSGaussian T4.1] Truyền depth constraint params xuống clone/split.
             # cameras=None → skip constraint (backward compat khi không dùng --use_depth_prior).
-            self.densify_and_clone(grads, max_grad, grads_abs, Q, extent,
+            self.densify_and_clone(clone_g, max_grad, grads_abs, Q, extent,
                                    cameras=cameras, aligned_depth_dict=aligned_depth_dict, depth_range=depth_range,
                                    eta=eta)
-            self.densify_and_split(grads, max_grad, grads_abs, Q, extent, iter,
+            self.densify_and_split(split_g, max_grad, grads_abs, Q, extent, iter,
                                    cameras=cameras, aligned_depth_dict=aligned_depth_dict, depth_range=depth_range,
                                    eta=eta)
 

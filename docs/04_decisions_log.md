@@ -1428,8 +1428,241 @@
   - Lock `use_lfcf=True` + `--absdensify` default trong production config
   - KEEP `--absdensify` infrastructure forever — A4 SIG marginal alone (Scenario 2 fallback nếu LFCF revert)
 - **Next steps**:
-  1. Optional Phase 13.1 tolerance sweep (~3.5h) — paper appendix sensitivity (per design doc Section 10.4)
-  2. Optional Direction A λ scaler_max sweep ({1.3, 1.5, 1.8, 2.0} × 2 scenes, ~1-2h) — paper appendix robustness
-  3. **Paper writeup START** — Phase 13 = first defendable CRS-axis contribution post-Phase-8
+  1. Optional Phase 13.1 tolerance sweep (~3.5h) — appendix sensitivity (per design doc Section 10.4)
+  2. Optional Direction A λ scaler_max sweep ({1.3, 1.5, 1.8, 2.0} × 2 scenes, ~1-2h) — robustness check
+  3. Continue PSNR optimization via Phase 13.2+ (sequential mech testing)
+
+---
+
+### [2026-05-13] Phase 13.1 LFCF intensity sweep — A3 base CONFIRMED optimal
+- **Sweep design**: 3 variants × 8 scenes × seed 42 = 24 runs ~2h
+  - M = scaler=1.8, interval=2 (medium stronger enlarge)
+  - H = scaler=2.0, interval=1 (high)
+  - X = scaler=2.5, interval=1 (extra aggressive)
+  - Base = A3 reference (scaler=1.5, interval=2), reuse Round 1 data
+- **Results (paired Δ vs A3 baseline, N=8 seed 42)**:
+  | Variant | Test PSNR | Train PSNR | Gap | Δ_test vs A3 | Verdict |
+  |---------|-----------|------------|-----|--------------|---------|
+  | Base (A3) | 21.331 | 34.235 | 12.905 | 0 (ref) | optimal |
+  | M | 21.318 | 34.123 | 12.805 | −0.013 | ⚪ neutral |
+  | H | 19.637 | 23.279 | 3.642 | **−1.694** | 📉 catastrophic |
+  | X | 19.627 | 23.282 | 3.655 | **−1.703** | 📉 catastrophic |
+- **3 patterns observed**:
+  1. **scaler dimension INSENSITIVE** (1.5 → 1.8 neutral, 2.0 ≈ 2.5 saturated)
+  2. **interval dimension CRITICAL** (interval=2 OK, interval=1 catastrophic)
+  3. **H/X = model collapse**, NOT regularization win (train −11 dB >> test −1.7 dB)
+- **Root cause hypothesis (interval=1)**:
+  - `densify_interval=100`, with `interval_times=1` → LFCF mỗi 100 iter = mọi densify iter
+  - LFCF replaces standard `densify_and_clone` → 0 standard clones, 45 LFCF iters
+  - LFCF enlarges + occasional probabilistic split, NO pure clone mechanism
+  - Result: model undergrowth (insufficient Gaussian spawn) → train collapse
+- **Per-scene uniform regression**: all 8 scenes regress với H/X, even thin structures (horns Δ_A3=+0.66 → Δ_H=−1.86)
+- **Robustness insight**:
+  - A3 (scaler=1.5, interval=2) là **stable operating point** — không phải lucky local optimum
+  - Scaler dimension có ±0.3 tolerance (1.5 → 1.8 neutral)
+  - Interval dimension brittle, đừng push xuống 1
+- **Quyết định**: A3 base optimal trên LFCF intensity axis. Lock recipe, no further intensity sweep.
+- **Anchor cho Phase 13.2+**: A3 21.330 confirmed ceiling. Beyond cần orthogonal mechanism (loss-side, optimizer-side, novel-view freq).
+
+---
+
+### [2026-05-13] Phase 13.2 strategy — Sequential mech testing (replace Path 1 stack)
+- **Context**: Sau Phase 13.1 sweep confirm A3 optimal, evaluate next mechanism class candidates.
+- **Initial proposal (Path 1 stack)**: 5 Tier 1 mechanisms combined (Gap C FALA + visibility prune + pose perturb + opacity decay tweaks + CRS prune tweaks) — 5 ngày, claimed P(+0.2) = 40-50%.
+- **Reality check**:
+  - Project track record: 15 mechs tested, 1 win → base rate ~7%
+  - Phase 11 Stack S1+S2 historical synergy −0.063 (negative)
+  - User Path 1 estimate too optimistic — honest P(+0.2) re-estimate 15-25%
+  - Drop T1.4 (opacity tweak) + T1.5 (CRS prune tweak) = noise band
+- **Strategy DECISION: Sequential focused mech testing** (replace stack):
+  1. **Step 1: DWTGS port** (Gap A) — paper claim +0.3-0.4 PSNR sparse-view standalone (HIGHEST evidence)
+  2. **Step 2: Gap C FALA** — loss-side frequency annealing (preceded by spectrum analysis)
+  3. **Step 3: Visibility prune** — geometric anti-overfit different axis
+  4. **Step 4 (only if Steps 1-3 insufficient)**: Tier 3 architecture change (Hierarchical Gaussians like BinocularGS)
+- **Per-step stop conditions**:
+  - Δ ≥ +0.10 single-seed → multi-seed verify, commit if confirmed
+  - Δ +0.05~+0.10 → multi-seed verify
+  - Δ < +0.05 → drop, move to next step
+- **Excluded directions (evidence-based)**:
+  - ❌ T1.4 + T1.5 (hyperparam tweaks, base rate <10%)
+  - ❌ T2.3 Cross-view MPC (Phase 11 Step 4 already failed Δ=−0.042)
+  - ❌ T3.1 Mip-Splatting (TaT regression −0.94 + custom CUDA conflict, Phase 13 Section 6 rejected)
+  - ❌ T3.4 Foundation model priors (Phase 10A DUSt3R failed catastrophically)
+- **User chose Gap C path first** (cheaper, faster signal). DWTGS deferred unless Gap C works.
+
+---
+
+### [2026-05-14 evening] Phase 13.2.1 HF-emphasis pilot — REJECTED, all loss-side freq axis exhausted
+- **Run setup**: 24 runs = 4 λ (calibrated 0.019/0.063/0.189/0.631) × 2 timing (T1000/T2000) × 3 scenes (trex/horns/orchids) × seed 42
+- **A3 baseline reference**: trex 23.392, horns 20.615, orchids 16.982
+- **Results — Pattern INVERSE prediction**:
+  | Scene | Mean Δ vs A3 (8 configs) | Pattern |
+  |---|---|---|
+  | trex (low deficit, low A3 gain) | +0.18 | ⭐ Win 5/8 configs |
+  | orchids (high deficit, mid A3 gain) | +0.02 | ⚪ Null (Parseval/data limit) |
+  | **horns (mid deficit, high A3 gain)** | **−0.31** | ❌ **8/8 NEGATIVE** |
+- **Statistical significance**: horns 8/8 negative → P(random) = 0.5⁸ = 0.4%. NOT atomicAdd noise.
+- **Best combo** λ=0.631 T2000 Δ_mean=+0.036: cancellation effect (trex +0.357 cancel horns −0.354), KHÔNG real win
+- **Phase conflict mechanism CONFIRMED**:
+  - Scene A3 spatial gain LOW (trex +0.196) → HF emphasis helps (+0.18)
+  - Scene A3 spatial gain HIGH (horns +0.362) → HF emphasis catastrophic (−0.31)
+  - → A3 spatial alignment **FRAGILE** to amplitude pressure
+  - → Updated stacking principle: spatial + spectral axes ORTHOGONAL in concept, INTERFERE in practice
+- **Memory `a3-mechanism-spatial-not-spectral` REFUTED on "stackable" claim** — updated với pilot evidence
+- **Orchids null** confirms `3dgs-systematic-hf-deficit` warning: spectrum close ≠ PSNR gain (data limit 3-view sparse)
+- **Inverse correlation finding (NEW)**: PSNR headroom ≠ improvement potential. Higher A3 spatial gain → harder to stack.
+- **Multi-seed verify SKIPPED**: pattern clear (p=0.004), save 24 GPU-hours
+- **Generalization REFUSED** for all loss-side frequency mechanisms (same class, same expected conflict):
+  - ❌ FALA-reversed (sharpen GT) — same amplitude push
+  - ❌ Sobel/Laplacian variants — same edge-based supervision
+  - ❌ FFT-domain HF L1 — same axis (frequency amplitude)
+  - ❌ DWTGS HF-sparsity — already rejected via diagnostic (wrong sign)
+- **Verdict**: All loss-side frequency-axis mechanisms EXHAUSTED trên Phase 13 A3 backbone
+- **Cleanup pending** (Rule 13): delete utils/loss/hf_emphasis.py + scripts/p13_2_hf_pilot.{sh,_analyze.py} + lambda_calibration.py + revert train.py gate + remove 3 args flags. KEEP logs/p13_2_hf/ (negative result record) + Section 20 design doc.
+- **Pivot direction**: T13.2.3 Visibility-based prune (geometry axis, different mechanism class, ~0.5 ngày)
+- **Fallback if T13.2.3 fails**: Tier 3 architecture (Hierarchical Gaussians, 2-3 tuần) hoặc accept 21.330 ceiling
+
+---
+
+### [2026-05-14] Phase 13.2.1 λ_HF Calibration — Evidence-based hyperparameter
+- **Tool**: `scripts/p13_2_lambda_calibration.py` measure L_main + L_HF magnitudes trên A3 baseline renders
+- **Method**: Compute Laplacian L1 magnitude per scene → ratio R = L_main / L_HF → derive λ at % L_main contribution targets
+- **Aggregate measurements (8 scenes, A3 seed 42)**:
+  - L_main = 0.0550 (= L1+SSIM photometric)
+  - L_HF = 0.0873 (= mean |∇²I_render − ∇²I_GT| Laplacian L1)
+  - R = 0.631
+- **Calibrated λ_HF levels**: {safety 0.019 (3%), gentle 0.063 (10%), moderate 0.189 (30%), strong 0.631 (100%)} × R
+- **Replace earlier guess** {0.05, 0.10, 0.20} which underestimate 1.3-3.2× per level
+- **Per-scene L_HF ranking** consistent với diagnostic findings (leaves/orchids top, room bottom)
+- **Defendable justification**: "λ_HF calibrated từ measured Laplacian magnitude trên A3 baseline (8 scenes × seed 42), ratio R=0.631. Pilot sweep at {3%, 10%, 30%, 100%} × R covers safety threshold to weight parity với main photometric loss."
+- **Parseval ceiling estimate**: theoretical max PSNR gain ~+0.10-0.20 dB (HF carry ~12% total energy in natural images, 1/f spectrum)
+
+---
+
+### [2026-05-13 evening] Phase 13.2 Render-vs-GT diagnostic — VERDICT overturns initial Gap C plan
+- **Script**: `scripts/p13_2_spectrum_diagnostic.py` (~400 lines). Render A0+A3 × 8 scenes ~16 min + diagnostic ~2 min.
+- **Methodology**: per (config, scene) compute rel_Δ(k) = log10(P_render(k) / P_gt(k)) trên radial bins, band-mean LF/MF/HF.
+- **3 critical findings**:
+  1. **Universal HF deficit (8/8 scenes)**: A3 HF mean = −0.192 → render đạt chỉ **64% HF energy GT**. Range: trex −0.119 (76%) → orchids −0.255 (56%). **KHÔNG scene nào produce thừa HF**.
+  2. **A3 mechanism = SPATIAL, không phải spectral**: 6/8 scenes A3 produce HF ÍT HƠN A0 (imp_HF negative). horns paradox: Δ_PSNR=+0.362 (highest) nhưng imp_HF=−0.014. → A3 PSNR gain qua spatial alignment (Gaussian đúng chỗ), KHÔNG qua HF amplitude.
+  3. **Standard literature wrong sign**:
+     - DWTGS HF-sparsity assume model OVER-produces HF → **REFUTED** (8/8 under-produce)
+     - Standard FALA blur GT → **WORSE** (model đã quá mượt, blur GT làm thiếu HF thêm)
+- **A3 pattern tally (seed 42, 8 scenes)**: 4/8 MISSING_HF (flower/horns/leaves/orchids) + 4/8 WEAK_SIGNAL (fern/fortress/room/trex), 0/8 SPURIOUS_HF, 0/8 NEAR_CEILING.
+- **Mechanism direction OVERTURN**:
+  - ❌ REJECT DWTGS port (wrong sign)
+  - ❌ REJECT standard FALA blur GT (wrong sign)
+  - ✅ PROPOSE HF-emphasis L1 loss (high-pass(GT) + L1) — correct sign, untested
+  - ✅ PROPOSE FALA-reversed (sharpen GT instead of blur) — alternative correct sign
+- **Risk acknowledged**:
+  - Spectrum close không guarantee PSNR up (fern: A3≈A0 spectrum, +0.144 PSNR)
+  - 3-view sparse fundamental limit (8/8 deficit có thể data limit, không phải mechanism)
+  - Single-seed 42, pattern stability với seeds 137/9999 chưa verify
+- **Pilot plan**: orchids × seed 42 × λ_HF ∈ {0.05, 0.10, 0.20} = 3 runs ~21 min. Target orchids vì HF deficit largest (−0.255) + PSNR lowest (16.97) + Δ_A3 high (+0.224).
+- **Decision tree pilot**:
+  - Δ_PSNR > +0.10 AND HF_rel_Δ → 0 → scale up multi-seed
+  - Δ_PSNR neutral, HF closer → spectrum closed nhưng không help PSNR → abandon HF axis
+  - Δ_PSNR < 0 → wrong direction → try FALA-reversed instead
+- **Implication paper narrative**: A3 = "spatial alignment via frequency-aware densify gating" (specific), KHÔNG "frequency-aware learner" (vague). Spectrum-amplitude axis ORTHOGONAL with A3 spatial axis → có thể stack.
+
+---
+
+### [2026-05-13] Phase 13.2 pre-Gap C — FFT spectrum analysis on LLFF GT
+- **Motivation**: σ_blur hyperparameter cho Gap C (Gaussian blur low-pass) chọn arbitrary rule-of-thumb (σ=3, ks=19) = không evidence-based. Risk choose σ outside meaningful LF/HF separation zone.
+- **Approach**: Analyze actual frequency distribution của LLFF GT images trước khi implement Gap C.
+- **Methodology**:
+  - 2D FFT trên train view GT images (8 scenes × 3 train views = 24 images)
+  - Radially-averaged 1D spectrum per scene
+  - Cumulative energy fraction at thresholds (50/80/90/95/99%)
+  - Convert cutoff frequency → σ_blur via formula `σ = 1/(2π·f_cut)`
+  - Output recommendations: σ_conservative (80% energy) / σ_balanced (90%) / σ_aggressive (95%)
+- **Implementation**: `scripts/p13_2_spectrum_analysis.py` (CPU-only, ~200 lines, no GPU)
+- **Expected output**: 
+  - 8 spectrum plots (one per scene)
+  - SUMMARY.txt with per-scene + aggregate energy distribution
+  - Concrete σ_ablation range recommend cho Gap C
+- **Decision flow**:
+  - Spectrum confirms σ=3 hợp lý → ablate σ ∈ [2, 3, 4] trong Gap C
+  - Spectrum reveals σ different → shift Gap C ablation range
+  - Spectrum reveals 1/f decay (no clear cutoff) → σ as design choice, document rationale
+- **Cost**: ~30 phút server-side compute + analyze, gates Gap C implementation.
+- **Defensive value**: σ choice có justification từ data, không phải arbitrary tune.
+
+---
+
+### [2026-05-14] Phase 13.2.1 HF-emphasis pilot — ❌ REJECTED
+- **Setup**: Laplacian 3×3 high-pass L1 loss, λ calibrated {0.019, 0.063, 0.189, 0.631} (=R×{3,10,30,100}%), 2 timings {1000,2000}, 3 scenes {trex,horns,orchids}, seed 42 = 24 runs.
+- **Result — INVERSE pattern (đúng failure mode spec cảnh báo)**:
+  - trex (HF deficit ÍT −0.119): Δ_mean ≈ **+0.18** ⭐
+  - orchids (HF deficit NHIỀU −0.255): Δ_mean ≈ **+0.02** ⚪ (headroom lớn nhất nhưng KHÔNG gain)
+  - horns (mid, A3 win lớn nhất +0.362): Δ_mean ≈ **−0.31** ❌ (8/8 cells negative)
+  - Best combo +0.036 = **cancellation** giữa trex/horns, KHÔNG phải win thật
+- **Verdict**: Dose-response NGƯỢC prediction. Phase-amplitude conflict CONFIRMED — HF loss đẩy Gaussian khỏi vị trí A3 spatial alignment, phá scene A3 win mạnh nhất. Multi-seed SKIPPED (pattern quá rõ).
+- **Hệ quả mở rộng**: cả CLASS loss-side frequency-axis chết — Laplacian fail + DWTGS wrong-sign + FALA-blur wrong-sign + FALA-reversed/Sobel cùng class → predict same failure. **Frequency-axis loss-domain EXHAUSTED.**
+
+---
+
+### [2026-05-14] Phase 13.2.3 Covisibility-weighted supervision pre-flight — ❌ REJECTED (no substrate)
+- **Setup**: post-hoc pre-flight (no train) trên A3 render đã có. Test A (noise direction: var(err|mono) vs var(err|multi)) + Test B (Shannon H(covis) + Pearson(covis,freq)). 2 fix bắt buộc: sort-by-name (khớp dataset_readers.py:353), validity-mask (loại pixel no-COLMAP-support). Pairing render↔COLMAP join BY NAME (render.py:48 lưu image_name+'.png'), verified unmatched=0 mọi scene.
+- **Killer finding**: `multi=0` ở **4/8 scene** (horns/orchids/room/trex) — KHÔNG pixel nào ≥2 train view cùng thấy 1 điểm 3D. covis range toàn [0.00,0.00] hoặc [0.00,1.00].
+- **Nguyên nhân**: 3 train view LLFF chọn cách xa nhau (linspace[0,mid,last] của pool) → baseline rộng → COLMAP track cho điểm test-visible hầu như chỉ 0-1 train view. **Term (1-covis) ≈ hằng số → không có gì để weight.** Đảo dấu cũng vô nghĩa.
+- **Test B "PASS 4/4" là FALSE PASS**: H(covis)=2.2bit cao do artifact Gaussian-splat interpolation (σ=15), KHÔNG do covis đa dạng thật. Caveat C3-style — metric đo nhầm artifact.
+- **Verdict**: REJECT covisibility-weighted hoàn toàn. Structural, không phải tuning. Pre-flight 5-min CPU đủ phát hiện trước khi code 1-2 ngày.
+
+---
+
+### [2026-05-14] SYNTHESIS — Bệnh gốc: cross-view consistency DEAD trong 3-view wide-baseline
+- **Quyết định**: Loại trước cả MỘT LỚP ý tưởng — mọi mechanism dựa trên inter-view geometric consistency giữa 3 sparse train view đều structurally dead. KHÔNG re-propose.
+- **Bằng chứng hợp nhất 5 thất bại độc lập cùng 1 nguyên nhân**:
+  | Hướng | Chết vì |
+  |---|---|
+  | Pseudo-view (Phase 5b) | warp GT qua wide-baseline parallax → rác ở vùng gap |
+  | DUSt3R dense init (Phase 10A) | alignment residual error vì baseline rộng |
+  | Cross-view MPC (Phase 11) | cross-view feature không nhất quán |
+  | CRS-pull position (Phase 12) | position constraint cross-view sai |
+  | Covisibility-weighted (13.2.3) | covis degenerate, multi=0 4/8 scene |
+- **Nguyên lý**: 3 wide-baseline view KHÔNG cung cấp inter-view geometric consistency dùng được. Chỉ mechanism dùng **external-prior injection** HOẶC **within-view** HOẶC **architecture** mới sống. Đây là lý do Phase 8 A3 thắng (DAV2 monocular depth = external prior per-view; SH-freeze + LFCF = within-view; KHÔNG cross-view).
+- **Loại trước**: SOTA Binocular3DGS / NexusGS / SCGaussian (cross-view stereo/flow/match) — predict fail, không port.
+
+---
+
+### [2026-05-14] REFUTED — "HF deficit = bottleneck / cần đổi architecture"
+- **Quyết định**: Bác bỏ framing trước đó ("Gaussian primitive lowpass → HF deficit là bottleneck → chỉ Tier 3 architecture phá được"). SAI.
+- **Bằng chứng phản chứng (chính evidence của ta)**:
+  1. HF-emphasis pilot: đóng HF gap → PSNR phẳng (orchids Δ≈0) → HF **decoupled khỏi PSNR**
+  2. **A3 train PSNR = 34.21** → Gaussian primitive THỪA SỨC tái tạo HF khi có view. Nếu primitive lowpass thì train không đạt 34. → HF deficit ở test KHÔNG phải giới hạn vật lý primitive.
+- **Reframe**: HF deficit ở test = **triệu chứng của overfit/generalization**, không phải bệnh. Tín hiệu dominant đo được = **overfit gap 12.88 dB** (train 34.21 / test 21.33).
+- **Hệ quả priority**: Tier 3 architecture (đổi primitive) = bet đắt SAI hướng (train=34 chứng minh primitive đủ). Co-Adapt anti-overfit bị mình mis-rank "adjacent" — thực ra nhắm đúng dominant signal.
+- **Caveat chưa giải**: 12.88 trộn reducible-overfit + irreducible-3view-limit, CHƯA tách. Cần diagnostic decompose trước khi chọn direction.
+
+---
+
+### [2026-05-14] Next step + constraints
+- **NEXT**: `scripts/p13_2_bottleneck_decompose.py` — 1 script post-hoc (no train) attribute test error per pixel vào H1 irreducible(covis=0) / H3 geometry(depth-disagree) / H5 detail(HF) / H4 appearance(SH). 8 hypotheses H1-H8 (xem bảng). Quyết direction theo % attribution, không đoán.
+- **Constraint LOCKED**: **10k iter cố định** — KHÔNG đề xuất iter-budget/schedule-change. Lý do: clean paper comparison đã chốt. (T12.1 iter-15k trong task_queue cũ → VOID.)
+- **SOTA survivor sau cross-view filter**: Co-Adaptation-of-3DGS (within-view dropout+opacity-noise, report +0.68 trên BinocularGS — nhưng A3 đã có DropAnSH, cần pre-flight overlap), dn-splatter (monocular **normal** prior — external-prior axis CHƯA đụng, Phase 8 chỉ dùng DAV2 depth).
+- **Cleanup pending** (Quy tắc 13): HF-emphasis reject → xóa utils/loss/hf_emphasis.py + scripts/p13_2_hf_* + lambda_calibration.py + revert train.py hook + remove 3 args. Giữ logs SUMMARY + design-doc evidence. Chờ user approve.
+
+---
+
+### [2026-05-17] Phase 13.2.4 Bottleneck decompose — DONE (verified 8-scene)
+- **Script** `scripts/p13_2_bottleneck_decompose.py` — post-hoc no-train, attribute test error/pixel → H1 irreducible / H3 geometry / H5 detail / H4 appearance. 5 bug fixed qua verify-from-code (KHÔNG đoán): GaussianModel(args) API, points3D id-preserving reader, COLMAP-vs-render resolution scale (dynamic W/Wc), depth /alpha (crs_module:705 convention), robust-median align (polyfit outlier-fooled).
+- **Verdict 8-scene**: align ALIGNED/SCALE_CORRECTED 8/8 (scale 0.99-1.03, corr_in 0.95-0.998). **H3≈0.5% (geometry SOLVED), H1=21% irreducible (leaves 92.6%!), H4=63% appearance, H5≈16% (τ_hf leak), H8≈0 (exposure REFUTED), h4_ratio 0.18-0.36 (chroma/specular REFUTED — kể cả room "SH anomaly" cũ → bác bằng đo)**. Lỗi dominant = 3-view appearance ambiguity (right geometry+color, radiance per-pixel underdetermined), KHÔNG phải mechanism sửa được post-hoc.
+- **⚠️ OVER-CLAIM CORRECTIONS (ghi để session sau KHÔNG lặp)**:
+  1. "Accept ceiling / no fixable gap" mình kết luận nhiều lần = **OVER-CLAIM**. Bottleneck post-hoc **MÙ với training-dynamics** (chỉ soi model đã hội tụ). User push back đúng.
+  2. **AbsGS (+0.164, densification-axis, cùng A3 backbone) = bằng chứng tồn tại** rằng đổi tiêu chí densify CHO gain thật ở regime ta → densification-axis KHÔNG bị bottleneck loại.
+  3. Co-Adapt/DropAnSH: user nhắc — Co-Adaptation dropout family **ĐÃ test** (Track A/B + Phase 1: D1 pure DropAnSH 21.12 thắng family; D3 stack redundant **−0.48 over-regularize**). Anti-co-adaptation axis empirically exhausted.
+  4. **AbsGS > LFCF**: LFCF alone Δ+0.015 (≈noise), AbsGS alone +0.078, synergy +0.071. "Phase 13 frequency win" thực chất do AbsGS (gradient-cancellation catch HF-underfit), KHÔNG do LFCF explicit.
+
+### [2026-05-17] GDAGS (ICLR 2026, workspace) — verified mechanism + Gate-2 PASS
+- **Verified GDAGS/scene/gaussian_model.py:526-527**: `consistency = grads/grads_abs`, `weight = 0.8+25·(1−c)^15`, clone dùng `grads/weight`, split `grads*weight`. **GCR = grads/grads_abs = TỈ SỐ của đúng 2 signal AbsGS đã có → KHÔNG orthogonal.** GDAGS = **policy A/B swap trên trục AbsGS proven**, KHÔNG phải +feature orthogonal. Sửa nhận định mình lượt trước (đoán từ paper-summary, code bác bỏ).
+- **Quan hệ với A3**: LFCF path (`is_lfcf_iter` branch) tách biệt — GDAGS chỉ thay AbsGS-OR-rule trong standard-path. KHÔNG phải catastrophe-conflict như lo ban đầu.
+- **Gate-2 pre-flight DONE** (`scripts/p13_2_gdags_gate.py`, standalone no-production-touch, confidence=1 neutral → ratio bất biến). Full 8-scene: **✅ TRACTION — 8/8 non-degenerate** (agg collapsed 19.5% « 85%, w95 12.4 « 100, heavy 9.4% « 40%; room nhẹ nhất 33% collapsed, fortress conflicted nhất — vẫn dải healthy). GDAGS coherence-weight phân biệt được Gaussian trong regime ta.
+- **Caveat KHÔNG biến mất**: PROXY directional (converged L1 eval-render ≠ densify-time grad); GDAGS không orthogonal = policy-A/B không +feature, kỳ vọng modest, có thể ≈/< AbsGS; cross-paper PSNR không comparable. TRACTION = đáng pilot, KHÔNG = chắc gain.
+- **Decision**: Gate-2 PASS → implement flag-gated GDAGS + A/B pilot. KHÔNG accept-ceiling (post-hoc-blindness đã nhận; densification-axis viable per AbsGS).
+
+### [2026-05-17] GDAGS implementation contract (chờ user duyệt plan trước code)
+- Flag `use_gdags` default **False** trong OptimizationParams → auto-register `--use_gdags` (mirror `--absdensify` :225). Helper `utils/densify/gdags.py` (NEW, Quy tắc 12). `gaussian_model.__init__`: `self.use_gdags=getattr(args,'use_gdags',False)` (mirror `self.absdensify` :156). Gate CHỈ standard-path `else` branch densify_and_prune. densify_and_clone/split: `if self.absdensify and not self.use_gdags`. **LFCF path KHÔNG đụng 1 ký tự. train.py KHÔNG sửa** (flag flow qua args y hệt absdensify). Verify flag-OFF = A3 byte-identical TRƯỚC pilot. Scripts: `p13_2_gdags_pilot.sh` + `_analyze.py` (A/B A3 vs A3+GDAGS, trex/horns/orchids seed42).
+- **Literature filter cho user (search song song)**: hard-reject = cross-view / "produce-more-HF" / foundation / loss-only / dropout-variant. Value = training-dynamics + anti-overfit + in-train signal + ORTHOGONAL với {grad,abs-grad,scale,opacity,LFCF,CRS,dropout}. Bẫy: nhiều "new densify" = re-express grad/abs/scale → A3 đã dùng → low value.
 
 ---
