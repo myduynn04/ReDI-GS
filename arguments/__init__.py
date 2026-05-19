@@ -327,15 +327,19 @@ class OptimizationParams(ParamGroup):
         self.lfcf_tolerance            = 1e-5     # FP-stability tolerance for grad compare
         self.lfcf_diffscale            = True     # volume-preserving isotropify
 
-        # ── [CRSGaussian Phase 13.2.5] GDAGS coherence-weighted densify ──
-        # Gradient-Direction-Aware policy (ICLR 2026, verified GDAGS:526-527):
-        #   consistency = grads/grads_abs ; weight = 0.8+25·(1−c)^15
-        #   clone dùng grads/weight, split grads*weight (asymmetric coherence).
-        # Default False → A3 byte-identical (Gate-2 PASS 8/8 TRACTION 2026-05-17).
-        # GHI CHÚ: GCR=grads/grads_abs KHÔNG orthogonal với AbsGS → đây là
-        # policy A/B swap trên trục AbsGS proven, KHÔNG +feature. LFCF path
-        # KHÔNG đụng. Auto-register --use_gdags (mirror --absdensify :225).
-        self.use_gdags                 = False    # master switch (default OFF)
+        # ── [CRSGaussian Phase 15] Anisotropy shape regularizer ──
+        # Penalty liên tục anisotropy (gap: lfcf_diffscale chỉ densify-
+        # time). Default OFF → A3/Phase-13 byte-identical. 3-arm:
+        #   mode "blunt"=A (log-ratio, =control falsify Q4-diagnostic),
+        #   mode "smax_excess"=B (chỉ phạt s_max-excess vs scene-normal,
+        #   né 77% surface-flat hợp lệ — form Q4 data CHỈ vào).
+        # Start > T_warmup (early cần Gaussian tự reshape). Xem
+        # decisions_log [2026-05-18] Phase 15.
+        self.use_shape_reg        = False     # master switch (OFF)
+        self.shape_reg_mode       = "blunt"   # "blunt" | "smax_excess"
+        self.shape_reg_lambda     = 1e-3      # sweep {1e-4,1e-3,1e-2}
+        self.shape_reg_start_iter = 1000      # > T_warmup
+        self.shape_reg_smax_k     = 2.0       # B: median+k·MAD threshold
 
         super().__init__(parser, "Optimization Parameters")
 

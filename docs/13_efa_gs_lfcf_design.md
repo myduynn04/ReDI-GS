@@ -1973,3 +1973,160 @@ appearance ambiguity). "Accept ceiling" over-claim corrected (post-hoc mù
 training-dynamics; AbsGS proof axis viable). GDAGS Gate-2 PASS → flag-gated A/B
 pilot pending plan-approval. A3 21.330 vẫn locked baseline; GDAGS = policy A/B
 trên trục proven (modest expectation).
+
+---
+
+## Section 20 — GDAGS A/B pilot full-8 — ❌ REJECTED, densification-axis EXHAUSTED (2026-05-18)
+
+### 20.1 Implement đúng contract (modular, toggleable, A3-preserving)
+- `utils/densify/gdags.py` NEW — `compute_gdags_weight(grads, grads_abs)` = EXACT
+  mirror GDAGS:526-527: `consistency=(grads+1e-8)/(grads_abs+1e-8)`,
+  `weight=0.8+25·(1−c)^15`. KHÔNG clamp (verify-from-code: GDAGS:527 no clamp;
+  triangle-ineq ⇒ c≤1 by construction).
+- `arguments/__init__.py`: `self.use_gdags=False` (OptimizationParams →
+  auto-register `--use_gdags`, mirror `--absdensify`).
+- `scene/gaussian_model.py` 4 chỗ gated: `__init__` getattr; densify_and_split
+  & densify_and_clone `if self.absdensify and not self.use_gdags` (AbsGS-OR tắt
+  khi GDAGS on); densify_and_prune standard `else`: GDAGS →
+  `clone_g=grads/w, split_g=grads*w`.
+- **LFCF `is_lfcf_iter` branch 0 ký tự đụng. train.py 0 sửa** (flag flow qua
+  args y hệt absdensify, grep-confirmed). Default OFF → A3 byte-identical.
+
+### 20.2 B1 verify flag-OFF = A3 byte-identical — ✅ PASS
+PRIMARY = **N_gaussians**, KHÔNG PSNR. Lý do: single-scene PSNR ±1.3 dB atomicAdd
+noise (project_3dgs_variance_floor) → threshold-0.05-on-PSNR cũ SAI (mâu thuẫn
+variance floor). N = output trực tiếp densification path (chỗ GDAGS đụng), code
+identical → N jitter chỉ vài %. VERIFYOFF (code mới, no `--use_gdags`) vs
+logs/p13_lfcf/A3_seed42: **N reldiff < 5% mọi scene → contract HOLDS**. (ΔPSNR
+≤±1.3 = atomicAdd noise, KHÔNG regression — N là bằng chứng.)
+
+### 20.3 A/B pilot full-8 seed42 (paired vs logs/p13_lfcf/A3_seed42_*, no re-run)
+| metric | value | đọc |
+|---|---|---|
+| **Δtest_mean** | **+0.0149** (std 0.2753, N=8) | **« ±0.10 floor → NOISE** |
+| ΔN_mean | **+51.3%** | capacity ↑ mạnh |
+| Δtrain_mean | **+2.081 dB** | fit ↑ mạnh |
+
+Per-scene Δtest: fern −0.025 · flower −0.082 · fortress **+0.268** · **horns
+−0.605 ❌❌** · leaves +0.168 · orchids +0.131 · room −0.072 · trex **+0.336**.
+
+### 20.4 Verdict — OVER-DENSIFY → OVERFIT (chữ ký kinh điển)
+ΔN=+51% (capacity↑) + Δtrain=+2.08 (fit↑) + Δtest≈0 (test phẳng) = memorize.
+Mean +0.015 dương là **bẫy cherry-pick** (fortress/trex/leaves bù horns/flower,
+KHÔNG win thật — std 0.275 » mean 0.015). **horns −0.605 = thảm hoạ trên chính
+scene A3 thắng LỚN NHẤT Phase 13** (horns +0.362 N=24 §15) → GDAGS phá đúng điểm
+mạnh nhất A3, đồng pattern phase-conflict HF-pilot. GCR=grads/grads_abs KHÔNG
+orthogonal AbsGS → policy-swap không gain (đúng dự đoán §19.3).
+
+### 20.5 3rd INDEPENDENT CONFIRMATION — 3-view capacity ceiling
+Thêm capacity ở regime 3-view = memorize, KHÔNG generalize. 3 fail độc lập, 1 cơ chế:
+| Hướng | Capacity added | Δtest | Cơ chế |
+|---|---|---|---|
+| HF-emphasis (§17, 13.2.1) | HF amplitude pressure | −0.31 (horns 8/8 neg) | phase-amplitude conflict |
+| D3 dropout-stack (Phase 1) | dropout regularizer stack | −0.48 | over-regularize redundant |
+| **GDAGS (§20, 13.2.5)** | **+51% Gaussians** | **≈0, horns −0.605** | **over-densify → memorize** |
+
+→ **Densification-axis + mọi capacity-add EXHAUSTED.** A3 (LFCF+AbsGS-OR) = stable
+operating point. KHÔNG re-propose densify-criterion / capacity-add.
+
+### 20.6 Cleanup plan (Rule 13) — chờ user approve
+**DELETE**: `utils/densify/gdags.py`, `scripts/p13_2_gdags_pilot.sh`,
+`scripts/p13_2_gdags_pilot_analyze.py`, `scripts/p13_2_gdags_gate.py`,
+`output/p13_2_gdags/`. **REVERT**: `arguments/__init__.py` (use_gdags),
+`scene/gaussian_model.py` (4 chỗ gated → baseline AbsGS-OR). **KEEP**:
+`logs/p13_2_gdags/*.log` (negative-result evidence), doc Section 19-20.
+Gộp chung HF-emphasis cleanup pending (§20.11 cũ).
+
+**FINAL status (2026-05-18):** GDAGS REJECTED (Δtest≈0 «noise, +51%N/+2.08dB-train
+= overfit, horns −0.605 phá A3-best-win). 3rd confirm 3-view capacity ceiling
+(HF/D3/GDAGS). Densification-axis EXHAUSTED. **A3 = test 21.330 LOCKED**, defensible
+ceiling (verified bottleneck = appearance ambiguity + densify/loss/CRS/cross-view
+all exhausted). NEXT decision: dn-splatter monocular-normal external-prior
+(survivor axis, chưa đụng) vs accept 21.330. User accept reject 2026-05-18.
+
+---
+
+## Section 21 — PHASE 14: L_consist (Binocular3DGS NeurIPS24) port — PLAN LOCKED (2026-05-18)
+
+> ⚠️ **PHASE 14 = phase/axis MỚI**, KHÔNG phải nhánh Phase 13.2 (densification/loss
+> exploration đã đóng). Axis = self-supervised stereo consistency loss (external
+> mechanism class). Tạm append vào doc-13 cho liên tục; có thể tách `14_*` doc sau.
+> User pivot research Binocular3DGS in-workspace. Full verify-from-code.
+> Chi tiết verdict-trail: `04_decisions_log.md` [2026-05-18] Phase 14.
+
+### 21.1 Cơ chế verified
+L_consist (Binocular train.py:123-136): mỗi iter, từ 1 train view sinh synthetic
+camera dịch ngang baseline-hẹp (R giữ nguyên, pure lateral = rectified stereo) →
+render 2 cam → `disp = focal·(−B)/rendered_depth` → inverse-warp shifted-render
+về cam gốc → `L1(warped, GT_gốc, mask) + 0.05·Godard-edge-smooth`. Differentiable
+loss, gradient vào CẢ geometry (qua depth→disp) LẪN appearance (qua shifted-render).
+Self-supervised single-view (KHÔNG warp data wide-baseline) → thoát
+cross-view-structurally-dead; 0 Gaussian thêm → thoát 3-view-capacity-ceiling;
+photometric-reproj → thoát loss-freq-exhausted.
+
+### 21.2 Orthogonality vs d_cycle (verified, KHÔNG bẫy GDAGS)
+crs_module.py:558-586 + d_cycle.py: d_cycle = `@torch.no_grad` SCORE (pixel-reproj
+cycle-error cross-view-pairwise → nuôi CRS-gating, A3 đang bật). L_consist =
+differentiable LOSS photometric synthetic-view. **Khác tầng hoàn toàn**, không
+substitute. Chung target failure-population (floater/sai-geometry) → rủi ro =
+**bão hoà hiệu lực** (A3 đã D_cycle+CRS-prune+pearson dọn floater), KHÔNG redundant
+cơ chế. Đo bằng 2×2.
+
+### 21.3 Thiết kế 2×2 + self-correct over-claim
+{D_cycle ON/OFF}×{L_consist OFF/ON}: A=A3(reuse logs/p13_lfcf) · B=A3+Lc ·
+C=A3−Dcyc(→D_DAV2) · D=A3−Dcyc+Lc. **Over-claim corrected (lần 3)**: "đừng test
+D_cycle-off vì Phase-9 đóng" SAI — decisions_log:933-948 "D_cycle FLIPS NEGATIVE
+on strong backbone" (D1-O999 Δ=−0.015), CHƯA A/B lại trên A3 cuối; Phase-9 chốt
+drop-R/S/mech KHÔNG chốt D_cycle. `use_d_cycle=False`=clean toggle (if/else fallback
+D_DAV2, A3 đã load DAV2). Đọc: A−C=biên D_cycle/A3; B−A=Lc-thêm; D-vs-B=Lc-thay;
+B≈A=bão-hoà. C=0 code.
+
+### 21.4 Ba bug-fix port (KHÔNG copy verbatim — kỷ luật GDAGS)
+1. **Shifted-cam**: CRS Camera thiếu get_camera_matrix/get_focal → dùng
+   **PseudoCamera (cameras.py:66-87)** + `W2C=wvt.T`, `pt_cam=[B,0,0,1]`,
+   `pt_world=inv(W2C)@pt_cam`, `trans=pt_world[:3]−camera_center`, PseudoCamera(
+   R,T,FoVx,FoVy,W,H,trans,scale). ~10 dòng mới.
+2. **Depth normalize (silent bug Cao)**: CRS rasterizer trả accumulated `ΣαT·`
+   (verified bottleneck:203-208 + crs_module:697-708). Hard `disp=f·B/depth` BẮT
+   BUỘC `depth/(alpha+1e-6)` differentiable (alpha có grad). Bino-side irrelevant
+   cho fix (chưa direct-read CUDA → KHÔNG assert — fix neo 100% phía CRS-verified).
+   Coupling #2↔#3: #2=dimensional, #3=magnitude, cả hai phải đúng đồng thời.
+3. **trans_dist scale**: 0.4=world-scale Bino (tune 30k+dense-init) → scale theo
+   tỉ lệ `cameras_extent`(=nerf_norm radius) CRS-vs-Bino, ablate hẹp {0.5×,1×,2×}.
+   (+budget: start_iter 20000/30k→~6700/10k, project_budget_scaling_rule.)
+
+### 21.5 Saturation pre-check (Bước 1, no-train, gate)
+`substrate = res(B │ valid_mask ∧ ~Lambertian) − res(B→0 │ cùng region)`.
+- floor_A = res(B→0) = train-fit floor (B→0: warp→identity, shifted→orig;
+  KHÔNG phải interp-noise) → common term, **triệt tiêu trong hiệu**.
+- region-restrict CẢ 2 số hạng: mask loại disocclusion (mọc theo B), ~Lambertian
+  loại view-dependent-SH (mọc theo B). ~Lambertian proxy = tiny-rotate render đổi
+  ít (KHÔNG đụng SH coeff).
+- known small +bias còn lại = bilinear-interp (mọc theo B, không bị khử) →
+  kết luận "có đất" CHỈ khi vượt floor **đủ biên** (logic ±0.10); marginal=no-go.
+- res(B)≈res(B→0) → A3 đã consistent → **reject sớm, KHÔNG tốn pilot**.
+
+### 21.6 Gate-b (non-degenerate + per-scene specular guard)
+flag-OFF=A3 (N+loss-curve, KHÔNG PSNR ±1.3-noise) · loss↓ kèm
+depth-corr-vs-COLMAP **KHÔNG GIẢM** (H3 sát trần, "tăng" sẽ false-fail) +
+depth-var-không-sụp + grad/L_main in-band + test-PSNR 2-scene no-regress ·
+**per-scene specular guard** (1 scene regress>noise → abort, KHÔNG để mean che —
+GDAGS horns−0.605/HF-pilot horns−0.31 cherry-pick trap). Bottleneck-verified
+chroma/specular minor trên LLFF (h4_ratio 0.18-0.36) → catastrophe LLFF-tempered
+nhưng guard giữ làm insurance.
+
+**STATUS (2026-05-18):** PLAN LOCKED. Bước-0 (A3 re-verify) đang chạy server.
+Synthesis [2026-05-14] "đừng port Binocular" = over-broad cho self-stereo →
+exception hợp lệ (severity Thấp). Chờ Bước-0 N-verdict → Bước-1 pre-check.
+
+### 21.7 RESULTS + reframe (2026-05-18) — xem decisions_log [2026-05-18] Phase 14 RESULTS
+- **L_consist B ❌ REJECT**: ΔB=+0.041«±0.10 saturate + horns−0.318 (**3rd-confirm
+  A3-fragility**: HF−0.31/GDAGS−0.605/Lc−0.318) + +36% cost. **C: D_cycle CONFIRMED
+  beneficial on A3** (ΔC=−0.135, horns−0.925; Phase-7 flip KHÔNG replicate) → giữ D_cycle.
+  D reject. Pre-check + Gate auto-verdicts đều có cherry-pick-threshold bug (tự sửa).
+- **Dense-init Gate**: false-GO (cherry-pick R8); realistic-R substrate <10%; leaves
+  NO_HELP 95.6%↔H1 92.6% cross-val. Không đóng hẳn (ALREADY-mask ambiguity → refine).
+- **REFRAME**: KHÔNG accept-ceiling. Phase-11 "exhausted" → user-frequency-pivot=+0.164
+  precedent → trục-vật-lý orthogonal chưa thử (anisotropy/density-aware/normal-prior) =
+  Phase-15. Info-ceiling chỉ chặn xào-cùng-trục; trục-mới rút recoverable-signal vẫn mở.
+  → tách doc riêng `14_*`/`15_*` khi Phase-15 có verdict.

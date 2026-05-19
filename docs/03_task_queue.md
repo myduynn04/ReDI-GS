@@ -844,8 +844,10 @@ Phase D (fallback): writeup
 | [x] T13.2.0' Render-vs-GT diagnostic | DONE — universal HF deficit, A3=spatial-not-spectral |
 | [x] T13.2.1 HF-emphasis pilot (Laplacian, 24 runs) | ❌ REJECT — INVERSE pattern, phase-amplitude conflict |
 | [x] T13.2.3 Covis-weighted pre-flight | ❌ REJECT — covis degenerate (multi=0 4/8), no substrate |
+| [x] T13.2.5 GDAGS A/B full-8 (2026-05-18) | ❌ REJECT — Δtest≈0 «noise, ΔN+51%/Δtrain+2.08=overfit, horns −0.605 phá A3-best |
 | ⏸ DWTGS / FALA-blur / FALA-reversed | SKIP — wrong-sign / same-class predicted fail |
 | ⏸ Tier 3 architecture (đổi primitive) | DEPRIORITIZED — train=34 chứng minh primitive KHÔNG phải limit |
+| ⏸ Densification-axis (mọi capacity-add) | EXHAUSTED — 3rd confirm 3-view capacity ceiling (HF/D3/GDAGS) |
 
 ### Synthesis chốt
 - **Cross-view consistency DEAD** trong 3-view wide-baseline (hợp nhất 5 thất bại: pseudo-view/DUSt3R/MPC/CRS-pull/covis). Loại trước lớp cross-view + SOTA Binocular3DGS/NexusGS/SCGaussian.
@@ -856,9 +858,52 @@ Phase D (fallback): writeup
 - [x] **OVER-CLAIM corrected**: "accept ceiling" sai — bottleneck post-hoc MÙ với training-dynamics. AbsGS (+0.164 densify-axis) = bằng chứng axis viable. Co-Adapt dropout family đã exhausted (D3 −0.48). AbsGS > LFCF (LFCF alone +0.015).
 - [x] **T13.2.5 GDAGS Gate-2** — verified mechanism (GCR=grads/grads_abs, KHÔNG orthogonal = policy A/B trên trục AbsGS). Gate-2 full-8 ✅ TRACTION (8/8 non-degenerate). Standalone, no production touch.
 
-### NEXT — GDAGS implement (plan đã trình, chờ user duyệt → code)
-- [ ] **Implement use_gdags** flag default OFF, helper `utils/densify/gdags.py`, gate mirror absdensify, LFCF KHÔNG đụng, train.py KHÔNG sửa (xem decisions_log [2026-05-17] contract)
-- [ ] Verify flag-OFF = A3 byte-identical TRƯỚC pilot
-- [ ] Pilot A/B `p13_2_gdags_pilot.sh` (A3 vs A3+GDAGS, trex/horns/orchids seed42) → multi-seed nếu signal > noise
+### Phase 13.2.5 GDAGS — DONE ❌ REJECTED (2026-05-18)
+- [x] **Implement use_gdags** flag default OFF, helper `utils/densify/gdags.py`, gate mirror absdensify, LFCF KHÔNG đụng, train.py KHÔNG sửa — đúng contract
+- [x] **B1 verify flag-OFF = A3 byte-identical** — ✅ PASS (N reldiff <5%; PSNR=atomicAdd noise, N là primary)
+- [x] **A/B pilot full-8 seed42** (paired vs logs/p13_lfcf/A3_seed42): **Δtest_mean=+0.0149 (« ±0.10 noise floor) · ΔN=+51% · Δtrain=+2.08 · horns −0.605 (phá A3 best-win)** → ❌ OVER-DENSIFY→OVERFIT
+- [x] **REJECT GDAGS → LOCK A3 21.330.** 3rd independent confirmation **3-view capacity ceiling** (HF-pilot −0.31 / D3 −0.48 / GDAGS ≈0+horns−0.605). Densification-axis EXHAUSTED.
+- [ ] **Cleanup pending (Quy tắc 13)** — chờ user approve: revert arguments/gaussian_model 5 chỗ, delete utils/densify/gdags.py + scripts/p13_2_gdags_*, rm output/p13_2_gdags/. GIỮ logs + design Section 20. Gộp HF-emphasis cleanup.
+
+### Phase 13.2 — NEXT DECISION (2026-05-18)
+> Densification-axis exhausted (GDAGS). Loss-axis exhausted (Phase 11 6/6 + HF-pilot).
+> CRS-axis exhausted (9/9). Cross-view class structurally dead (5 fail). Capacity-add =
+> memorize ×3 confirm. Bottleneck verified = 3-view appearance ambiguity (H4=63%, H1=21%).
+- **Survivor axis = external-prior injection (chưa đụng)**: `dn-splatter` monocular **NORMAL** prior. Phase 8 chỉ dùng DAV2 **depth** — normal là tín hiệu external-prior orthogonal, KHÔNG capacity-add, KHÔNG cross-view, KHÔNG loss-only-frequency. Chưa từng test trong toàn bộ project.
+- **Alternative = accept 21.330** — giờ defensible bằng: verified bottleneck (appearance ambiguity) + 3 capacity-axis fail + cross-view structural-dead + loss/CRS/freq exhausted. Gap tới DOC-GS −0.05 / BinocularGS −0.11 (đã rất sát tier).
+- **Pending user**: chọn (a) pre-flight dn-splatter normal-prior (Gate-style trước implement) hay (b) chốt accept 21.330. KHÔNG re-propose: densify / loss-freq / CRS / cross-view / dropout / foundation / iter-budget.
 - [ ] Caveat: GDAGS policy-A/B KHÔNG +feature, kỳ vọng modest, có thể ≈/< AbsGS
 - [ ] Cleanup HF-emphasis reject files (Quy tắc 13) — chờ approve
+
+### Phase 14 — L_consist (Binocular3DGS) port — PLAN LOCKED, đang Bước-0 (2026-05-18)
+> User pivot: research Binocular3DGS in-workspace. Verified L_consist = self-supervised
+> single-view stereo loss → thoát cross-view-dead + capacity-ceiling. Orthogonal vs
+> d_cycle (no_grad-score ≠ differentiable-loss). Chi tiết: decisions_log [2026-05-18] Phase 14.
+- **2×2 factorial**: A=A3(reuse) · B=A3+Lc · C=A3−Dcyc(→D_DAV2) · D=A3−Dcyc+Lc. (D_cycle-off = clean toggle; test JUSTIFIED vì decisions_log:948 "D_cycle flips negative on strong backbone", chưa A/B lại trên A3.)
+- [~] **Bước 0** — A3 re-verify (server ĐANG CHẠY): re-run A3 horns+orchids seed42, LOG_DIR=logs/verify_a3_restore (KHÔNG đè baseline), so N vs logs/p13_lfcf. <5% ✅ / ≥20% ❌ STOP.
+- [x] **Bước 0** — A3 re-verify DONE ✅ PASS: horns N reldiff 2.80% / orchids 0.06% (<5%). PSNR drop (−0.31/−0.07) « ±1.3 noise; orchids identical-N+PSNR-drop = airtight proof = atomicAdd, KHÔNG code-regression. Baseline reuse hợp lệ.
+- [~] **Bước 1** — saturation pre-check WRITTEN `scripts/p14_lconsist_precheck.py` (no-train, standalone, verified-from-code). substrate = res(B│valid∧~Lamb) − res(B→0│cùng region); UNMASKED=upper-bound (UB≈0→reject chắc). Chờ chạy server.
+- [x] **Bước 1** — pre-check: auto-verdict "reject" = FALSE-REJECT (MARGIN_ABS=0.010 tôi bịa, uncalibrated). Data thật: substrate mọc ~tuyến tính theo B 8/8 scene, 4/8 substantial (fortress/orchids/horns/leaves). KHÔNG obvious-no-go → KHÔNG reject, đi tiếp (pilot là arbiter thật).
+- [x] **Bước 2** — verify-from-code production hook DONE (flag→OptimizationParams; hook SAU L_depth train.py:427; bg per-iter; scene.cameras_extent in-scope; disable_dropout API ok).
+- [x] **Bước 3** — implement DONE: arguments +5 flag (use_lconsist OFF); `utils/loss/binocular_consistency.py` NEW (differentiable, #1/#2/#3 fixed, faithful Binocular); train.py +hook ≤14 dòng gated. Flag-OFF=A3 by construction. C=0 code.
+- [~] **Bước 4** — pilot runner + analyzer + pre-pilot verify (flag-OFF N=A3 + flag-ON 1-scene smoke).
+- [x] **Bước 5** — pilot DONE. **B (A3+Lc) ❌ REJECT**: ΔB=+0.041«±0.10 saturate + **horns −0.318 catastrophe (3rd-confirm fragility: HF/GDAGS/Lc)** + +36% cost. **C: D_cycle CONFIRMED beneficial trên A3** (ΔC=−0.135, horns−0.925) → giữ D_cycle (Phase-7 flip không replicate). D reject (D−B=−0.045, 2 catastrophe).
+- [x] **Dense-init Gate DONE** `scripts/p14_denseinit_gate.py`: auto-GO=false-accept (cherry-pick R8); substrate sụp 22→8→3.5% theo R; cross-val leaves NO_HELP 95.6%↔H1 92.6%. KHÔNG đóng hẳn (Gate ALREADY-mask ambiguity) → cần refine nearest-sparse-dist.
+
+### Phase 15 — Untried orthogonal PHYSICAL axes (2026-05-18)
+> User push-back ĐÚNG: Phase-11 "loss-axis dead=ceiling" → user đẩy frequency → +0.164=21.330.
+> Claim-exhausted có tiền sử SAI khi có trục-vật-lý orthogonal chưa thử. KHÔNG accept 21.330 vội.
+> Info-ceiling chỉ giải thích xào-cùng-trục saturate; trục-vật-lý-MỚI rút thêm recoverable-signal
+> = đúng điều frequency/AbsGS làm. Docs caveat: H4 có mảnh reducible-overfit chưa tách.
+> **Phase 14 L_consist REJECT+CLEANED (2026-05-18)** — production reverted (arguments+train.py),
+> A3/Phase-13 byte-clean, build mới TRÊN A3. Chi tiết decisions_log [2026-05-18] Phase 14 CLEANED.
+- [x] Recon DONE. Đã đóng: density-dropout (D3 −0.32 verified), anisotropy-blunt (Q4 77%-flat verified 8/8).
+- [x] (a) Anisotropy diagnostic `p15_aniso_diag.py` DONE — blunt s_max/s_min CLOSED (77% legitimate-flat). Gap: lfcf_diffscale chỉ densify-time (verified) nhưng blunt-ratio sai form.
+- ❌ ~~(b) Density-aware dropout~~ REJECT Phase-2d 2026-04-21 (D3 −0.32). KHÔNG re-propose.
+- **3-arm Phase-15 (user "test cả 3", trên A3-clean):**
+  - [ ] **A** blunt `s_max/s_min` L_aniso — pilot = **control falsify Q4** (diagnostic misfire nhiều) + thử. EV thấp nhưng meta-value.
+  - [ ] **B** targeted `s_max-excess-vs-scene` — form data CHỈ vào (né 77%-flat). EV khá hơn A.
+  - [ ] **C1** dn-splatter DSINE monocular-normal — verified: external estimator → **nặng-preprocess (class dense-init)**, NHƯNG loss-integration (recipe-risk<init-replace), duy nhất +info-mới. Setup-then-pilot (verify DSINE-weights workspace trước).
+  - [~] **C2** depth→normal self-consist — DEPRIORITIZE (no-new-info, predicted-saturate ≈ L_consist-class).
+- [ ] Implement A+B (Quy tắc 11/12, default OFF=A3-identical) → pilot 2-GPU full-8 single-seed reuse-A3, per-scene catastrophe-guard. C1 verify+plan song song.
+- ⚠️ Lesson tích lũy: "untried" verify vs FULL memory-file + decisions_log (KHÔNG index/code-presence); verify-from-code mechanism TRƯỚC implement (C over-claim "nhẹ" đã sửa bằng đọc code); diagnostic project misfire nhiều → empirical control đáng giá.

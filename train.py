@@ -424,6 +424,21 @@ def training(dataset, opt, pipe, args):
             L_depth = 0.05 * pearson_depth_loss(rendered_depth, depth_prior)
             LossDict["loss_gs0"] += L_depth
 
+        # ── [CRSGaussian Phase 15] Anisotropy shape regularizer (gated, OFF) ──
+        # Flag OFF → loss byte-identical A3/Phase-13 (gate y hệt pattern
+        # --use_depth_prior). Start > T_warmup (Gaussian reshape tự do sớm).
+        if opt.use_shape_reg and iteration > opt.shape_reg_start_iter:
+            from utils.regularizer.shape_reg import compute_shape_reg_loss
+            L_sr = compute_shape_reg_loss(
+                GsDict['gs0'], mode=opt.shape_reg_mode,
+                smax_k=opt.shape_reg_smax_k)
+            if L_sr is not None:
+                L_sr = opt.shape_reg_lambda * L_sr
+                LossDict["loss_gs0"] += L_sr
+                if tb_writer is not None and iteration % 100 == 0:
+                    tb_writer.add_scalar('loss/shape_reg',
+                                         float(L_sr.detach()), iteration)
+
         loss = LossDict["loss_gs0"]
         for i in range(args.gaussiansN):
             LossDict[f"loss_gs{i}"].backward()
