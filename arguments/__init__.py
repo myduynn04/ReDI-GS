@@ -140,6 +140,22 @@ class ModelParams(ParamGroup):
         self.coreliability_combine_mode          = "min"    # "min" | "mean"
         self.coreliability_depth_consistency_thr = 0.05     # 5% relative depth threshold
 
+        # ── [CRSGaussian Phase 17 — C1] DSINE monocular-normal prior ──
+        # External-prior thứ 2 (song song DAV2-depth). Loss C1a: L1 giữa
+        # normal-từ-rendered-depth (differentiable, camera-[0,1]) và
+        # DSINE-normal precompute (scripts/p17_c1_preprocess_dsine.py →
+        # <source_path>/c1_normal_dir/<stem>.npy). HONEST: C1a là
+        # adaptation (dn-splatter detach depth + supervise CUDA C1b);
+        # chi tiết + pre-registered prediction: utils/loss/c1_normal.py.
+        # Default OFF → A3/Phase-13 byte-identical (Quy tắc 11; verify
+        # flag-OFF == A3 bằng N-criterion). λ chính PRE-REGISTERED = 0.10
+        # (dn-splatter default) DUY NHẤT quyết GO/NO; {0.05,0.20} =
+        # sensitivity-only, KHÔNG lật verdict (decisions_log Phase-17).
+        self.use_c1_normal       = False     # master switch
+        self.c1_normal_lambda    = 0.10      # primary pre-registered λ
+        self.c1_normal_start_iter = 0        # iter bắt đầu áp loss
+        self.c1_normal_dir       = "c1_dsine_normals"  # subdir under source_path
+
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -326,20 +342,6 @@ class OptimizationParams(ParamGroup):
         self.lfcf_interval_times       = 2        # LFCF mỗi 2 × densify_interval
         self.lfcf_tolerance            = 1e-5     # FP-stability tolerance for grad compare
         self.lfcf_diffscale            = True     # volume-preserving isotropify
-
-        # ── [CRSGaussian Phase 15] Anisotropy shape regularizer ──
-        # Penalty liên tục anisotropy (gap: lfcf_diffscale chỉ densify-
-        # time). Default OFF → A3/Phase-13 byte-identical. 3-arm:
-        #   mode "blunt"=A (log-ratio, =control falsify Q4-diagnostic),
-        #   mode "smax_excess"=B (chỉ phạt s_max-excess vs scene-normal,
-        #   né 77% surface-flat hợp lệ — form Q4 data CHỈ vào).
-        # Start > T_warmup (early cần Gaussian tự reshape). Xem
-        # decisions_log [2026-05-18] Phase 15.
-        self.use_shape_reg        = False     # master switch (OFF)
-        self.shape_reg_mode       = "blunt"   # "blunt" | "smax_excess"
-        self.shape_reg_lambda     = 1e-3      # sweep {1e-4,1e-3,1e-2}
-        self.shape_reg_start_iter = 1000      # > T_warmup
-        self.shape_reg_smax_k     = 2.0       # B: median+k·MAD threshold
 
         super().__init__(parser, "Optimization Parameters")
 

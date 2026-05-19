@@ -130,6 +130,24 @@ def training(dataset, opt, pipe, args):
                        dataset.source_path, dataset.n_views,
                        depth_range, tb_writer)
 
+    # ── [CRSGaussian Phase 17 — C1] One-shot load DSINE normal priors ──
+    # Gated --use_c1_normal. Key theo image STEM (preprocess là process
+    # riêng → cam.uid không ổn định cross-process; stem ảnh ổn định).
+    # Default OFF → c1_normal_dict={} → hook skip → A3/Phase-13
+    # byte-identical (Quy tắc 11). HONEST: C1a = adaptation, xem
+    # utils/loss/c1_normal.py (dn-splatter detach depth + supervise C1b).
+    c1_normal_dict = {}
+    if dataset.use_c1_normal:
+        _c1dir = os.path.join(dataset.source_path, dataset.c1_normal_dir)
+        for _cam in allCameras:
+            _stem = os.path.basename(_cam.image_name).split(".")[0]
+            _fp = os.path.join(_c1dir, _stem + ".npy")
+            if os.path.isfile(_fp):
+                c1_normal_dict[_cam.uid] = torch.from_numpy(
+                    np.load(_fp)).float().cuda()         # (H,W,3) [0,1]
+        print(f"[Phase 17 C1] loaded {len(c1_normal_dict)}/"
+              f"{len(allCameras)} DSINE normal maps from {_c1dir}")
+
     # ── [CRSGaussian Phase 11 Step 1] Precompute covisibility maps ──
     # One-shot: forward-warp aligned depth_A → depth_B cho mỗi cặp (A, B),
     # đếm số views consistent at each pixel của A. Camera poses fixed →
@@ -424,20 +442,26 @@ def training(dataset, opt, pipe, args):
             L_depth = 0.05 * pearson_depth_loss(rendered_depth, depth_prior)
             LossDict["loss_gs0"] += L_depth
 
-        # ── [CRSGaussian Phase 15] Anisotropy shape regularizer (gated, OFF) ──
-        # Flag OFF → loss byte-identical A3/Phase-13 (gate y hệt pattern
-        # --use_depth_prior). Start > T_warmup (Gaussian reshape tự do sớm).
-        if opt.use_shape_reg and iteration > opt.shape_reg_start_iter:
-            from utils.regularizer.shape_reg import compute_shape_reg_loss
-            L_sr = compute_shape_reg_loss(
-                GsDict['gs0'], mode=opt.shape_reg_mode,
-                smax_k=opt.shape_reg_smax_k)
-            if L_sr is not None:
-                L_sr = opt.shape_reg_lambda * L_sr
-                LossDict["loss_gs0"] += L_sr
-                if tb_writer is not None and iteration % 100 == 0:
-                    tb_writer.add_scalar('loss/shape_reg',
-                                         float(L_sr.detach()), iteration)
+        # ── [CRSGaussian Phase 17 — C1] DSINE normal-prior loss (C1a) ──
+        # Gated --use_c1_normal AND iter≥start AND có normal map cho cam.
+        # Pattern y hệt L_depth. Default OFF → không cộng → A3 baseline.
+        # HONEST: C1a deviation (dn-splatter detach depth + CUDA C1b);
+        # pre-registered prediction (gradient depth→normal nhiễu) ở
+        # utils/loss/c1_normal.py. λ=c1_normal_lambda (chính 0.10).
+        if (dataset.use_c1_normal
+                and iteration >= dataset.c1_normal_start_iter
+                and viewpoint_cam.uid in c1_normal_dict):
+            from utils.loss.c1_normal import compute_c1_normal_loss
+            _W = viewpoint_cam.image_width
+            _H = viewpoint_cam.image_height
+            _fx = _W / (2.0 * math.tan(viewpoint_cam.FoVx * 0.5))
+            _fy = _H / (2.0 * math.tan(viewpoint_cam.FoVy * 0.5))
+            L_c1 = compute_c1_normal_loss(
+                RenderDict["depth_gs0"], RenderDict["alpha_gs0"],
+                c1_normal_dict[viewpoint_cam.uid],
+                _fx, _fy, _W / 2.0, _H / 2.0, dataset.c1_normal_lambda)
+            if L_c1 is not None:
+                LossDict["loss_gs0"] += L_c1
 
         loss = LossDict["loss_gs0"]
         for i in range(args.gaussiansN):
