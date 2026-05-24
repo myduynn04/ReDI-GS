@@ -1883,4 +1883,113 @@
   - GO → full N=24 gated, verdict C1–C4 như Phase 18.
 - **Files Phase 18b giữ-local:** `scripts/p18b_confidence_histogram.py`, `p18b_cyclic_triage.sh`, `p18b_triage_analyze.py`; `Binocular3DGS/.../{triangulate.py, models/PDCNet/base_pdcnet.py}` (edited additive, server-uploaded).
 
+### [2026-05-22] Phase 18b — cyclic-gate triage NO, isolation refuted, D2 catastrophe; Binocular3DGS compare; pivot Phase 19 curriculum
+- **cyclic-gate triage (12-run, τ_cyclic=1.0) — ❌ NO.** horns Δ(gated−raw)=−0.157 (3/3-seed âm), trex +0.042, fortress/orchids control OK. Bar +0.15 → FAIL. Bài học: `N_gat≈N_raw` (0.95×) — lọc init match bị densification rửa trôi; gate còn hơi *hại* horns. Init-match-filter class = falsified.
+- **isolation-gate hypothesis (user) — ❌ refuted (`p18b_isolation_check.py`, no-train).** Giả thuyết: CRS-prune `isolated = knn>0.1·extent` chết trên dense init. Đo: INIT-PDC iso@0.1 = 13.6%, TRAIN-dense 20.2% — gate bắn BÌNH THƯỜNG (knn có đuôi dài ở cả 2 regime). Gate không chết. Predict-before-test: tôi đoán "chết" → sai, check rẻ cứu khỏi xây density-adaptive fix vô ích.
+- **D2 — DAV2 q_depth check (`p18b_dav2_check.py`, no-train) — kết quả (B) giả.** q_depth (DAV2 depth-agreement, ĐÃ có trong informed_crs_init) %low-q_depth: horns/trex 39% vs winners 7% = **5.6× ratio**, orchids 0.74% (sạch nhất — qua được phép thử orchids mà confidence/cyclic fail). Trông như tín hiệu per-point đầu tiên localize đúng horns/trex. **Prediction tôi commit = (A); check ra (B).**
+- **D2a pilot (q_depth hard-filter τ_q=0.5, 9-run) — ❌ CATASTROPHIC, lật (B)→(A).** horns Δ(D2a−raw)=**−1.787**, trex **−0.965** (single-seed nhưng vượt xa mọi nhiễu; bar +0.15). Cơ chế: DAV2 monocular **yếu nhất ở cấu trúc mảnh** → 49% điểm horns "q_depth thấp" **phần lớn là điểm TỐT** DAV2 chỉ tình cờ bất đồng → drop chúng = **xóa cấu trúc thật** → −1.787. 5.6× ratio là tương quan thật nhưng **nhân-quả sai**: "DAV2 không tin cậy nơi scene mảnh", KHÔNG "có quần thể floater loại được". **D2b chết theo** (prune cùng tập điểm-tốt đó, bất kể init hay training-time). Predict-before-test ledger: check ra (B) sai, pilot 9-run sửa về (A) — đúng prediction (A) gốc về *thực tại*.
+- **Bảng điểm Phase 18b: 5/5 giả thuyết vá horns/trex bác bỏ** (confidence / cyclic / L_consist / isolation / D2). Không có per-point signal nào localize được regression thành quần thể loại-được. horns/trex regress = **capacity ceiling** (dense init = +capacity; 3 view không constrain nổi cấu trúc mảnh → overfit) — trade-off thật, không artifact vá rẻ.
+- **Binocular3DGS verify-from-code:** recipe = dense init + opacity-decay(0.995) + binocular consistency loss + **pruning VANILLA 3DGS** (opacity<0.005, không CRS/isolation) + 30k iter + res 2. KHÔNG có fix thin-structure riêng. 3 "constraint" của họ: opacity-decay (A3 đã có), consistency loss (= L_consist Phase 14 — đã test, saturate), color loss (chuẩn) → **0 cơ chế để port**. Họ KHÔNG báo cáo speed/cost. 21.44 của họ = TRUNG BÌNH (che per-scene loser y như 21.599 che horns/trex). **A3+dense 21.599 > Binocular3DGS 21.44** quality, và 10k-iter/res8 << 30k/res2 về compute → thắng cả 2 trục.
+- **QUYẾT ĐỊNH: Phase 18 KHÔNG đóng.** Giữ mở. raw PDCNet+ dense init = +0.270 SIG (21.599) là kết quả thật, mạnh nhất từ Phase 13. Sẽ dùng làm 1 trong 2 backbone cho Phase 19.
+
+### [2026-05-22] Phase 19 — PLAN: appearance coarse-to-fine curriculum
+- **Bối cảnh:** 18 phase reshape đều tác động ĐIỂM HỘI TỤ → info-conservation giết sạch. Hướng chưa đụng = đổi **QUỸ ĐẠO tối ưu** (basin optimizer rơi vào), không đổi endpoint. Generative-prior (thêm info thật) = user loại (quá nặng) → đi algorithm-only.
+- **Ý tưởng:** coarse-to-fine curriculum — ép fit cấu trúc THÔ trước (3 view constrain tốt hình thô), mở khóa chi tiết MỊN dần. Cùng objective, khác đường đi → basin generalize hơn → chống overfit (= cơ chế horns/trex regress).
+- **Carve-out vs frequency-work cũ (user hỏi — quan trọng):** 3 trục "tần số" khác nhau: (1) *lượng* HF ở output = loss tĩnh — HF-emphasis(+)❌/DWTGS-FALA(−)❌ đã thử; (2) tần số *hình học* = LFCF (split scale init→last) — ĐÃ có coarse-to-fine flavor ở chiều geometry, THẮNG +0.164; (3) **THỜI ĐIỂM mở khóa capacity APPEARANCE theo iter** = curriculum — CHƯA thử. Phase 19 = trục (3): coarse-to-fine chiều **appearance** (SH-degree unlock + supervision blur) — đúng bucket H4=63% mà LFCF (chiều geometry) không đụng. Đúng-dấu với chẩn đoán dự án ("HF deficit = overfit symptom") — đáp đúng câu hỏi "HF khi nào" thay vì "bao nhiêu HF" (HF-emphasis hỏi sai).
+- **Núm capacity (siết sớm → nới dần):** SH degree (0→full), sàn-scale Gaussian (lớn→bỏ), độ-nét supervision (mờ→nét), densification timing.
+- **Test trên CẢ 2 backbone:** A3-MVS (Phase 13, 21.330) + A3-PDCNet+-dense (Phase 18, 21.599). Curriculum + dense-init: kỳ vọng giai-đoạn-thô dùng vị-trí-tốt dense init mà không overfit → vá đúng trade-off horns/trex.
+- **Bước 0 (BẮT BUỘC trước):** verify-from-code — LFCF / Phase-8 SH-freeze đã lỡ làm phần appearance-schedule nào chưa (đừng over-claim "untried"). Sạch → Gate rẻ → pilot pre-registered.
+- **EV trung thực:** curriculum trích mảnh reducible-overfit của H4 + có thể gỡ trade-off horns/trex; KHÔNG phá H1=21% irreducible. Realistic = "vá dense-init trade-off + gain vừa", không phải nhảy 22.2.
+- Caveat: A3 spatial-alignment mong manh với amplitude pressure (Phase 13.2) — curriculum gate *timing capacity* (không đẩy amplitude) nên khác HF-emphasis, nhưng verify cẩn thận.
+
+### [2026-05-23] Phase 20 — LOO ablation Table-4 + TRIM verify N=24 → bỏ 3 module verified-dead
+- **Mục đích:** unified attribution-table (kiểu Binocular3DGS Table 4) thay 6+ partial-attribution rải rác Phase 8/9/13 (mỗi phase backbone khác + methodology không đồng nhất). Đo đóng góp BIÊN mỗi block trên A3-FULL bằng cùng 1 setup.
+- **Methodology — LOO không full-factorial:** 11 module → full-factorial 2¹¹ bất khả → **LOO 7-block** (chuẩn ablation cho method nhiều thành phần). Block hóa vì đồ thị phụ thuộc: `use_depth_prior` = prerequisite của CRS/D_cycle/SH-freeze/R_vis → cascade khi tắt. Cost-axis = N_gaussians (đếm, tin được). KHÔNG dùng wall-clock — đã chứng minh cross-session noise 3× ([2026-05-22]).
+- **Bảng MVS 1-seed first-look (9 config × 8 scene × seed 42, paired vs FULL=p13_lfcf):**
+
+  | Config | Module tắt | Δ paired | Vượt sàn ±0.46? |
+  |---|---|---|---|
+  | base | tất cả | −2.526 (N=1 only, OOM 7/8) | sanity floor |
+  | no_depthcrs | depth + cả CRS cascade | **−0.862** | ✅ ×1.9 |
+  | no_drop | DropAnSH | **−0.563** | ✅ ×1.2 |
+  | no_shcrs | SH-modulated freeze + S_stab | −0.296 | ⚠️ sát sàn ×0.65 |
+  | no_opacity | opacity-decay | −0.160 | ⚠️ dưới sàn |
+  | no_dcycle | D_cycle | −0.151 | ⚠️ dưới sàn |
+  | no_efa | LFCF + AbsGS (bundle) | −0.115 | ⚠️ dưới sàn |
+  | no_crsprune | CRS-pruning + informed_init | **+0.002** | trong noise — 0 thực |
+  | no_rvis | R_visible | **+0.051** | trong noise |
+  | FULL+denseinit | thêm dense-init | **+0.265** | ✅ (=Phase 18 N=24 SIG) |
+
+- **Synergy 4× overlap (phát hiện quan trọng):** Sum |Δ_LOO| ≈ 2.15 vs FULL−base = 0.498 → mỗi LOO Δ thổi phồng ~4× vì modules trùng job (anti-overfit). KHÔNG được cộng |Δ| thành tổng. Bảng trả lời "bỏ thì mất bao nhiêu", KHÔNG trả lời "thêm vào đóng góp bao nhiêu".
+- **TRIM verify N=24 (decisive, ~13h / 2 GPU):** 2 config × 8 scene × 3 seed paired vs FULL N=24:
+
+  | Config | Δ paired N=24 | Verdict (rule pre-locked) |
+  |---|---|---|
+  | `no_crsprune_rvis` (tắt 3: informed_init + prune + rvis) | **+0.0042** | ✅ trong [−0.10, +0.10] = **trim no-harm** |
+  | `no_prune_rvis` (tắt 2, GIỮ informed_init) | **−0.0247** | ✅ trong [−0.10, +0.10] = **trim no-harm** |
+
+  Pattern: drop-3 (+0.004) hơi nhỉnh drop-2 (−0.025) → informed_init **không pay-off riêng** khi CRS-prune đã tắt (mất consumer). Bỏ sạch sạch hơn.
+- **VERDICT (Phase 20 TRIM LOCKED):** **bỏ 3 module verified-dead** — `--informed_crs_init` (+ weight flags), `--use_crs_pruning`, `--use_r_visible`. Recipe **11 → 8 module**. PSNR không đổi đo được (∆=+0.004 N=24). N_gauss tăng 3-4% (vì mất kênh xóa isolated), không hại quality.
+- **Recipe A3-TRIM (8 module):**
+  - 🟢 Của BẠN (4 + framework): CRS framework + D_cycle + S_stability + SH-modulated freeze
+  - 🔵 Mượn (5): depth+Pearson loss (LoopSparseGS+Chung), DropAnSH (Co-Adapt), opacity-decay (Binocular3DGS), LFCF (EFA-GS), AbsGS
+  - Tùy chọn external: PDCNet+ dense init (Phase 18 GIỮ MỞ +0.270 SIG nhưng C3 fail)
+- **Honest framing CRS-axis:** 2/4 channel pay-off (SH-freeze −0.296 hero, D_cycle −0.151), 2/4 dead (CRS-prune, R_visible), 1/1 init dead (informed_init). Framework có ý tưởng tốt nhưng 3/5 nhánh không work — đã thực sự measure + cắt = rigor.
+- **Lập luận trim cross-backbone (pending verify):** Phase 8 đã chứng minh component value phụ thuộc backbone (Phase 7 D_cycle flip dấu giữa Phase-5 weak / D1-O999 strong). Trim verified trên MVS, CHƯA verify trên dense → next test.
+- **OOM note:** `base/seed42/flower` OOM ở iter ~3000 (distCUDA2 KNN). Expected — base không có anti-overfit, N_gauss bùng nổ. Không ảnh hưởng trim verdict. base/N=1 (chỉ flower-or-similar fail).
+- **Files keep-local:** `scripts/p20_ablation_run.sh` (MVS LOO, 10 config), `scripts/p20_ablation_dense_run.sh` (dense LOO trên A3-TRIM, 8 config — standalone), `scripts/p20_ablation_analyze.py` (REF_LABEL env override cho dense). Output/log `p20_ablation/` giữ làm evidence. Decision-log không reject → KHÔNG cleanup.
+- **NEXT pending:**
+  - (a) Dense ablation LOO trên A3-TRIM-FULL (script ready) — verify trim cross-backbone. 8 config × 8 scene × 1 seed first-look ~14-20h / 2 GPU.
+  - (b) Phase 19 SH-curriculum (PLAN từ [2026-05-22]) — trên A3-TRIM hoặc A3-FULL? Đợi (a) decide backbone.
+
+### [2026-05-23] Phase 19 — SH-curriculum DROPPED (pilot Δ noise/âm nhẹ cả 2 backbone) + CLEANUP DONE
+- Verify flag-OFF horns/fortress seed 42 ✅ PASS (N reldiff ≤3%, « ±1.3 atomicAdd) — flag-OFF byte-identical baseline (by construction).
+- Pilot N=24 chạy CẢ A3-MVS lẫn A3-dense: Δ tất cả config ≈ noise (mean ∈ ±0.10) hoặc âm nhẹ. **KHÔNG SIG** trên cả 2 backbone.
+- **VERDICT: DROPPED.** Curriculum = đổi optimization **trajectory**, KHÔNG add external-info → cùng class reshape-mechanism → không vượt 3-view capacity ceiling. **4th info-conservation confirm** (HF/GDAGS/L_consist + curriculum). 7+ class reshape-trajectory đã exhausted. Lối ra DUY NHẤT = THÊM external-info (Phase 18 dense / Phase 21 RoMa / dn-splatter normal survivor).
+- **KHÔNG re-propose**: SH-degree schedule / warmup-interval tuning / oneupSHdegree timing / curriculum-learning class (densify-schedule, opacity-schedule, lr-curriculum) — cùng cơ chế.
+- **CLEANUP DONE (2026-05-23):**
+  - REVERT local + re-upload: `train.py` (bỏ import + revert SH gating về `iteration % 500 == 0`), `arguments/__init__.py` (bỏ 2 flag `use_sh_curriculum`, `sh_curriculum_interval`). Revert SAFE vì default OFF = byte-identical baseline.
+  - KEEP local + DELETE server: `utils/crs/sh_curriculum.py`, `scripts/p19_curriculum_pilot.sh`, `scripts/p19_curriculum_analyze.py`.
+- Memory: [[phase19-curriculum-dropped]].
+
+### [2026-05-23] Phase 20b — Dense LOO + cross-backbone synthesis (CRS-overlap insight)
+- **Dense LOO 1-seed (8 scene × seed 42, paired vs FULL+denseinit=p18_pilot 21.595):**
+
+  | Config | Δ vs FULL-dense |
+  |---|---|
+  | trim_full (3 verified-dead bỏ) | −0.070 |
+  | trim_no_efa (+EFA) | −0.025 |
+  | trim_no_dcycle (+D_cycle) | −0.009 |
+  | trim_no_shcrs (+SH-CRS) | −0.043 |
+  | trim_no_opacity (+opacity) | **−0.241** ⚠️ |
+  | trim_no_drop (+DropAnSH) | **−0.641** ✅ |
+  | trim_no_depthcrs (+depth+CRS cascade) | **−0.617** ✅ |
+
+- **Cross-backbone — 2 lớp module rõ rệt:**
+
+  | Lớp | Module | MVS Δ | Dense Δ |
+  |---|---|---|---|
+  | **TRỤ CỨNG (cross-stable)** | DropAnSH | −0.56 | −0.64 |
+  | | depth+CRS cascade | −0.86 | −0.62 |
+  | | opacity-decay | −0.16 | −0.24 |
+  | **CRS-axis (backbone-dependent)** | SH-CRS freeze | −0.30 | −0.04 |
+  | | D_cycle | −0.15 | −0.01 |
+  | | EFA (LFCF+AbsGS) | −0.12 | −0.03 |
+
+- **MECHANISTIC INSIGHT (phát hiện lớn):** **CRS framework overlap với dense init** — vá CÙNG một lỗ hổng info. Dense init đặt điểm ở nơi PDCNet+ 2-view agreement (= surface chắc) → cloud có ít "Gaussian không chắc" → CRS prune/freeze có ít việc → Δ shrinks gần 0 trên dense. Empirical claim: **CRS contribution scope = sparse-MVS-init regime**, không phải general improvement.
+- **Reframe project contribution:** original "CRS = main contribution" → honest: **3 trụ cross-stable (depth + DropAnSH + opacity-decay) = backbone-independent**; **CRS framework = sparse-MVS-specific**; **dense-init = capacity boost orthogonal**. Mỗi cái có scope riêng — không một cái nào "the" contribution.
+- **A3-MINIMAL-dense (proposal, sub-sàn 1-seed):** depth + DropAnSH + opacity + (EFA?) + dense init ≈ 4-5 module, kỳ vọng ~21.5+. Cần **3-seed dense LOO** để decisive trước khi committed.
+- **Caveat:** Dense 1-seed sub-sàn ±0.46 → pattern (3 CRS-axis ≈0 cùng dấu) là **gợi ý mạnh** nhưng không decisive bằng MVS TRIM N=24. 3-seed dense LOO 3 config (trim_no_efa/dcycle/shcrs) sẽ chốt.
+
+### [2026-05-23] Phase 21 — RoMa dense init PLAN (user pivot)
+- **Mục tiêu:** test RoMa dense matcher như alternative cho PDCNet+, trên A3-TRIM backbone. Phase 18 PDCNet+ = +0.270 SIG nhưng C3 fail (horns/trex). RoMa được biết tốt hơn ở wide-baseline + texture mảnh — có thể cho point distribution khác → ít horns/trex regress (testable).
+- **Honest EV:** **same axis as PDCNet+** (dense matcher → init cloud). Capacity-ceiling cho thin-structure (Phase 18b 5/5 refute) không đổi cơ chế gốc. Có thể giúp nếu RoMa match thin-structure chính xác hơn → ít floater triangulation; có thể không. EV thấp-trung-bình, nhưng đây là dense-matcher chưa thử + user pivot.
+- **Plan (mirror Phase 18 cycle):**
+  - **Bước 0**: verify-from-code — RoMa repo có trong workspace? env (clone, có thể extend `binocular3dgs` hoặc env mới), API matching/triangulation.
+  - **Gate 1**: gen 8 RoMa dense cloud + measure (N, alignment COLMAP, in-bbox%) — mirror p18_gate1.
+  - **Gate 2**: absorption fortress + horns — A3-TRIM với RoMa init vs A3-TRIM với MVS. PASS = không catastrophic.
+  - **Pilot N=24**: A3-TRIM + RoMa-dense vs A3-TRIM-MVS paired. Verdict C1-C4 mirror Phase 18 (pre-registered).
+- **Decision gate sau Bước 0:** RoMa repo + weights size + env complexity → có đáng commit không.
+- Files dự kiến giữ-local: `scripts/p21_*`. RoMa repo external (giống Binocular3DGS).
+
 ---
