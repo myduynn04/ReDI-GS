@@ -1993,3 +1993,78 @@
 - Files dự kiến giữ-local: `scripts/p21_*`. RoMa repo external (giống Binocular3DGS).
 
 ---
+
+### [2026-05-25] Phase 21 — RoMa v2 dense init: PILOT N=24 DONE, multi-metric WIN, commit-decision PENDING
+
+**Setup (Bước 0-2 DONE):**
+- Repo `Parskatt/romav2` clone về `~/workspace/representation-3d/duyen/romav2` (sibling Binocular3DGS).
+- Env `romav2` isolated (Python 3.12, torch 2.6.0+cu124, torchvision 0.21.0). Driver server 550.54.14 = CUDA 12.4 → cu124 wheel; torch 2.12+cu130 mặc định install ban đầu **fallback CPU** (driver too old) — fix bằng downgrade + reinstall cu124 + NVIDIA cu12 sublibs.
+- First-run internet ~1.05 GB: `romav2.0.1.pt` (1.02 GB từ github releases) + DINOv3 zipball (`facebookresearch/dinov3:adc25445...`). Cache `~/.cache/torch/hub/`. Sau offline OK.
+- Smoke 3 scenes (fern/horns/trex 1 pair) verify GPU: VRAM 9.9 GB peak, match 1.4s/pair on H100. **DENSE-level discrimination MẠNH**: trex `overlap_q50=0.171` vs fern `0.873` (5× spread) → RoMa biết scene khó. `model.sample()` self-filter qua `max(1[p>0.05], p)` → sampled output tất cả 3 scene std q50 ≈ 0.2-0.4 px (sampler đã filter).
+- Preprocess (`p21_roma_preprocess.py`) 8 scenes × 3 pair (01/02/12) × 10000 sampled matches → triangulate cv2 + cheirality + reproj ≤ 2 px → ply riêng `.roma` (KHÔNG đè `fused.ply` gốc). Wall-time **53s 8 scenes 2-GPU split**. N_pts/scene = 16.5k-26.5k (range Phase 18 PDCNet+ tương đương).
+- Place (`p21_place_roma_init.py`) swap 8 fused.ply ← .roma; backup `.colmap_mvs_backup` từ Phase 18 còn nguyên (script không đè).
+
+**Smoke Bước 3 (fern seed 42):** 23.65 PSNR / 0.792 SSIM / 0.144 LPIPS / N=89,871 (vs MVS Phase 13 fern 23.36/0.772/0.163/N=80,775 và PDCNet+ Phase 18 fern 23.41/0.777/0.164/N=220,634). RoMa cùng init quality + nhỏ hơn PDCNet+ 2.5× về N_gauss.
+
+**Pilot Bước 4 N=24 (3 seeds × 8 scenes):** wall-time ~60 phút 2-GPU split. RoMa pilot **24/24 OK**.
+
+**Per-scene 3-seed (vs MVS A3-TRIM Phase 20 `no_crsprune_rvis` paired N=24):**
+
+| Scene | RoMa 3s mean | MVS 3s mean | Δ-MVS | Δ-SSIM | Δ-LPIPS | N (R/M) | seed-std |
+|-------|--------------|-------------|-------|--------|---------|---------|----------|
+| fortress | 25.094 | 24.109 | **+0.986 ⭐⭐** | +0.064 | −0.042 | 59k/51k | 0.092 |
+| leaves | 19.487 | 18.536 | **+0.951 ⭐⭐** | +0.062 | −0.037 | 245k/267k | 0.044 |
+| orchids | 17.634 | 17.015 | **+0.620 ⭐** | +0.050 | −0.038 | 79k/82k | 0.024 |
+| flower | 21.444 | 21.053 | **+0.391 ⭐** | +0.031 | −0.024 | 99k/96k | 0.045 |
+| fern | 23.651 | 23.313 | **+0.339 ⭐** | +0.019 | −0.020 | 87k/81k | 0.042 |
+| room | 22.698 | 22.547 | **+0.152 ⭐** | +0.018 | −0.022 | 48k/37k | 0.068 |
+| trex | 23.472 | 23.649 | **−0.177 ✗** | +0.0002 | −0.005 | 67k/67k | 0.095 |
+| horns | 19.814 | 20.450 | **−0.636 ✗✗** | +0.001 | −0.020 | 71k/65k | 0.081 |
+
+**8-scene Δ vs MVS:** mean **+0.3280 PSNR**, 95% CI [+0.1122, +0.5438] **SIG** (N=24). Per-seed std 0.024-0.095 (avg 0.061) → multi-seed paired đã cancel ±1.3 dB atomicAdd noise.
+
+**vs PDCNet+ (Phase 20 dense `trim_full`): N=8 paired ONLY** (Phase 20 dense ablation chỉ chạy seed 42 — thiếu 137+9999). Mean +0.1415, CI [-0.083, +0.366] ns. Verdict vs-PDC UNDERPOWERED. RoMa-vs-PDC seed 42: 4/8 positive (fern +0.232, fortress +0.624, orchids +0.457, trex +0.337) vs 4/8 ≤0 (flower −0.150, horns −0.327, leaves −0.024, room −0.015).
+
+**N_gauss:** RoMa/MVS = **1.004×** (93,710 vs 93,373) — compute neutral; RoMa/PDCNet+ = 0.421× (RoMa **nhỏ hơn PDCNet+ 2.4×** — fix bloat Phase 18).
+
+**Pre-registered C1-C4 vs MVS (BONUS verdict do PDC limit, vs MVS có full N=24):**
+- C1 Δ ≥ +0.10 AND CI>0: ✓ **PASS** (Δ=+0.328, CI lo=+0.112)
+- C2 ≥6/8 scenes Δ≥0: ✓ **PASS** (6/8)
+- C3 horns+trex Δ ≥ -0.05: ✗ **FAIL** (horns −0.636, trex −0.177) ← **Phase 18 failure mode lặp lại**
+- C4 N_gauss ≤ MVS×1.1: ✓ **PASS**
+- **Overall vs-MVS:** 🟡 CONDITIONAL = C1+C2+C4 PASS, C3 FAIL pattern Phase 18
+
+**🔑 OBSERVATION CRITICAL (KHÔNG có ở Phase 18 PDCNet+):**
+
+**SSIM/LPIPS positive 8/8 scene, KỂ CẢ horns+trex** (PSNR fail). horns LPIPS Δ=−0.020 (>4× noise floor) = real perceptual improvement dù PSNR thua 0.636. trex tương tự. → RoMa horns/trex **không "break" perceptually**, chỉ shift sub-pixel alignment penalize PSNR. Đây là pattern **"different optimum, not broken"** — KHÁC Phase 18 PDCNet+ (chưa rõ có pattern này không vì không có data SSIM/LPIPS sạch).
+
+**Structural finding (2 data points):** dense init thin-structure ceiling = **structural feature của 3-view sparse setup**, KHÔNG phụ thuộc correspondence quality. Cả PDCNet+ (Phase 18 +0.270 SIG/C3 fail) + RoMa (Phase 21 +0.328 SIG/C3 fail) cùng pattern. Khác Phase 18:
+- PDCNet+ horns/trex: PSNR regress + bloat 2.4× = 2 negative
+- RoMa horns/trex: PSNR regress + neutral cost + SSIM/LPIPS positive = 1 negative + 2 positive
+
+**Comparison table:**
+
+| | Phase 18 PDCNet+ | Phase 21 RoMa | Winner |
+|---|---|---|---|
+| Δ PSNR vs MVS | +0.270 SIG | **+0.328 SIG** | RoMa larger |
+| N_gauss vs MVS | 2.4× bloat | **1.004× neutral** | RoMa clean |
+| Preprocess time | ~minutes/scene | **~10s/scene** | RoMa 10×+ |
+| SSIM all 8 scenes | (no clean data) | **+8/8 positive** | RoMa universal |
+| LPIPS all 8 scenes | (no clean data) | **−8/8 (better)** | RoMa universal |
+| C3 horns/trex PSNR | regress | regress (same) | tie (structural) |
+
+**Decision PENDING (chờ user):**
+- **Option A (NO commit per pre-registered C3)** — discipline strict, reject Phase 21 RoMa, document negative result. User push-back: rejecting strictly-better-than-PDCNet+ recipe vì cùng failure mode (capacity ceiling) = throw away SOTA-level gain.
+- **Option D (COMMIT RoMa global)** — accept C3 fail as documented limitation, reframe: pre-registered C3 thuần PSNR; multi-metric SSIM/LPIPS coherent positive 8/8 → multi-metric aggregate = real improvement. Pre-commit visual sanity check horns/trex render side-by-side (RoMa vs MVS test view). Nếu visual ≥ MVS → commit. Nếu visual < MVS → fall back A.
+- **Option C (diagnose horns/trex)** — hiểu vì sao RoMa init không bloat NHƯNG vẫn PSNR-regress trên thin structure. Hypothesis: DINOv3 patch (16 px) smooth qua thin features; triangulation noise lớn ở wide-baseline thin-structure; correspondence biased toward background. Diagnostic 1-2 ngày. Risk: Phase 18b 5/5 fix-hypotheses cùng problem class refuted.
+
+**User chose: Option D + Option C parallel** (2026-05-25):
+1. **Docs update** (Phase 21 pilot + multi-metric WIN + C3 fail + commit pending) ← ENTRY NÀY
+2. **Diagnostic script** `p21_diagnose_horns_trex.py` — render horns + trex test view RoMa vs MVS, error map, init point cloud density check on thin region. Sau diagnostic decide D commit hay reject.
+3. **Optional Phase 22 axis** — tìm model dense matcher tốt hơn RoMa (MASt3R candidate, hoặc RoMa v1 trên WxBS axis).
+
+**File status:**
+- KEEP local + server: `scripts/p21_roma_smoke_llff.py`, `p21_roma_preprocess.py`, `p21_run_all_scenes.sh`, `p21_place_roma_init.py`, `p21_pilot_run.sh`, `p21_pilot_analyze.py`. Sau decision D/A → cleanup theo Quy tắc 13.
+- Data state: `fused.ply` per scene = RoMa-init (Phase 18 backup `.colmap_mvs_backup` còn nguyên + Phase 21 `.roma` cũng còn). `RESTORE=1 python scripts/p21_place_roma_init.py` để revert MVS.
+
+---
