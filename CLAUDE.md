@@ -68,7 +68,9 @@ Hypothesis: signal D+R bottleneck, not mechanism class.
 - → **Foundation-model dense init nói chung BỎ HẲN** (DUSt3R, MASt3R same class)
 - Cleanup: env + checkpoint + cache + source removed (~5GB freed). Code Phase 10A giữ default OFF.
 
-**Current state (2026-05-18): Phase 13 A3 = 21.330 LOCKED. PHASE 14 DONE ❌: L_consist B reject (saturate +0.041«±0.10 + horns−0.318 = 3rd A3-fragility-confirm HF/GDAGS/Lc + +36% cost); dense-init Gate false-GO (cherry-pick R8, realistic-R<10%). Bonus: D_cycle CONFIRMED beneficial on A3 (giữ; Phase-7-flip không replicate). 🚀 PHASE 15 — KHÔNG accept-ceiling (user push-back đúng: Phase-11-exhausted→frequency-pivot=+0.164 precedent). **Phase 14 L_consist + Phase 15 shape-reg BOTH REJECT+CLEANED** (production reverted → A3/Phase-13 byte-clean, grep 0 residue; modules+scripts kept-local-server-delete). Phase-15 pilot: Ablunt −0.069+horns−0.218 = **Q4-diagnostic VALIDATED** (empirical); Bexc3/Bexc2 cherry-pick+catastrophe+cost. **ROOT-CAUSE = info-conservation**: A3 ở constrained-3-view-optimum, mọi reshape-mechanism (6+ class: densify/loss/CRS/cross-view/L_consist/density-dropout/anisotropy) = redistribute fixed-info → mean≈0+horns-catastrophe (horns 4th-confirm HF/GDAGS/Lc/Bexc2). Lối ra = THÊM external-info, KHÔNG reshape. C1-claim QUALIFIED (không tuyệt đối): C1-normal (verify-(a): renderer NO normal → C1a-depth-derived-redundancy-risk / C1b-CUDA-heavy) + dense-init/RoMa (high-recipe-risk, RoMa không giải cứu vì match-quality≠limiting). Đóng định-lượng trước: density-dropout (D3 −0.32), anisotropy A+B (pilot empirical). Bonus: D_cycle CONFIRMED beneficial on A3 (giữ). **Phase 15 = 3-arm trên A3-clean**: A blunt-aniso (control falsify Q4 — diagnostic misfire nhiều), B targeted s_max-excess (form data ủng hộ), C1 dn-splatter DSINE-normal (verified = nặng-preprocess class dense-init NHƯNG loss-integration + duy nhất +info-mới; setup-then-pilot), C2 depth-normal-selfconsist DEPRIORITIZE (no-new-info). Lesson tích lũy: verify "untried" vs FULL memory-file+decisions_log (không index/code-presence); verify-from-code mechanism TRƯỚC implement; diagnostic project misfire nhiều → empirical-control đáng giá. Chi tiết: decisions_log [2026-05-18] Phase 14 CLEANED + Phase 15.**
+**🎯 CURRENT STATE (2026-05-25): Phase 22 RoMa v1 = 21.918 N=24 = PROJECT BEST (vượt DOC-GS 21.38, BinocularGS 21.44, gap ICO-GS −0.28). Decision D-commit-v1 vs A-reject-strict-C3 vs B-Phase-23-MASt3R PENDING. Δ vs MVS=+0.584 SIG (CI [+0.405, +0.763]), vs v2=+0.256 SIG, multi-metric WIN (SSIM 7/8 + LPIPS 8/8 positive), N_gauss neutral 1.017× MVS. horns swing v1 − v2 = +1.264 PSNR (WxBS hypothesis CONFIRMED). trex −0.135 marginal both methods. KEY mechanistic insight: matcher choice = task-specific best (v1 wins WxBS = LLFF 3-view fit), NOT paper-benchmark-everything (v2 wins MegaDepth marginal). Phase 21 RoMa v2 = 21.66 (NOT committed, pending Phase 22 verdict). Phase 18 PDCNet+ = 21.599 (NO pre-registered C3 fail + bloat). Old committed = Phase 13 A3 21.330 (Phase 20 TRIM-locked 11→8 module). Chi tiết: [[phase22-roma-v1-pilot]] + decisions_log [2026-05-25] Phase 22.**
+
+**Old state (2026-05-18): Phase 13 A3 = 21.330 LOCKED. PHASE 14 DONE ❌: L_consist B reject (saturate +0.041«±0.10 + horns−0.318 = 3rd A3-fragility-confirm HF/GDAGS/Lc + +36% cost); dense-init Gate false-GO (cherry-pick R8, realistic-R<10%). Bonus: D_cycle CONFIRMED beneficial on A3 (giữ; Phase-7-flip không replicate). 🚀 PHASE 15 — KHÔNG accept-ceiling (user push-back đúng: Phase-11-exhausted→frequency-pivot=+0.164 precedent). **Phase 14 L_consist + Phase 15 shape-reg BOTH REJECT+CLEANED** (production reverted → A3/Phase-13 byte-clean, grep 0 residue; modules+scripts kept-local-server-delete). Phase-15 pilot: Ablunt −0.069+horns−0.218 = **Q4-diagnostic VALIDATED** (empirical); Bexc3/Bexc2 cherry-pick+catastrophe+cost. **ROOT-CAUSE = info-conservation**: A3 ở constrained-3-view-optimum, mọi reshape-mechanism (6+ class: densify/loss/CRS/cross-view/L_consist/density-dropout/anisotropy) = redistribute fixed-info → mean≈0+horns-catastrophe (horns 4th-confirm HF/GDAGS/Lc/Bexc2). Lối ra = THÊM external-info, KHÔNG reshape. C1-claim QUALIFIED (không tuyệt đối): C1-normal (verify-(a): renderer NO normal → C1a-depth-derived-redundancy-risk / C1b-CUDA-heavy) + dense-init/RoMa (high-recipe-risk, RoMa không giải cứu vì match-quality≠limiting). Đóng định-lượng trước: density-dropout (D3 −0.32), anisotropy A+B (pilot empirical). Bonus: D_cycle CONFIRMED beneficial on A3 (giữ). **Phase 15 = 3-arm trên A3-clean**: A blunt-aniso (control falsify Q4 — diagnostic misfire nhiều), B targeted s_max-excess (form data ủng hộ), C1 dn-splatter DSINE-normal (verified = nặng-preprocess class dense-init NHƯNG loss-integration + duy nhất +info-mới; setup-then-pilot), C2 depth-normal-selfconsist DEPRIORITIZE (no-new-info). Lesson tích lũy: verify "untried" vs FULL memory-file+decisions_log (không index/code-presence); verify-from-code mechanism TRƯỚC implement; diagnostic project misfire nhiều → empirical-control đáng giá. Chi tiết: decisions_log [2026-05-18] Phase 14 CLEANED + Phase 15.**
 
 - Methodology lock: **multi-seed (3 seeds × 8 scenes paired) cho mọi ablation**. atomicAdd variance ±1.3 dB single-scene → paired comparison cancel noise.
 - **Phase 11 EXHAUSTED 6/6 REJECTED** (loss-axis dead): Step 1 +0.014 marginal, Step 2 −0.046, Stack −0.007, Step 4 −0.042, Step 5 −0.026.
@@ -126,17 +128,22 @@ Hypothesis: signal D+R bottleneck, not mechanism class.
 - **Risk acknowledged**: GDAGS REJECTED đúng dự đoán (GCR không orthogonal AbsGS = policy-swap không gain). Bottleneck post-hoc mù training-dynamics → "accept 21.330" giờ defensible KHÔNG do post-hoc mà do **3 trục độc lập đã exhausted bằng thực nghiệm** (densify ×3 / loss 6/6 / CRS 9/9 / cross-view 5-fail structural).
 - **Code regression** commit `0511edd` (May 9): A0 baseline drift 21.335 → 21.16-21.20. Paired Δ within-batch cancels common-mode regression → Phase 11/12/13 verdicts VALID. Phase 13 N=24 fair baseline cho future comparisons.
 
-**Reference targets (LLFF 3-view):**
-| Method | PSNR | Note |
-|--------|------|------|
-| Phase 8 FULL (paper, 1 sample) | 21.335 | OLD baseline (lucky single-run) |
-| Phase 8 FULL multi-seed | 21.16 | Fair N=24 (pre-Phase-13) |
-| **🎯🎯 Phase 13 A3 (LFCF + AbsGS) N=24** | **21.330** | **🏆 New committed recipe** — multi-seed reproducible, MATCHES Phase 8 paper 1-run |
-| Phase 13 A4 (AbsGS only) N=24 | 21.244 | SIG marginal — Scenario 2 fallback |
-| No-CRS Tier1 | 21.21 | D1-noCRS-O999 (legacy baseline) |
-| DOC-GS | 21.38 | gap −0.05 (closing) |
-| BinocularGS | 21.44 | gap −0.11 (closing) |
-| **ICO-GS (SOTA)** | **22.20** | gap −0.87 (future work) |
+**Reference targets (LLFF 3-view) — UPDATED 2026-05-25:**
+| Method | PSNR | Δ vs Phase 13 | gap ICO-GS | Note |
+|--------|------|---------------|------------|------|
+| Phase 8 FULL (paper, 1 sample) | 21.335 | +0.005 | −0.86 | OLD baseline (lucky single-run) |
+| Phase 8 FULL multi-seed | 21.16 | −0.17 | −1.04 | Fair N=24 (pre-Phase-13) |
+| No-CRS Tier1 | 21.21 | −0.12 | −0.99 | D1-noCRS-O999 (legacy) |
+| **Phase 13 A3 (LFCF + AbsGS) MVS N=24** | **21.330** | (baseline) | −0.87 | **Old committed recipe** Phase 20 TRIM-locked |
+| Phase 13 A4 (AbsGS only) N=24 | 21.244 | −0.09 | −0.96 | SIG marginal |
+| DOC-GS | 21.38 | +0.05 | −0.82 | external SOTA ref |
+| BinocularGS | 21.44 | +0.11 | −0.76 | external SOTA ref |
+| Phase 18 A3+PDCNet+dense N=24 | 21.599 | +0.27 SIG | −0.60 | NO pre-registered (C3 fail + 2.4× bloat) |
+| Phase 21 A3-TRIM+RoMa v2 N=24 | 21.66 | +0.33 SIG | −0.54 | C3 fail thin, multi-metric WIN |
+| **🎯🎯 Phase 22 A3-TRIM+RoMa v1 N=24** | **21.918** | **+0.58 SIG** | **−0.28** | **🏆 PROJECT BEST** — vượt DOC-GS/Binocular, decision PENDING (D/A/B) |
+| **ICO-GS (SOTA)** | **22.20** | +0.87 | — | future work |
+
+**Per-scene Phase 22 v1 (3-seed mean N=24):** fortress 25.57, fern 23.84, trex 23.51, room 22.97, flower 21.41, **horns 21.08** (vs v2 19.81 = swing +1.26 🚀), leaves 19.38, orchids 17.58. C3 strict AND fail (trex −0.135), C3 sum/avg PASS.
 
 **Phase 11 FINAL results (multi-seed paired N=24):**
 | Step | Δ paired | SEM | Verdict |

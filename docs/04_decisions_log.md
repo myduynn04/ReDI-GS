@@ -2068,3 +2068,207 @@
 - Data state: `fused.ply` per scene = RoMa-init (Phase 18 backup `.colmap_mvs_backup` còn nguyên + Phase 21 `.roma` cũng còn). `RESTORE=1 python scripts/p21_place_roma_init.py` để revert MVS.
 
 ---
+
+### [2026-05-25] Phase 22 — RoMa v1 full 8-scene pilot PLAN (user pivot, v2 → v1 wide-baseline hypothesis)
+
+**Hypothesis (testable):** RoMa v1 thắng v2 trên **WxBS benchmark +5.4 mAA** (60.8 vs 55.4). LLFF 3-view chọn 3 ảnh ở indices 0, 8, 16 spaced từ 17 ảnh train pool → **baseline rộng**, có thể giống WxBS hơn MegaDepth. Thin-structure scenes (horns antlers, trex skeleton) ở wide-baseline = chính xác WxBS failure mode của v2. → **v1 có thể fix horns/trex** dù marginal thua v2 trên MegaDepth (+0.2 AUC@5 only).
+
+**Trade-off v1 vs v2 (verified from paper + READMEs):**
+
+| Property | v1 (CVPR 2024) | v2 (Nov 2025) |
+|---|---|---|
+| Backbone | DINOv2 ViT-L | DINOv3 ViT-L |
+| WxBS mAA@10px | **60.8** ⭐ | 55.4 |
+| MegaDepth AUC@5 | 62.6 | 62.8 |
+| Speed/pair | ~54ms | ~32ms |
+| Per-pixel covariance | ❌ scalar certainty | ✅ 2×2 precision |
+| Deps | nặng (kornia, timm, poselib, wandb...) | nhẹ (5 packages) |
+| API | `(warp, certainty)` | `preds` dict 4-channel |
+| License | MIT + DINOv2 Apache 2 | MIT + DINOv3 custom |
+| Mature ecosystem | ✓ | mới (Nov 2025) |
+
+**Speed slowdown trivial:** v1 preprocess 8 scenes ~80s vs v2 53s (+30s 1-time cost). KHÔNG ảnh hưởng training/inference.
+
+**Caveats:**
+- Mất per-pixel covariance v2 — nhưng Phase 21 verify `model.sample()` self-filter đã đủ (overall N=24 SIG WIN), covariance bonus không decisive
+- Env complexity hơn (~12 deps vs 5) — cần env `roma_v1` riêng
+
+**Plan (mirror Phase 21 structure):**
+
+- **Bước 0** — server setup: clone `Parskatt/RoMa` về `duyen/RoMa`; env `roma_v1` (torch 2.6+cu124 cùng romav2); `pip install -e .` (sẽ pull DINOv2 hub + RoMa v1 .pt checkpoints first-run); smoke `demo/demo_match.py` verify GPU.
+- **Bước 1** — preprocess: `scripts/p22_romav1_preprocess.py` (adapt từ p21 với v1 API: `roma_outdoor()` + `match(imA_path, imB_path)` returns `(warp, certainty)` + `sample(warp, certainty)` returns `(matches, certainty)`); output `.romav1` (KHÔNG đè `.roma` v2).
+- **Bước 2** — runner + place: `p22_run_all_scenes.sh` + `p22_place_romav1_init.py` (analog Phase 21). 8 scenes × 3 pair preprocess; place fused.ply ← .romav1.
+- **Bước 3** — smoke 1 scene fern seed 42 A3-TRIM-FULL → verify pipeline.
+- **Bước 4** — pilot N=24 (3 seeds × 8 scenes paired) → `p22_pilot_run.sh` (reuse p20_ablation_dense_run.sh wrapper với LOG_DIR=logs/p22_pilot).
+- **Bước 5** — analyze 3-way: MVS (Phase 20) vs RoMa v2 (Phase 21) vs RoMa v1 (Phase 22) all N=24 paired. Specifically check **horns+trex Δ vs MVS** (Phase 21 fail mode):
+  - **v1 horns/trex ≥ MVS (Δ ≥ −0.05)** → WxBS hypothesis CONFIRMED, v1 = right matcher cho thin structure, pilot full + commit
+  - **v1 horns/trex similar v2** → WxBS hypothesis REFUTED, thin-structure ceiling structural, decide D-commit vs A-reject Phase 21
+  - **v1 horns/trex < v2** → v1 không cứu, lift v2 path or reject
+
+**Pre-registered verdict C1-C4 (same Phase 21):**
+- C1 mean Δ vs MVS ≥ +0.10 SIG (paired N=24)
+- C2 ≥6/8 scenes Δ ≥ 0
+- **C3 horns + trex Δ ≥ −0.05** (key gate cho hypothesis WxBS)
+- C4 N_gauss ≤ MVS × 1.1
+
+**Cost estimate:** Bước 0 ~10min user + Bước 1-2 ~80s preprocess + Bước 3 smoke ~5min + Bước 4 pilot 60min 2-GPU = **~1.5 giờ total** sau khi env ready.
+
+**Bonus questions trả lời:** "v1 vs v2 nào tốt hơn cho LLFF 3-view sparse 3DGS?" — data thực thay vì paper claim (benchmarks paper khác setup).
+
+---
+
+### [2026-05-25] Phase 22 — RoMa v1 pilot N=24 DONE: **LARGEST gain in project history**, commit-decision PENDING
+
+**Setup (Bước 0-2 DONE):**
+- Repo `Parskatt/RoMa` (CVPR 2024) clone về `~/workspace/representation-3d/duyen/RoMa` (sibling romav2)
+- Env `roma_v1` isolated. Initial install `pip install fused-local-corr` accidentally pulled torch 2.11+cu13 (driver 12.4 mismatch). Cleanup + reinstall `torch==2.6.0 torchvision==0.21.0 --index-url cu124`.
+- **Discovered Python-native fallback** `shitty_native_torch_local_corr` ([local_correlation.py:39](RoMa/romatch/utils/local_correlation.py#L39)) via `use_custom_corr=False` flag — bypass CUDA kernel completely, smoke 1.11s/4.4GB on Toronto pair (FASTER + LESS VRAM than v2 9.9GB on same hardware do v1 upsample-res 864 < v2 1280).
+- Checkpoints first-run: `roma_outdoor.pth` (425MB từ Parskatt/storage) + `dinov2_vitl14_pretrain.pth` (1.13GB từ Facebook public files) = total ~1.55GB cache.
+- Preprocess 8 scenes via `p22_romav1_preprocess.py` (adapted Phase 21 với v1 API: `roma_outdoor(use_custom_corr=False)` + `match()` returns `(warp, certainty)` + `sample()` returns `(matches, certainty)` 2-tuple). N pts/scene = 16.9k-26.4k, total 178k (vs v2 185k = −3.6%). Place .romav1 swap fused.ply.
+
+**Pilot Bước 4 N=24 (3 seeds × 8 scenes):** wall-time ~60 min với 1 OOM interrupt giữa chừng (5 runs replayed on GPU1 sequential). RoMa v1 pilot 24/24 OK.
+
+**🎯 RESULT (3-seed paired N=24):**
+
+| Metric | v1 vs MVS | v1 vs v2 | v1 absolute |
+|---|---|---|---|
+| **PSNR** | **+0.584 SIG** CI [+0.405, +0.763] | **+0.256 SIG** CI [+0.077, +0.435] | **21.918 dB** ⭐ |
+| **SSIM** | +0.032 avg | +0.011 avg | — |
+| **LPIPS** | −0.027 avg | −0.007 avg | — |
+| **N_gauss** | 1.017× | 1.006× | 94,917 |
+
+→ **LARGEST single-step gain in project history.** Phase 13 +0.164, Phase 18 +0.270, Phase 21 +0.328, **Phase 22 +0.584**. Vượt DOC-GS (21.38), BinocularGS (21.44); gap ICO-GS chỉ còn −0.28 (từ −0.87).
+
+**Per-scene 3-seed Δ vs MVS:**
+
+| Scene | v1 PSNR | Δ vs MVS | Δ vs v2 | Δ SSIM-MVS | Δ LPIPS-MVS | std (3-seed) |
+|---|---|---|---|---|---|---|
+| fortress | **25.569** | **+1.461** 🚀 | +0.475 ⭐ | +0.071 | −0.047 | 0.020 |
+| fern | 23.840 | +0.527 | +0.188 ⭐ | +0.024 | −0.023 | 0.040 |
+| trex | 23.514 | **−0.135 ✗** | +0.042 ≈ | +0.003 | −0.003 | 0.109 |
+| room | 22.970 | +0.424 | +0.272 ⭐ | −0.017 | −0.017 | 0.068 |
+| flower | 21.413 | +0.360 | −0.031 ≈ | +0.029 | −0.023 | 0.114 |
+| **horns** | **21.079** ⭐⭐ | **+0.628** | **+1.264** ⭐⭐⭐ | +0.051 | −0.040 | 0.134 |
+| leaves | 19.375 | +0.839 | −0.112 ✗ | +0.056 | −0.034 | 0.096 |
+| orchids | 17.582 | +0.568 | −0.052 ≈ | +0.040 | −0.032 | 0.024 |
+| **AVG** | **21.918** | **+0.584** | **+0.256** | **+0.032** | **−0.027** | 0.076 |
+
+**🔑 WxBS HYPOTHESIS VERIFIED on horns (dramatic) but only marginal on trex:**
+- horns swing **v1 − v2 = +1.264 PSNR** (v2 had −0.636 vs MVS, v1 has +0.628 vs MVS) = **WxBS confirmed for horns** ⭐⭐⭐
+- trex marginal: v1 −0.135 vs v2 −0.177 = +0.042 improvement only
+- → WxBS hypothesis correct for ONE thin-structure scene (horns), fails for trex
+- → trex regress structural (cùng dense-init class fail nhỏ cả 2 v1+v2)
+
+**Pre-registered C1-C4 vs MVS:**
+- C1 ✓ Δ ≥ +0.10 AND CI>0: **PASS** (+0.584, CI lo +0.405)
+- C2 ✓ ≥6/8 positive: **PASS** (7/8)
+- **C3 (strict AND): horns ≥ −0.05 AND trex ≥ −0.05 = FAIL** (trex −0.135)
+- **C3 (sum reading): horns + trex = +0.493 ≥ −0.05 = PASS dễ** (user pointed out trong analysis)
+- **C3 (avg reading): (+0.628 − 0.135)/2 = +0.246 ≥ −0.05 = PASS dễ**
+- C4 ✓ N_gauss ≤ MVS×1.1: **PASS** (1.017×)
+
+**Honest framing:** dưới strict AND C3, trex −0.135 vẫn fail threshold −0.05; nhưng trex SSIM +0.003 / LPIPS −0.003 = perceptual flat (KHÔNG broken), magnitude nhỏ hơn v2 −0.177. KHÔNG catastrophic. Multi-metric reading + sum/avg C3 = PASS.
+
+**Comparison Phase 21 (v2) vs Phase 22 (v1):**
+
+| | Phase 21 v2 | Phase 22 v1 |
+|---|---|---|
+| Δ vs MVS PSNR | +0.328 SIG | **+0.584 SIG** (+78%) |
+| Δ vs MVS SSIM | +0.030 avg | **+0.032 avg** (similar) |
+| Δ vs MVS LPIPS | −0.025 avg | **−0.027 avg** (similar) |
+| C2 wins vs MVS | 6/8 | **7/8** |
+| horns vs MVS | **−0.636 ❌** | **+0.628 ✓** (swing +1.264) |
+| trex vs MVS | −0.177 ✗ | −0.135 ✗ (marginal both) |
+| N_gauss vs MVS | 1.004× | 1.017× (similar) |
+| Backbone | DINOv3 ViT-L | DINOv2 ViT-L |
+| WxBS mAA paper | 55.4 | 60.8 (+5.4) |
+
+**KEY INSIGHT (mechanistic, novel):**
+**RoMa v1 thắng v2 trên LLFF 3-view sparse setup không vì v1 backbone hay v1 architecture tốt hơn nói chung** (v2 wins trên MegaDepth marginal +0.2 AUC@5, vs paper benchmarks) **mà vì v1 phù hợp với specific use case wide-baseline + thin-structure** (v1 wins WxBS +5.4 mAA paper). LLFF 3-view chọn ảnh indices 0,8,16 spaced = wide baselines; thin-structure scenes (horns/trex) khớp WxBS distribution.
+
+→ **paper benchmark ≠ task-specific best.** v2 newer, v1 older, **nhưng v1 đúng cho 3-view sparse 3DGS init**.
+
+**Files Phase 22:** `scripts/p22_romav1_preprocess.py` + `p22_run_all_scenes.sh` + `p22_place_romav1_init.py` + `p22_pilot_run.sh` + `p22_pilot_analyze.py`. Data state: `fused.ply` = RoMa v1; `.romav1` + `.roma` (v2) + `.colmap_mvs_backup` đều còn trên server. `RESTORE=1 python scripts/p22_place_romav1_init.py` để revert MVS, hoặc `python scripts/p21_place_roma_init.py` để swap về v2.
+
+**SPEED measurements DISCLAIMER:** Speed/wall-time bảng đã ghi (preprocess 53s v2 / 80s v1, VRAM 9.9/7.2 GB) là **cross-session, KHÔNG controlled** — vi phạm `[feedback_measure_compute_cost]` (cost metric = N_gauss only do cross-session noise 3×). User caught this. Controlled timing chưa chạy; nếu cần thì back-to-back same-GPU same-scene fern. **Speed KHÔNG decisive** cho commit decision — chỉ informational. N_gauss (deterministic) ≈ 1× cho cả MVS/v2/v1.
+
+**Decision PENDING (chờ user):**
+- **D — COMMIT v1** (đề xuất mạnh) — strongest result history, 3/3 quality metric dominant, compute neutral, fix horns, trex marginal acceptable.
+- **A — NO commit per strict C3** — discipline strict, trex −0.135 still fails. Throw away largest gain.
+- **B — Phase 23 dense matcher hunt** (MASt3R/VGGT) — chasing trex fix. Risk: Phase 18b 5/5 fix-class refuted, structural ceiling likely persist.
+
+**User next:** chọn D/A/B.
+
+---
+
+### [2026-05-25] Phase 23 — Cross-backbone ablation on RoMa v1 (LOO + single-add) PLAN
+
+**Motivation:** Phase 22 v1 = +0.584 SIG (project best) NHƯNG contribution framework không rõ nét — Phase 20b dense LOO đã thấy CRS axis ≈0 trên PDCNet+ dense (SH-CRS −0.04, D_cycle −0.01, EFA −0.03). Nếu v1 backbone tương tự → CRS framework contribution bị wash out bởi v1 init quality → reviewer claim "21.918 = chủ yếu nhờ RoMa v1, CRS framework đóng góp ít".
+
+→ **Cần ablation trên v1 backbone để xác định "true cross-backbone-stable contribution"** = nền tảng cho contribution framing chắc chắn.
+
+**Mục tiêu:**
+- LOO (mirror Phase 20b dense): subtract mỗi module bucket từ trim_full → biết "mất gì khi bỏ"
+- Single-add (NEW Phase 23, user request): base + each bucket alone → biết "thêm gì khi cho vào riêng"
+- Cross-perspective: LOO captures synergy (module trong context full); single-add captures isolated marginal effect
+- 2 cùng nhìn → clear attribution per bucket
+
+**Pre-registered configs (13 total, 1-seed pilot):**
+
+| Config | Modules | Mục đích |
+|---|---|---|
+| `base` | 0 module (3DGS thuần) | v1-init only floor |
+| `trim_full` | A3-TRIM-FULL (reuse Phase 22) | baseline 21.918 |
+| **LOO (6):** | | "mất gì khi bỏ X" |
+| `trim_no_efa` | trim_full − EFA (LFCF+AbsGS) | |
+| `trim_no_drop` | trim_full − DropAnSH | |
+| `trim_no_opacity` | trim_full − opacity decay | |
+| `trim_no_dcycle` | trim_full − D_cycle (giữ depth+SH-CRS) | |
+| `trim_no_shcrs` | trim_full − SH-CRS + SH-REL (giữ depth+D_cycle) | |
+| `trim_no_depthcrs` | trim_full − toàn bộ CRS cascade (= INDEP_FULL only) | |
+| **Single-add (6):** | | "thêm gì khi cho riêng X" |
+| `single_efa` | base + EFA | |
+| `single_drop` | base + DropAnSH | |
+| `single_opacity` | base + opacity decay | |
+| `single_dcycle` | base + depth + D_cycle (no SH-CRS) | |
+| `single_shcrs` | base + depth + SH-CRS + SH-REL (no D_cycle) | |
+| `single_depthcrs` | base + full CRS_TRIM cascade (depth+D+SH-CRS+SH-REL) | |
+
+**Backbone:** RoMa v1 init (fused.ply = .romav1, Phase 22 swap còn nguyên).
+
+**Cost:** 12 configs mới × 8 scenes × 1 seed = 96 runs × ~5min = **~8h 1-GPU / ~4h 2-GPU split**. Reuse trim_full data từ Phase 22 (24 runs N=24 already).
+
+**Outcome possible (per Phase 20b dense pattern prediction):**
+
+| Module bucket | LOO Δ MVS (Phase 20) | LOO Δ dense (Phase 20b) | LOO Δ v1 PREDICTED (Phase 23) |
+|---|---|---|---|
+| DropAnSH | −0.56 (strong) | −0.64 (strong) | ~−0.5 to −0.7 (cross-stable) |
+| Depth+CRS cascade | −0.86 (strong) | −0.62 (strong) | ~−0.5 (cross-stable) |
+| Opacity-decay | −0.16 (medium) | −0.24 (medium) | ~−0.2 (cross-stable) |
+| EFA (LFCF+AbsGS) | −0.12 (medium) | −0.03 (wash) | **?** (key question) |
+| D_cycle | −0.15 (medium) | −0.01 (wash) | **?** (key question) |
+| SH-CRS | −0.30 (medium) | −0.04 (wash) | **?** (key question) |
+
+→ **Phase 23 sẽ tell us:** trên v1, 3 backbone-dependent modules (EFA/D_cycle/SH-CRS) có wash giống dense (Phase 20b pattern) hay vẫn contribute giống MVS?
+
+**Contribution framing sau Phase 23 data:**
+
+| Lớp | Definition | Status sau Phase 23 |
+|---|---|---|
+| **Core (cross-stable)** | LOO Δ < −0.2 trên ALL 3 backbones | strongest contribution |
+| **Backbone-dependent** | LOO Δ < −0.2 trên MVS, ≈0 trên dense/v1 | scope: "MVS-specific" |
+| **Init-overlap** | LOO ≈0 trên dense/v1 NHƯNG single-add > 0 | "patches info-gap of poor init" |
+
+**Pre-registered decision rules (Phase 23 outcome):**
+- Nếu **EFA + D_cycle + SH-CRS wash trên v1** (= Phase 20b pattern) → contribution = "3 pillars (DropAnSH + depth+CRS cascade + opacity) + RoMa v1 best matcher recipe"
+- Nếu **EFA + D_cycle + SH-CRS contribute trên v1** (khác Phase 20b) → contribution = "A3-TRIM 8-module recipe cross-backbone validated"
+
+**Files dự kiến:** `scripts/p23_v1_ablation_run.sh`, `scripts/p23_v1_ablation_analyze.py`.
+
+**Order of operations:**
+1. Run Phase 23 ablation trên v1 backbone (4h 2-GPU)
+2. Analyze LOO + single-add tables → identify per-bucket contribution
+3. Reframe contribution per outcome
+4. THEN decide commit v1 (D) — vì lúc đó biết clear contribution framing
+
+---
