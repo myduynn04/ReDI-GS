@@ -927,6 +927,14 @@ Phase D (fallback): writeup
     - **A**: NO commit per strict C3 trex
     - **B**: Phase 23 try MASt3R/VGGT để fix trex (risk: structural)
   - [ ] **Optional**: controlled speed test (back-to-back same-GPU) — cross-session table cũ violates `[feedback_measure_compute_cost]`. KHÔNG decisive cho commit, chỉ documentation.
-- [~] **Phase 23 — Cross-backbone ablation on RoMa v1 PLAN (2026-05-25)**. Mục tiêu: identify "true cross-backbone-stable contribution" → contribution framing chắc chắn (Phase 22 21.918 mất rõ nét nếu CRS-axis wash trên v1 giống Phase 20b dense). 13 configs: base + trim_full (reuse Phase 22) + **6 LOO** (trim_no_efa/drop/opacity/dcycle/shcrs/depthcrs) + **6 single-add** (single_efa/drop/opacity/dcycle/shcrs/depthcrs). Cost ~4h 2-GPU 1-seed. Pre-registered: nếu EFA+D_cycle+SH-CRS wash trên v1 (= Phase 20b pattern) → contribution = "3 pillars + RoMa v1 best recipe"; nếu contribute → "A3-TRIM 8-module cross-backbone validated". After Phase 23 → decide commit v1 (D). Chi tiết: decisions_log [2026-05-25] Phase 23.
+- [x] **Phase 23 — Cross-backbone ablation on RoMa v1 DONE (2026-05-27)**. **101/104 cells với "Best test PSNR"** (3 missing = all `leaves` OOM). **4 contributions confirmed:**
+  - **(1) 3 cross-backbone-stable pillars**: depth+CRS cascade (Δ_v1=−0.80), DropAnSH (−0.56), Opacity decay (−0.21) — đều âm strong trên MVS/PDCNet+/v1
+  - **(2) A3-TRIM 8-module recipe = 21.918** (project best)
+  - **(3) RoMa v1 > v2 for sparse 3-view** (task-similar benchmark > general SOTA)
+  - **(4) Mechanistic insights novel:**
+    - CRS-axis (D_cycle, SH-CRS) **MVS-only** — wash khi init dense (cross-backbone systematic first)
+    - **Opacity decay = synergy-only** (alone −0.27, cascade +0.21)
+    - **depth prior là carrier** của CRS effects (depth+D_cycle alone +0.65 ≈ full CRS +0.66)
+  - **Decision: D-COMMIT RoMa v1 + A3-TRIM-FULL recipe** = new lock baseline. Strongest evidence package project history. Chi tiết: decisions_log [2026-05-27] Phase 23.
 - ⚠️ Lesson tích lũy: verify "untried" vs FULL memory-file+decisions_log; verify-from-code mechanism TRƯỚC implement (C "nhẹ" over-claim sửa 2 lần bằng đọc code: regularization_strategy + renderer-no-normal); diagnostic misfire nhiều → empirical-control đáng giá; root-cause = info-conservation (reshape doomed, chỉ external-info thoát); **KHÔNG simulate training-dynamics từ render tĩnh (Phase 17e Step C artifact)**; **ablation LOO synergy → |Δ| KHÔNG cộng đúng base→FULL (Phase 20 4× overlap)**.
 - ⚠️ Lesson tích lũy: verify "untried" vs FULL memory-file+decisions_log; verify-from-code mechanism TRƯỚC implement (C "nhẹ" over-claim sửa 2 lần bằng đọc code: regularization_strategy + renderer-no-normal); diagnostic misfire nhiều → empirical-control đáng giá; root-cause = info-conservation (reshape doomed, chỉ external-info thoát).
