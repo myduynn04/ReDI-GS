@@ -1,13 +1,23 @@
-# Defense — Real-world Comparison Plan
+# Real-world Comparison Plan
 
-> **Mục đích**: Chuẩn bị evidence cho defense đồ án, đáp lại yêu cầu của thầy hướng dẫn:
+> **Evaluation chapter** — phase research (Phase 1-24) đã commit recipe (Phase 22 RoMa v1 = 21.92 dB).
+> Chapter này validate recipe trên use case thực tế ngoài academic benchmark.
+>
+> **Mục đích**: Đáp lại câu hỏi của thầy hướng dẫn:
 > *"Cái em nghiên cứu áp dụng cho bài nào? So với sản phẩm thực tế đang được dùng, em hơn gì?
 > Hoặc em có thể plug vào pipeline của họ cho kết quả tốt hơn không?"*
 >
-> Tài liệu này KHÔNG phải paper writeup — chỉ là kế hoạch demo + comparison để defense.
+> **Không phải research phase** — không thêm cơ chế mới, không tinh chỉnh hyperparameter.
+> Chỉ chạy recipe đã commit trên (a) production stack mới và (b) custom real-world data.
 >
-> **Trạng thái dự án (2026-05-27):** Phase 22 RoMa v1 = 21.92 dB LLFF 3-view (project best, +0.584 SIG vs MVS).
-> Phase 23 ablation v1 confirmed 4-contribution framing. Phase 24 trim-add v1 đang chạy.
+> **Trạng thái dự án (2026-06-02):**
+> - Phase 22 RoMa v1 = 21.92 dB LLFF 3-view (project best, +0.584 SIG vs MVS) — locked
+> - Phase 23 ablation v1 confirmed 4-contribution framing
+> - Phase 24 trim-add v1 đã verify
+> - **Evaluation direction**: Pattern 1 — plug-in module CRSGaussian vào **Nerfstudio splatfacto** (production-grade Apache 2.0)
+> - ✅ **A1 plug-in (RoMa init only) DONE + verified**: 4/4 scene Δ = +1.523 dB mean vs vanilla splatfacto. 14/17 tier PASS. Chi tiết: [06_plugin_a1_results.md](06_plugin_a1_results.md)
+> - 🟡 **A2 cascade** (depth + opacity decay + CRS module): pending decision
+> - Design overview: [05_plugin_design.md](05_plugin_design.md)
 
 ---
 

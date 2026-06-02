@@ -86,30 +86,10 @@ class ModelParams(ParamGroup):
         self.use_depth_prior = False
         self.dav2_path = "../Depth-Anything-V2"
         self.dav2_encoder = "vitl"
-        # ── [CRSGaussian T5.1] Informed CRS₀ Initialization ──
-        # Dùng geometry info có sẵn sau alignment để set CRS₀ có ý nghĩa
-        # hình học, thay vì neutral 0.5. Xem docs/09_informed_crs_init_plan.md
-        # Master switch: False → behavior cũ (CRS₀=0.5 tất cả)
-        self.informed_crs_init = False
-        # Component switches — mỗi cái bật/tắt độc lập cho ablation.
-        # Default=True: khi bật informed_crs_init, dùng cả 3 signals.
-        # Dùng str2bool: --crs_init_use_reproj False để tắt từ CLI.
-        self.crs_init_use_reproj = True   # q_reproj: SfM reprojection quality
-        self.crs_init_use_depth  = True   # q_depth:  DAV2-COLMAP depth agreement
-        self.crs_init_use_view   = True   # q_view:   multi-view stereo support
-        # Weights — tự normalize về sum=1 khi component bị tắt.
-        # Grid search: w ∈ {0.0, 0.2, 0.33, 0.5, 0.8, 1.0}
-        self.crs_init_w_reproj = 0.333    # weight cho q_reproj
-        self.crs_init_w_depth  = 0.333    # weight cho q_depth
-        self.crs_init_w_view   = 0.334    # weight cho q_view
-        # Hyperparameters
-        self.crs_init_tau_r = 2.5         # reproj error normalization. Ablate: {2.0, 2.5, 3.0}
-        self.crs_init_gamma = 5.0         # logit scale factor. Ablate: {3.0, 5.0, 8.0}
-        self.crs_init_eta   = 0.7         # densify inherit factor. Ablate: {0.5, 0.7, 0.9}
-        # Densify inherit — riêng biệt với informed_crs_init.
-        # True: child CRS₀ = clip(η * CRS_parent, 0, 0.5)
-        # False (default): child CRS₀ = 0.5 (neutral, behavior cũ)
-        self.crs_densify_inherit = False
+        # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed informed_crs_init + 10 sub-flags
+        # (crs_init_use_reproj/depth/view, crs_init_w_*, crs_init_tau_r/gamma/eta, crs_densify_inherit).
+        # Phase 20 TRIM verified WASH on MVS N=24; Phase 24 verified WASH on RoMa v1 N=24
+        # (Δ=−0.013 [−0.081, +0.054]). Cross-backbone safe to remove.
         # ── [CRSGaussian Phase 2c] Opacity decay (inspired by Binocular3DGS) ──
         # Multiply opacity mỗi iter để tạo continuous pressure → zombie
         # Gaussian giảm opacity dần → bị CRS/legacy pruning loại tự nhiên.
@@ -245,7 +225,9 @@ class OptimizationParams(ParamGroup):
         self.tau_densify = 0.45     # ngưỡng CRS để chặn densify (Phase 4 future)
         self.tau_isolated = 0.1     # ngưỡng isolation (× scene_extent). Ablate: {0.05, 0.10, 0.20}
         self.use_pos_constraint = False  # [debug] bật/tắt position constraint (T4.1)
-        self.use_crs_pruning = False     # [debug] bật/tắt CRS pruning (T4.2)
+        # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed use_crs_pruning.
+        # Phase 20 TRIM verified WASH on MVS N=24; Phase 24 verified WASH on RoMa v1 N=24
+        # (Δ=+0.014 [−0.065, +0.086]). Cross-backbone safe to remove.
         # ── [CRSGaussian] CRS update hyperparameters ──
         self.crs_ema_decay = 0.9         # EMA decay cho CRS update. Ablate: {0.5, 0.7, 0.9}
         self.crs_update_interval = 100   # Mỗi bao nhiêu iter update CRS. Ablate: {25, 50, 100}
@@ -297,13 +279,10 @@ class OptimizationParams(ParamGroup):
         self.lossw_gamma         = 0.5      # w(p) ∈ [γ, 1] khi CRS_pix ∈ [0, 1]. Ablate {0.3,0.5,0.7}
         self.lossw_render_freq   = 100      # mỗi N iter re-render CRS map (cache giữa các update)
 
-        # ── [CRSGaussian Phase 8a] R_visible — visibility-aware reprojection consistency ──
-        # Fix R contamination 36.5% (Tier A4): chỉ aggregate views nơi Gaussian
-        # thực sự visible (gauss_z ≤ rendered_z × tolerance). Reuse render depth
-        # maps pattern từ d_cycle. Default OFF.
-        self.use_r_visible                = False
-        self.r_visible_occlusion_tolerance = 1.05   # gauss_z ≤ rendered_z × tolerance
-        self.r_visible_min_views          = 2       # min visible views, else neutral 0.5
+        # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed use_r_visible + 2 sub-flags
+        # (r_visible_occlusion_tolerance, r_visible_min_views). Phase 20 TRIM verified WASH
+        # on MVS N=24; Phase 24 verified WASH on RoMa v1 N=24 (Δ=+0.013 [−0.048, +0.081]).
+        # Cross-backbone safe to remove. R_visible code path stripped from crs_module.py.
 
         # ── [CRSGaussian Phase 8b] S_stability — SH coefficient stability ──
         # Track features_rest variance qua EMA → detect SH drift (memorize vs stable).

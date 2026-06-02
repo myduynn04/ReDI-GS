@@ -1,7 +1,30 @@
-# Phase 24 — Cleanup Proposal (Pre-DTU Scaling)
+# Phase 24 — Cleanup (Pre-DTU Scaling) — UMBRELLA
 
 **Date drafted:** 2026-05-29
-**Status:** ⏳ AWAITING USER CONFIRMATION before any code change
+**Date updated:** 2026-05-29
+**Status:** 🟢 24_0 + 24_1 + 24_3 DONE | 24_2 + 24_4 pending
+
+> **Convention**: Phase 24 là umbrella cho toàn bộ pre-DTU cleanup. Sub-phase notation `24_x` cho từng nhóm việc. **KHÔNG nhảy sang Phase 25** — Phase 25 reserved cho việc lớn hơn (DTU scaling / evaluation).
+
+## Sub-phase index
+
+| Sub-phase | Nội dung | Status | Evidence |
+|---|---|---|---|
+| **24_0** | Trim verify N=24 (test 3 flag trên v1 RoMa) | ✅ DONE 2026-05-29 | `logs/p24_trim_add_v1/` + memory `project_phase24_trim_verify_v1.md` + decisions_log [2026-05-29] |
+| **24_1** | NHÓM 1 cleanup (Phase 20 TRIM physical removal) | ✅ DONE 2026-05-29 | inline `[CRSGaussian Phase 24 cleanup 2026-05-29]` comments in arguments/train.py/crs_module.py + `rm` crs_init.py + smoke verify PASS (drift −0.068 in noise floor) |
+| **24_2** | NHÓM 2 truly-dead files (sh_curriculum + shape_reg + binocular_consistency) | ⏳ PENDING | (next, ~300 LOC removed, zero risk) |
+| **24_3** | Paper defense Q&A docs | ✅ DONE 2026-05-29 | `docs/24_3_paper_defense_removed_features.md` (canonical defense for removed features) |
+| **24_4** | NHÓM 3-5 (backups + dead flags Nhóm 4 + reject scripts Nhóm 5) | ⏳ PENDING | TBD |
+
+## 24_0 result (anchor for 24_1 justification)
+
+**Phase 24 trim-verify N=24** (2026-05-29): N=24 paired vs Phase 22 anchor 21.918:
+- 3 individual flags WASH (Δ ≈ 0 ±0.10)
+- Stack-3 = ❌ HURT −0.796 (anti-synergy NEW finding)
+- → 24_1 NHÓM 1 SAFE to remove physical
+- → Plus: paper contribution #5 "legacy CRS stack incompatible with dense init"
+
+Detail: `docs/04_decisions_log.md` [2026-05-29] + `memory project_phase24_trim_verify_v1.md`.
 **Context:** Phase 22 RoMa v1 + A3-TRIM 8-module recipe = project best **21.918 PSNR**. Phase 23 ablation confirms 4 contributions. Trước khi mở rộng sang DTU 3-view, cần dọn dead code từ các phase đã reject để (a) tránh bug khi scaling, (b) làm paper code release sạch, (c) giảm noise grep/review.
 
 > ⚠️ **CRITICAL CONSTRAINT** — Không được đụng chạm 8-module A3-TRIM recipe.

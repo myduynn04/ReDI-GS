@@ -2337,3 +2337,66 @@
 - Earlier Phase 11/12/13.2/14/15/17 rejected scripts đã cleanup
 
 ---
+
+### [2026-05-29] Phase 24 — TRIM RE-VERIFY ON ROMA V1 + ANTI-SYNERGY DISCOVERED
+
+**Motivation:** Trước khi cleanup physical 3 flag Phase 20 TRIM (informed_crs_init / use_crs_pruning / use_r_visible), verify trên RoMa v1 backbone (Phase 22 PROJECT BEST = 21.918). Phase 20 chỉ test trên MVS — cần cross-backbone confirm safe.
+
+**Setup:** N=24 paired (3 seeds × 8 scenes), 5 cases × 24 = 120 runs, ~7h trên 2 GPU:
+- c0_base: A3-TRIM 8-module re-run (anchor cùng GPU/code state)
+- c1_informed: base + informed_crs_init (Phase 5 best WG)
+- c2_crsprune: base + use_crs_pruning (Phase 4 defaults)
+- c3_rvisible: base + use_r_visible (Phase 8a defaults)
+- c4_stack3: base + cả 3 stack
+
+**Execution:**
+- First run: bug `--crs_densify_inherit True` (default=False → store_true → no value accept) → c1/c4 zero data
+- Fix: edit script `--crs_densify_inherit` (no value) + re-upload server + rerun
+- Final: 120/120, drift c0_base=21.882 vs anchor 21.918 = −0.036 ✓ trong noise floor
+
+**🎯 RESULTS N=24 paired vs c0_base:**
+
+| Case | N | PSNR | Δ | 95% CI | Verdict |
+|---|---|---|---|---|---|
+| c0_base | 24 | 21.882 | anchor | — | drift ✓ |
+| c1_informed | 24 | 21.869 | **−0.013** | [−0.081, +0.054] | ~ WASH |
+| c2_crsprune | 24 | 21.896 | **+0.014** | [−0.065, +0.086] | ~ WASH |
+| c3_rvisible | 24 | 21.895 | **+0.013** | [−0.048, +0.081] | ~ WASH |
+| c4_stack3 | 24 | 21.086 | **−0.796** | [−1.078, −0.532] | ❌ HURT |
+
+**Per-scene damage stack-3 (c4):** ALL 8/8 negative — horns −1.597 / trex −1.845 / leaves −1.319 / orchids −0.745 / fortress −0.376 / fern −0.249 / flower −0.188 / room −0.045.
+
+**🔑 KEY INSIGHTS:**
+
+1. **3 flag cross-backbone WASH** = Phase 20 TRIM cross-confirmed safe (MVS Phase 20 + v1 Phase 24)
+
+2. **ANTI-SYNERGY DISCOVERED stack-3 trên v1** ⭐ (NEW finding):
+   - 3 modules alone: noise (~0 ±0.10)
+   - 3 modules STACKED: −0.796 dB catastrophic
+   - 8/8 scenes negative, thin-structure −1.3 to −1.8
+   - ĐỐI LẬP Phase 13 LFCF×AbsGS synergy DƯƠNG +0.071 — synergy ÂM lần đầu trong project
+   - Mechanism: informed CRS₀ thấp + CRS pruning aggressive + R_visible strict → triple penalty → over-prune valid Gaussians (đặc biệt thin-structure)
+
+3. **Support insight "CRS-axis MVS-only" Phase 23 lan rộng**:
+   - Trên MVS: 3 modules redundant (harmless)
+   - Trên dense (v1): 3 modules over-aggressive khi stacked
+   - Dense init đã ít outlier → thêm cleanup pressure không cần → over-prune
+
+**Decision:**
+- ✅ **REMOVE PHYSICAL 3 flag**: informed_crs_init + use_crs_pruning + use_r_visible
+- ✅ **DELETE utils/crs/crs_init.py** (sole consumer là informed_crs_init)
+- ⚠️ **DEFER use_pos_constraint** (Phase 4 dead nhưng không thuộc Phase 24 test scope)
+- **Anti-synergy → paper contribution #5**: "Legacy CRS regularizer stack incompatible with dense init backbone"
+
+**Action:**
+- Cleanup NHÓM 1 theo docs/24_cleanup_pre_dtu.md:
+  - arguments/__init__.py: remove 3 flag groups (informed_crs_init + 10 sub, use_crs_pruning, use_r_visible + 2 sub)
+  - train.py: remove gating blocks (informed init compute, use_r_visible params trong update_crs, crs_prune_dict + eta trong densify call)
+  - utils/crs/crs_module.py: simplify compute_reprojection_consistency (remove use_r_visible branch) + update_crs (remove r_visible params)
+  - utils/crs/crs_init.py: DELETE server
+- Server-rm + re-upload list cuối session
+- Smoke verify Phase 22 fern sau sync
+
+**Related:** [[phase24-trim-verify-v1]] (memory), [[phase23-ablation-v1]] (4 contributions), Phase 22 anchor 21.918, Phase 20 TRIM MVS verify.
+
+---

@@ -151,10 +151,6 @@ def compute_depth_consistency(
 def compute_reprojection_consistency(
     xyz: torch.Tensor,
     cameras: list,
-    # ── [CRSGaussian Phase 8a] R_visible — visibility-aware aggregation ──
-    use_r_visible: bool = False,
-    rendered_depths: dict = None,
-    occlusion_tolerance: float = 1.05,
     min_visible_views: int = 2,
 ) -> torch.Tensor:
     """Tính reprojection consistency R_i cho mỗi Gaussian.
@@ -169,26 +165,14 @@ def compute_reprojection_consistency(
     cũng có SH color ổn định → không phân biệt được floater.
     GT color phản ánh scene thật tại pixel projected.
 
-    [CRSGaussian Phase 8a] use_r_visible mode:
-        Tier A4 đo R contamination 36.5% bởi occluder. Khi Gaussian project
-        xuống pixel mà rendered_depth tại đó (frontmost surface) gần camera
-        hơn nhiều so với gauss_z → bị che → GT color sample sai (color của
-        occluder, không phải Gaussian này). use_r_visible filter ra trường
-        hợp đó: chỉ accept view k nếu gauss_z ≤ rendered_z × tolerance.
+    [CRSGaussian Phase 24 cleanup 2026-05-29] Removed use_r_visible mode
+    (Phase 8a visibility-aware aggregation). Phase 20+24 N=24 cross-backbone
+    verified WASH (Δ=+0.013 [−0.048, +0.081]). Frontmost-check code path removed.
 
     Args:
         xyz: (N, 3) Gaussian positions trên GPU.
         cameras: list of Camera objects. Cần có .original_image (3,H,W)
                  float [0,1] trên cuda. PseudoCamera không có → bị skip.
-        use_r_visible: [Phase 8a] Bật visibility-aware aggregation.
-            Khi True, cần `rendered_depths` (dict cam.uid → depth map [1,H,W]).
-            Default False → behavior cũ (sample GT bất chấp occlusion).
-        rendered_depths: {cam.uid: tensor [1,H,W] hoặc [H,W]} — rendered depth
-            maps từ current Gaussian field. Dùng khi use_r_visible=True.
-        occlusion_tolerance: tolerance cho frontmost check.
-            gauss_z ≤ rendered_z × tolerance → "frontmost enough", PASS.
-            gauss_z > rendered_z × tolerance → occluded, SKIP view này.
-            Default 1.05 (5% slack — render depth là alpha-weighted, có noise).
         min_visible_views: tối thiểu N views Gaussian phải visible để compute R.
             < min → R = 0.5 (neutral, không đủ data). Default 2.
 
@@ -245,30 +229,8 @@ def compute_reprojection_consistency(
         if valid.sum() == 0:
             continue
 
-        # ── [CRSGaussian Phase 8a] Frontmost (occlusion) check ──
-        # Sample rendered_depth tại pixel projected của Gaussian.
-        # Nếu rendered_z << gauss_z → có vật khác gần camera hơn che → loại view này.
-        if use_r_visible and rendered_depths is not None and cam.uid in rendered_depths:
-            depth_map = rendered_depths[cam.uid]
-            if depth_map.dim() == 3:
-                depth_map = depth_map.squeeze(0)  # (H, W)
-            # Sample chỉ tại pixel hợp lệ (đã pass valid mask).
-            valid_idx = torch.where(valid)[0]
-            px_v = pixel_x[valid_idx].long().clamp(0, W - 1)
-            py_v = pixel_y[valid_idx].long().clamp(0, H - 1)
-            rendered_z = depth_map[py_v, px_v]  # (M,)
-            gauss_z = depth[valid_idx]           # (M,)
-            # Frontmost: render_z=0 (chưa cover) → coi as frontmost (no occluder).
-            #            gauss_z ≤ render_z × tol → frontmost enough.
-            #            gauss_z > render_z × tol → occluded → SKIP.
-            frontmost = (
-                (rendered_z < 1e-6)
-                | (gauss_z <= rendered_z * occlusion_tolerance)
-            )
-            # Update valid mask: bỏ các Gaussian không frontmost ở view này.
-            valid[valid_idx[~frontmost]] = False
-            if valid.sum() == 0:
-                continue
+        # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed [Phase 8a] frontmost
+        # (occlusion) check block. Phase 20+24 N=24 cross-backbone verified WASH.
 
         px = pixel_x[valid].long().clamp(0, W - 1)
         py = pixel_y[valid].long().clamp(0, H - 1)
@@ -473,10 +435,9 @@ def update_crs(
     render_func=None,
     pipe=None,
     bg=None,
-    # ── [CRSGaussian Phase 8a] R_visible support ──
-    use_r_visible: bool = False,
-    r_visible_occlusion_tolerance: float = 1.05,
-    r_visible_min_views: int = 2,
+    # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed use_r_visible +
+    # r_visible_occlusion_tolerance + r_visible_min_views params (Phase 8a R_visible).
+    # Phase 20+24 N=24 cross-backbone verified WASH (Δ=+0.013 [−0.048, +0.081]).
     # ── [CRSGaussian Phase 8b] S_stability support ──
     use_sh_reliability: bool = False,
     sh_stability_warmup: int = 1000,
@@ -531,18 +492,15 @@ def update_crs(
 
     # ── [CRSGaussian Phase 9] R compute gating ──
     # Khi disable_r_signal=True → skip R entirely (formula D-only hoặc D+S).
-    # Tiết kiệm cả compute (no R aggregation) lẫn render (nếu use_r_visible
-    # cũng skip auto vì depend on need_r_compute).
+    # Tiết kiệm compute (no R aggregation).
     need_r_compute = not disable_r_signal
 
-    # ── [CRSGaussian Phase 8] Pre-render depth maps (shared D_cycle + R_visible) ──
-    # Cả 2 features đều cần rendered depth per cam → render 1 lần, share giữa
-    # compute_D_cycle và compute_reprojection_consistency để tránh double-render.
-    # Chỉ render khi ÍT NHẤT 1 trong 2 features active.
+    # ── [CRSGaussian Phase 8] Pre-render depth maps (D_cycle only sau Phase 24 cleanup) ──
+    # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed R_visible branch — chỉ
+    # D_cycle còn cần shared_depth_maps. R compute không cần rendered depths nữa.
     shared_depth_maps = None
     need_depth_render = (
-        (use_d_cycle and iter >= d_cycle_warmup)
-        or (use_r_visible and need_r_compute)
+        use_d_cycle and iter >= d_cycle_warmup
     ) and render_func is not None
     if need_depth_render:
         shared_depth_maps = {}
@@ -586,18 +544,12 @@ def update_crs(
         # Behavior cũ — D_DAV2 (depth consistency với DepthAnything V2 prior).
         D = compute_depth_consistency(xyz, cameras, aligned_depth_dict, depth_range)
 
-    # ── [CRSGaussian Phase 8a + 9] R signal: visible / disabled ──
+    # ── [CRSGaussian Phase 9] R signal: enabled / disabled ──
     # disable_r_signal=True (Phase 9) → R=None, formula bỏ qua R hoàn toàn.
-    # use_r_visible=True (Phase 8a) → R_visible với occlusion filter.
-    # Default → R_visible mode legacy (occlusion off).
+    # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed use_r_visible branch —
+    # compute_reprojection_consistency() now has no occlusion filter mode.
     if need_r_compute:
-        R = compute_reprojection_consistency(
-            xyz, cameras,
-            use_r_visible=use_r_visible,
-            rendered_depths=shared_depth_maps,
-            occlusion_tolerance=r_visible_occlusion_tolerance,
-            min_visible_views=r_visible_min_views,
-        )
+        R = compute_reprojection_consistency(xyz, cameras)
     else:
         R = None
 

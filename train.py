@@ -169,40 +169,9 @@ def training(dataset, opt, pipe, args):
               f"max_cov={n_views_total - 1}, "
               f"covisible_pixel_frac={cov_frac:.3f}")
 
-    # ── [CRSGaussian T5.5] Informed CRS₀ initialization ──
-    # Option C: compute sau Scene() init, overwrite _crs_score trực tiếp.
-    # Gated: --informed_crs_init AND --use_depth_prior (cần aligned depth).
-    # Khi False: _crs_score giữ neutral 0 (sigmoid=0.5) — behavior cũ.
-    if dataset.informed_crs_init and dataset.use_depth_prior:
-        from utils.crs.crs_init import compute_informed_crs0
-        informed_crs0 = compute_informed_crs0(
-            points_xyz    = scene.init_point_cloud.points,
-            cameras       = allCameras,
-            aligned_depth_dict = aligned_depth_dict,
-            depth_range   = depth_range,
-            source_path   = dataset.source_path,
-            n_views       = dataset.n_views,
-            use_reproj    = dataset.crs_init_use_reproj,
-            use_depth     = dataset.crs_init_use_depth,
-            use_view      = dataset.crs_init_use_view,
-            w_reproj      = dataset.crs_init_w_reproj,
-            w_depth       = dataset.crs_init_w_depth,
-            w_view        = dataset.crs_init_w_view,
-            tau_r         = dataset.crs_init_tau_r,
-            gamma         = dataset.crs_init_gamma,
-        )
-        # Overwrite neutral CRS₀ cho gs0
-        gaussians._crs_score = informed_crs0.unsqueeze(-1).cuda()
-        # Log Q distribution để validate γ choice
-        Q = torch.sigmoid(informed_crs0)
-        print(f"[CRS] CRS₀ informed init: N={len(Q)}")
-        print(f"[CRS] CRS₀ distribution: "
-              f"min={Q.min():.3f} max={Q.max():.3f} "
-              f"mean={Q.mean():.3f} std={Q.std():.3f}")
-        print(f"[CRS] CRS₀ < 0.35: {(Q<0.35).sum().item()} "
-              f"({(Q<0.35).float().mean()*100:.1f}%)")
-        print(f"[CRS] CRS₀ > 0.65: {(Q>0.65).sum().item()} "
-              f"({(Q>0.65).float().mean()*100:.1f}%)")
+    # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed informed_crs_init gating block
+    # (was ~35 lines). Phase 20+24 N=24 cross-backbone verified WASH. _crs_score giữ neutral
+    # 0 (sigmoid=0.5) — was the default behavior khi informed_crs_init=False.
 
     # ── [CRSGaussian] Collect eval results cho summary table cuối training ──
     eval_history = []
@@ -568,10 +537,8 @@ def training(dataset, opt, pipe, args):
                     render_func=render,
                     pipe=pipe,
                     bg=background,
-                    # ── [CRSGaussian Phase 8a] R_visible ──
-                    use_r_visible=opt.use_r_visible,
-                    r_visible_occlusion_tolerance=opt.r_visible_occlusion_tolerance,
-                    r_visible_min_views=opt.r_visible_min_views,
+                    # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed use_r_visible
+                    # + r_visible_occlusion_tolerance + r_visible_min_views params.
                     # ── [CRSGaussian Phase 8b] S_stability ──
                     use_sh_reliability=opt.use_sh_reliability,
                     sh_stability_warmup=opt.sh_stability_warmup,
@@ -693,15 +660,13 @@ def training(dataset, opt, pipe, args):
                     # [CRSGaussian T4.1] Truyền depth constraint params.
                     # Khi --use_depth_prior: position constraint chặn floater sinh ra.
                     # [CRSGaussian] Position constraint gated bởi --use_pos_constraint
-                    # CRS pruning gated bởi --use_crs_pruning
-                    # Cả hai cần --use_depth_prior làm prerequisite
+                    # Cần --use_depth_prior làm prerequisite
                     _pc_cams = allCameras if (dataset.use_depth_prior and opt.use_pos_constraint) else None
                     _pc_depth = aligned_depth_dict if (dataset.use_depth_prior and opt.use_pos_constraint) else None
                     _pc_range = depth_range if (dataset.use_depth_prior and opt.use_pos_constraint) else None
-                    # CRS pruning cần aligned_depth_dict để biết CRS đã được update
-                    _crs_dict = aligned_depth_dict if (dataset.use_depth_prior and opt.use_crs_pruning) else None
-                    # [CRSGaussian T5.5] Conservative inherit: child CRS₀ = clip(η*parent, 0, 0.5)
-                    _eta = dataset.crs_init_eta if dataset.crs_densify_inherit else 0.0
+                    # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed _crs_dict (use_crs_pruning gating)
+                    # and _eta (crs_densify_inherit gating). gaussian_model.densify_and_prune signature
+                    # defaults handle the absence (crs_prune_dict=None, eta=0.0).
 
                     # ── [CRSGaussian Phase 13] LFCF opts builder ──
                     # is_lfcf_iter = True khi (iter % (interval_times × densify_interval) == 0).
@@ -754,8 +719,8 @@ def training(dataset, opt, pipe, args):
                             T_warmup=opt.T_warmup,
                             tau_crs=opt.tau_crs,
                             tau_isolated=opt.tau_isolated,
-                            crs_prune_dict=_crs_dict,
-                            eta=_eta,
+                            # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed
+                            # crs_prune_dict=_crs_dict + eta=_eta kwargs (defaults None/0.0).
                             # ── [Phase 13] LFCF kwargs (default OFF) ──
                             is_lfcf_iter=is_lfcf_iter_now,
                             lfcf_opts=lfcf_opts,

@@ -648,7 +648,8 @@ class GaussianModel:
 
         Args:
             parent_crs_logits: (M, 1) tensor hoặc None — CRS logit của parents.
-                [CRSGaussian T5.4] Dùng khi crs_densify_inherit=True.
+                [CRSGaussian T5.4] Was used by crs_densify_inherit (removed Phase 24).
+                Kept default None — child CRS₀ neutral (sigmoid 0.5).
             eta: float — inherit factor. 0.0 = neutral (behavior cũ).
             new_prev_selected_bool: (M,) bool tensor — [Phase 13] LFCF prev_selected
                 state cho new Gaussians. None (non-LFCF path) → default False.
