@@ -21,6 +21,7 @@
 """[CRSGaussian Plug-in A2.1] Subclass SplatfactoModel — thêm opacity decay."""
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Tuple, Type, Union
 
 import torch
@@ -34,6 +35,8 @@ from .dropansh import (
     sh_degree_dropout_inplace,
     restore_sh_dropout,
 )
+from .depth_loss import load_aligned_depth_dict, pearson_depth_loss
+from .crs_module_a24 import compute_depth_consistency, update_crs_ema
 
 
 @dataclass
@@ -75,6 +78,32 @@ class CrsgSplatfactoModelConfig(SplatfactoModelConfig):
     dropansh_schedule: Tuple[int, int, int] = (2000, 4000, 6000)
     """[A2.2] 3 checkpoints SH degree schedule: lmax 0→1→2 → off."""
 
+    # ── [Plug-in A2.3] DAV2 depth loss (Phase 22 contribution #4) ──
+    use_depth_loss: bool = True
+    """[A2.3] Master switch — add λ × pearson_depth_loss vào get_loss_dict."""
+
+    depth_loss_weight: float = 0.05
+    """[A2.3] λ — Phase 22 / Phase 3 default = 0.05."""
+
+    # ── [Plug-in A2.4] CRS score module (Phase 22 contribution #5) ──
+    # A2.4-minimal: D-only (skip R_i — cần access GT images, complex)
+    # SH freeze deferred A3 — splatfacto step_cb không có hook BEFORE_OPTIMIZER_STEP,
+    # densify replace features_rest tensor → grad hook không persist.
+    use_crs: bool = True
+    """[A2.4] Master switch — compute CRS score per-Gaussian periodic."""
+
+    crs_update_interval: int = 100
+    """[A2.4] Update CRS mỗi N iter (Phase 22 default = 100)."""
+
+    crs_update_warmup: int = 1000
+    """[A2.4] Iter bắt đầu update CRS (Phase 22 T_warmup = 1000)."""
+
+    crs_ema_decay: float = 0.9
+    """[A2.4] EMA decay smoothing CRS score."""
+
+    crs_logit_scale: float = 5.0
+    """[A2.4] Scale factor cho logit space — Phase 22 default 5.0."""
+
 
 class CrsgSplatfactoModel(SplatfactoModel):
     """[CRSGaussian Plug-in A2.1] SplatfactoModel + opacity decay.
@@ -83,6 +112,59 @@ class CrsgSplatfactoModel(SplatfactoModel):
     """
 
     config: CrsgSplatfactoModelConfig
+
+    def populate_modules(self):
+        super().populate_modules()
+        # ── [Plug-in A2.3] Pre-load aligned depth dict ──
+        self._aligned_depth_dict = {}
+        self._idx_to_stem: Dict[int, str] = {}
+        if not self.config.use_depth_loss:
+            return
+
+        # Lấy data root từ ENV var (set bởi run script)
+        # Pattern: CRSG_A23_DATA_ROOT=/home/.../<scene>/3_views/
+        import os as _os
+        data_root_str = _os.environ.get("CRSG_A23_DATA_ROOT", None)
+        if not data_root_str:
+            print(
+                "[Plug-in A2.3] WARNING: CRSG_A23_DATA_ROOT chưa set → skip depth loss.\n"
+                "  Run script phải export CRSG_A23_DATA_ROOT=<scene>/3_views/"
+            )
+            return
+
+        data_root = Path(data_root_str)
+        self._aligned_depth_dict, self._depth_range = load_aligned_depth_dict(data_root)
+        if not self._aligned_depth_dict:
+            print(
+                f"[Plug-in A2.3] WARNING: KHÔNG tìm thấy aligned_depth_a23/*.npy trong {data_root}\n"
+                f"  → Run preprocess: SCENE=<scene> python crsgaussian_plugin/preprocess_depth_a23.py"
+            )
+            return
+
+        # ── [Plug-in A2.4] Cache train cameras từ metadata kwargs ──
+        # RomaDataParser inject 'train_cameras' vào metadata
+        metadata = self.kwargs.get("metadata", {}) if hasattr(self, "kwargs") else {}
+        self._train_cameras_for_crs = metadata.get("train_cameras", None)
+        if self.config.use_crs and self._train_cameras_for_crs is None:
+            print(
+                "[Plug-in A2.4] WARNING: train_cameras không có trong metadata → CRS skip.\n"
+                "  Cần RomaDataParser inject vào metadata."
+            )
+
+        # Map image_idx → stem (cùng convention ColmapDataParser eval-interval=8)
+        images_dir = data_root / "images"
+        if images_dir.is_dir():
+            all_stems = sorted(
+                [p.stem for p in images_dir.iterdir()
+                 if p.suffix.lower() in (".jpg", ".jpeg", ".png")]
+            )
+            eval_interval = 8  # match RomaDataParserConfig default
+            train_stems = [s for i, s in enumerate(all_stems) if i % eval_interval != 0]
+            self._idx_to_stem = {i: s for i, s in enumerate(train_stems)}
+            print(
+                f"[Plug-in A2.3] Loaded {len(self._aligned_depth_dict)} depth maps, "
+                f"mapped {len(self._idx_to_stem)} train_idx → stem"
+            )
 
     def step_cb(self, optimizers: Optimizers, step):
         # ── [CRSGaussian Plug-in A2.1] Call parent FIRST để giữ behavior gốc ──
@@ -115,6 +197,56 @@ class CrsgSplatfactoModel(SplatfactoModel):
                     f"opacity median={opa_now.median().item():.4f} "
                     f"mean={opa_now.mean().item():.4f} "
                     f"N_gauss={opa_now.shape[0]}"
+                )
+
+        # ── [CRSGaussian Plug-in A2.4] CRS score update ──
+        if not self.config.use_crs:
+            return
+        if step <= self.config.crs_update_warmup:
+            return
+        if step % self.config.crs_update_interval != 0:
+            return
+        if not self._aligned_depth_dict or not self._idx_to_stem:
+            return
+
+        means = self.gauss_params["means"]
+        N_current = means.shape[0]
+
+        # Re-init _crs_score nếu shape mismatch (sau densify/prune)
+        if not hasattr(self, "_crs_score") or self._crs_score.shape[0] != N_current:
+            self._crs_score = torch.zeros(N_current, 1, device=means.device)
+
+        # Get train cameras từ datamanager
+        train_cams = getattr(self, "_train_cameras_for_crs", None)
+        if train_cams is None:
+            return  # cameras chưa cached → skip
+
+        with torch.no_grad():
+            D = compute_depth_consistency(
+                means=means,
+                cameras=train_cams,
+                aligned_depth_dict=self._aligned_depth_dict,
+                idx_to_stem=self._idx_to_stem,
+                depth_range=self._depth_range,
+            )
+            # A2.4-minimal: D-only (skip R for simplicity)
+            self._crs_score = update_crs_ema(
+                self._crs_score, D, None,
+                w1=1.0, w2=0.0,
+                scale=self.config.crs_logit_scale,
+                ema=self.config.crs_ema_decay,
+            )
+
+            # Log mỗi 500 step
+            if step % 500 == 0:
+                crs = torch.sigmoid(self._crs_score).squeeze(-1)
+                print(
+                    f"[CRSGaussian Plug-in A2.4] iter={step} "
+                    f"CRS median={crs.median().item():.3f} "
+                    f"p10={crs.quantile(0.1).item():.3f} "
+                    f"p90={crs.quantile(0.9).item():.3f} "
+                    f"D_median={D.median().item():.3f} "
+                    f"N={N_current}"
                 )
 
     # ── [CRSGaussian Plug-in A2.2] Override get_outputs để inject DropAnSH ──
@@ -173,3 +305,37 @@ class CrsgSplatfactoModel(SplatfactoModel):
             restore_sh_dropout(self.gauss_params["features_rest"], sh_snapshot)
 
         return outputs
+
+    # ── [CRSGaussian Plug-in A2.3] Override get_loss_dict thêm depth loss ──
+    def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
+        loss_dict = super().get_loss_dict(outputs, batch, metrics_dict)
+
+        # OFF flag hoặc không phải train mode → fallback
+        if not self.config.use_depth_loss or not self.training:
+            return loss_dict
+        if not self._aligned_depth_dict or not self._idx_to_stem:
+            return loss_dict
+        if "depth" not in outputs:
+            # Splatfacto default output_depth_during_training=False
+            # Cần set True trong config để có outputs["depth"]
+            return loss_dict
+
+        idx = int(batch.get("image_idx", 0))
+        stem = self._idx_to_stem.get(idx)
+        if stem is None or stem not in self._aligned_depth_dict:
+            return loss_dict
+
+        depth_prior = self._aligned_depth_dict[stem]
+        rendered_depth = outputs["depth"]
+        L_depth = self.config.depth_loss_weight * pearson_depth_loss(
+            rendered_depth, depth_prior
+        )
+        loss_dict["depth_loss"] = L_depth
+
+        if self.step % 500 == 0 and self.step > 0:
+            print(
+                f"[CRSGaussian Plug-in A2.3] iter={self.step} "
+                f"depth_loss={float(L_depth):.4f} stem={stem}"
+            )
+
+        return loss_dict

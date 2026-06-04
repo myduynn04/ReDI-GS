@@ -56,9 +56,21 @@ class RomaDataParser(ColmapDataParser):
     """[CRSGaussian Plug-in A1] DataParser — override _load_3D_points.
 
     Mọi method khác (camera, image, eval split) inherit nguyên ColmapDataParser.
+
+    [A2.4] Inject train_cameras vào metadata để CRS module access.
     """
 
     config: RomaDataParserConfig
+
+    def _generate_dataparser_outputs(self, split="train", **kwargs):
+        """[A2.4] Wrap parent — add train_cameras to metadata cho CRS compute."""
+        outputs = super()._generate_dataparser_outputs(split=split, **kwargs)
+        if split == "train":
+            # Đảm bảo metadata dict tồn tại
+            if outputs.metadata is None:
+                outputs.metadata = {}
+            outputs.metadata["train_cameras"] = outputs.cameras
+        return outputs
 
     def _load_3D_points(self, colmap_path: Path, transform_matrix: torch.Tensor, scale_factor: float):
         # ── [CRSGaussian Plug-in A1] Override: load RoMa PLY thay points3D.bin ──

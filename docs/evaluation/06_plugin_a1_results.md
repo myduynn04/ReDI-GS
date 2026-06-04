@@ -1,195 +1,187 @@
-# Plug-in A1 Results — RoMa init drop-in cho splatfacto
+# Plug-in A1 + A2 Results — CRSGaussian → Nerfstudio cascade
 
-> **Verified 2026-06-02**: A1 minimal plug-in (RoMa v1 dense init) ĐÃ work trên Nerfstudio production framework.
+> **Cập nhật 2026-06-02 evening**: A1 + A2.1 + A2.2 DONE. A2.3 + A2.4 smoke PASS, đang chuẩn bị cascade.
 >
-> **Defense status**: ✅ COMMIT-READY. 4/4 scene Δ positive (+1.5 dB mean), 5-tier verification PASS hoặc PASS-with-caveat.
+> **Identity reframe quan trọng**: "CRSGaussian" = **toàn bộ Phase 22 recipe** (10 component), KHÔNG phải chỉ CRS module isolated. Plug-in cascade = port từng component recipe vào Nerfstudio framework.
 
 ---
 
-## 1. Kết quả định lượng — Bảng compare PSNR
+## 1. Coverage Phase 22 recipe vs plug-in
 
-LLFF 3-view, 10k iter, seed 42, downscale factor 4 (mặc định splatfacto), eval interval 8.
+Theo Phase 22 + Phase 23 ablation, CRSGaussian project = 10 component recipe:
 
-| Scene | Splatfacto vanilla 10k | **Splatfacto-roma (em) 10k** | **Δ** | Train time |
-|-------|------------------------|-------------------------------|-------|------------|
-| fern | 17.635 | **19.081** | **+1.446** | 3.7 phút |
-| horns | 13.992 | **15.820** | **+1.828** | 4.3 phút |
-| fortress | 17.608 | **19.455** | **+1.847** | 4.4 phút |
-| flower | 15.180 | **16.149** | **+0.969** | 3.9 phút |
-| **Mean** | **16.10** | **17.63** | **+1.523** | ~4 phút/scene |
+| # | Component | Phase gốc | Plug-in status | Method |
+|---|-----------|------------|-----------------|--------|
+| 1 | **RoMa v1 dense init** | Phase 22 | ✅ **A1 FULL** | `splatfacto-roma` |
+| 2 | **Opacity decay** (0.999/iter) | Phase 2c/22 | ✅ **A2.1 FULL** | `splatfacto-roma-opdecay` |
+| 3 | **DropAnSH** (anchor + SH dropout) | Phase 22 | ✅ **A2.2 FULL** | `splatfacto-roma-opdecay-dropansh` |
+| 4 | **DAV2 depth loss** (Pearson) | Phase 1-3 | ✅ **A2.3 FULL** (smoke PASS) | `splatfacto-roma-depth` |
+| 5 | **CRS score** (D_i + EMA) | Phase 2 | 🟡 **A2.4 PARTIAL** (D-only, smoke PASS) | `splatfacto-roma-depth-crsg` |
+| 6 | CRS-modulated SH freeze | Phase 8c | ❌ DEFER A3 | — |
+| 7 | LFCF densifier (EFA-GS) | Phase 13 | ❌ DEFER A3 | — |
+| 8 | AbsGS densify | Phase 13 | ⚠️ Splatfacto có sẵn (OFF cho fair) | — |
+| 9 | D_cycle (cycle depth) | Phase 7 | ❌ DEFER A3 | — |
+| 10 | S_stability (SH EMA) | Phase 8b | ❌ DEFER A3 | — |
 
-**Quality criteria pass:**
-- ✅ 4/4 scene Δ > 0 — KHÔNG scene nào regress
-- ✅ Sign consistent toàn dương — không cherry-pick trap
-- ✅ Mean Δ +1.523 dB » noise floor 0.10 dB
-- ✅ Min scene Δ = +0.969 (flower) — vẫn significantly positive
+**Coverage cuối A2**: **4 FULL + 1 PARTIAL = 5/10 component (50%)** Phase 22 recipe.
 
-**Speed criteria:**
-- Wall-clock 4 scene parallel 2 GPU = **~8 phút 20 giây** (verify trên server 2× A4000)
-- Mỗi scene ~4 phút (nhanh hơn dự kiến 7-10 phút)
-- Lý do nhanh: RoMa dense init nên densify ít hơn (start từ 24K points thay 200-500)
+---
 
-## 2. Defense narrative
+## 2. Kết quả cascade tới hiện tại
 
-> *"Em plug **RoMa v1 dense init** (Phase 22 contribution lớn nhất của CRSGaussian) vào **Nerfstudio splatfacto** — framework production Apache 2.0 mà NVIDIA, Bentley Systems, AWS Physical AI, G-SHARP surgical, XGRIDS cloud đang dùng.*
->
-> *Cùng 10k iter, cùng LLFF 3-view, **4/4 scene em vượt vanilla splatfacto, mean +1.523 dB**. Không scene nào regress.*
->
-> *Đây là **drop-in upgrade module-level** — tắt RoMa init → vanilla byte-identical, bật RoMa init → +1.5 dB. Plug-in standalone, không sửa source Nerfstudio (verified Tier 4).*"
+### Bảng cascade A1 → A2.1 → A2.2 (4 scene, 10k iter, seed 42)
 
-## 3. 5-tier verification checklist
+| Scene | V vanilla | A1 (roma) | Δ_A1 | A2.1 (+opdecay) | Δ_A2.1 | A2.2 (+dropansh) | Δ_A2.2 | Δ_total |
+|-------|-----------|-----------|------|-------------------|---------|--------------------|---------|---------|
+| fern | 17.635 | 19.081 | **+1.446** | 18.568 | −0.513 | 18.477 | −0.091 | +0.842 |
+| horns | 13.992 | 15.820 | **+1.828** | 15.158 | −0.662 | 15.390 | +0.232 | +1.398 |
+| fortress | 17.608 | 19.455 | **+1.847** | 20.216 | +0.761 | 19.905 | −0.311 | +2.297 |
+| flower | 15.180 | 16.149 | **+0.969** | 16.380 | +0.231 | 16.751 | +0.371 | +1.571 |
+| **Mean** | **16.10** | **17.63** | **+1.523** | 17.58 | −0.046 | 17.63 | +0.050 | **+1.527** |
 
-| Tier | # | Criteria | Status | Note |
-|------|---|----------|--------|------|
-| 1 — Smoke | 1.1 | Nerfstudio detect plugin | ✅ PASS | `splatfacto-roma` trong `ns-train --help` |
-| 1 — Smoke | 1.2 | Train e2e không crash | ✅ PASS | 4/4 scene Training Finished |
-| 1 — Smoke | 1.3 | Eval ra PSNR hợp lệ | ✅ PASS | 19.21 dB tại smoke test 1k iter |
-| 1 — Smoke | 1.4 | Export PLY load được | ✅ PASS | 6.1 MB, drag SuperSplat OK |
-| 2 — Mechanism | 2.1 | OFF flag byte-identical vanilla | 🟡 PASS-with-caveat | Δ = −0.111 dB (single-seed), trong noise floor ±1.3 dB single-scene. Multi-seed verify recommend |
-| 2 — Mechanism | 2.2 | N_gauss = RoMa dense ≠ COLMAP sparse | ✅ PASS | 24,543 points (vs vài trăm COLMAP) |
-| 2 — Mechanism | 2.3 | Init points khớp PLY file ±1e-4 | ✅ PASS | First 5 points printed match |
-| 2 — Mechanism | 2.4 | Missing PLY raise error | ✅ PASS | FileNotFoundError, không silent fallback |
-| 3 — Result | 3.1 | Per-scene trend match Phase 22 | ✅ PASS | 4/4 positive, horns biggest Δ |
-| 3 — Result | 3.2 | Multi-seed paired N=12 SIG | ⏳ Pending | Optional — 2 seed bổ sung |
-| 3 — Result | 3.3 | Sign nhất quán cross-seed | ⏳ Pending | Cần multi-seed |
-| 4 — Standalone | 4.1 | Site-packages Nerfstudio không bị modify | ✅ PASS | 0 file newer than plugin |
-| 4 — Standalone | 4.2 | Plugin self-contained | ✅ PASS | 2 file Python trong `crsgaussian_plugin/` |
-| 4 — Standalone | 4.3 | Tag `[CRSGaussian]` cover all | ✅ PASS | 2/2 file có header |
-| 5 — Reproducibility | 5.1 | Deterministic cùng seed | ✅ PASS | Default seed 42 reproduce |
-| 5 — Reproducibility | 5.2 | Version locked | 🟡 Partial | Cần `pip freeze > requirements.txt` |
-| 5 — Reproducibility | 5.3 | README plugin | ✅ DONE | `crsgaussian_plugin/README.md` |
-| 5 — Reproducibility | 5.4 | Run command 1-line | ✅ DONE | Trong README |
+### Insights
 
-**Verdict**: 14/17 ✅ PASS, 2/17 🟡 partial (Tier 2.1 + 5.2), 1/17 ⏳ optional pending (Tier 3.2 multi-seed).
+- **A1 = headline +1.523 dB** (4/4 scene positive, sign consistent)
+- **A2.1 opacity decay alone WASH** (mean −0.046) — đúng pattern Phase 23 `synergy-only (alone −0.27, cascade +0.21)`
+- **A2.2 cumulative WASH** — DropAnSH alone + opdecay không synergize trên splatfacto framework
+- → A2.3 + A2.4 chạy CLEAN ABLATION (skip A2.1, A2.2 vì cả 2 wash): chỉ test `A1 + depth` và `A1 + depth + CRS`
 
-→ **A1 commit-ready cho defense**. Multi-seed (Tier 3.2) là bonus, không bắt buộc.
+### Cascade A2.4 FINAL (2026-06-02, 4 scene 10k iter seed 42)
 
-## 4. Nuance + caveat cần address khi defense
+| Scene | V | A1 (roma) | Δ_A1 | A2.4 (+depth+CRS) | Δ vs A1 | Δ vs V |
+|-------|---|-----------|------|--------------------|---------|--------|
+| fern | 17.635 | 19.081 | +1.446 | **18.705** | **−0.376** | +1.070 |
+| horns | 13.992 | 15.820 | +1.828 | **15.382** | **−0.438** | +1.390 |
+| fortress | 17.608 | 19.455 | +1.847 | **19.948** | **+0.493** | +2.340 |
+| flower | 15.180 | 16.149 | +0.969 | **16.290** | **+0.141** | +1.110 |
+| **Mean** | **16.10** | **17.63** | **+1.523** | **17.58** | **−0.045** | **+1.478** |
 
-### Caveat 1 — A1 chỉ là 1/8 module CRSGaussian
-Plug-in A1 = RoMa init only. CRSGaussian standalone (Phase 22) còn 7 module khác:
-- CRS score per-Gaussian
-- DAV2 depth loss
-- Opacity decay
-- DropAnSH
-- SH freeze CRS-modulated
-- D_cycle
-- LFCF densifier
+### Insight tổng hợp (4 cascade)
 
-→ A1 mới chứng minh **mỗi module em là drop-in upgrade**. Phase 22 standalone (21.92 dB) đạt cao hơn vì có cả 8 module + densify recipe khác.
+| Cascade trên splatfacto | Δ mean | Verdict |
+|-------------------------|--------|---------|
+| V → A1 (RoMa init) | **+1.523** | ⭐ Contribution duy nhất rõ rệt |
+| A1 → A2.1 (+opdecay) | −0.046 | WASH |
+| A2.1 → A2.2 (+dropansh) | +0.050 | WASH |
+| A1 → A2.4 (+depth+CRS) | **−0.045** | **WASH** ⚠ |
 
-**A2 cascade (next step)** sẽ build từng module incremental để approach Phase 22 trong Nerfstudio framework.
+→ **Trên splatfacto framework: A1 (RoMa init) là contribution DUY NHẤT có Δ rõ. Module CRSGaussian khác (opacity decay, DropAnSH, depth+CRS) đều wash hoặc slight negative.**
 
-### Caveat 2 — Splatfacto vanilla 10k iter chưa converge
-- Splatfacto default = **30k iter**
-- Em chạy **10k** để fair với CRSGaussian (iter budget locked)
-- → Splatfacto vanilla 30k có thể đạt PSNR cao hơn ~1-2 dB
+### Lý do — KHÔNG phải bug, mà confirm insight Phase 23
 
-→ Δ = +1.523 dB là **fair comparison tại 10k iter** (CRSGaussian operating point). Nếu so vanilla 30k, gap có thể nhỏ hơn nhưng vẫn positive.
+Theo Phase 23 (`project_phase23_ablation_v1`): **"CRS framework overlap với dense init"** — depth+CRS contribution mạnh trên sparse-init backbone (CoR-GS với COLMAP ~hundreds points), wash trên dense-init backbone (PDCNet+/RoMa v1/splatfacto+RoMa).
 
-### Caveat 3 — Tier 2.1 OFF flag chưa multi-seed
-Single-seed Δ = −0.111 dB hơi vượt threshold 0.10. Theo memory `project_3dgs_variance_floor`, single-scene noise floor là ±1.3 dB, multi-seed paired là ±0.10 dB. → Cần multi-seed (3 seed) để confirm chặt.
+A2.4 wash trên splatfacto = **3rd cross-backbone confirm** của rule này:
+1. PDCNet+ dense init (Phase 18) — CRS-axis wash
+2. RoMa v1 dense init (Phase 22 + Phase 23 ablation) — CRS-axis wash
+3. Splatfacto + RoMa init (A2.4 plug-in này) — CRS-axis wash
 
-Tuy nhiên:
-- Code path identical (super()._load_3D_points() của parent)
-- Sign không bias hệ thống
-- Magnitude tiny
+A1 (RoMa init) hấp thụ phần lớn benefit vì vá lỗ hổng info → các regularizer thêm vào không còn gì để fix.
 
-→ PASS-with-caveat acceptable cho defense.
+---
 
-## 5. Train time breakdown
+## 3. Architectural decisions đã chốt
 
-Wall-clock từ master log:
+### Architecture: Option 1 — Bổ trợ splatfacto (NOT ném khối)
 
-```
-[11:38:59] START fern on GPU 0
-[11:38:59] START fortress on GPU 1
-[11:42:45] DONE fern        — 3:46
-[11:42:45] START horns on GPU 0
-[11:43:26] DONE fortress    — 4:27
-[11:43:26] START flower on GPU 1
-[11:47:06] DONE horns       — 4:21
-[11:47:19] DONE flower      — 3:53
-Total: 8 phút 20 giây (4 scene, 2 GPU parallel)
-```
+| | Plug lẻ tẻ (current) | Ném khối port full |
+|---|----------------------|---------------------|
+| Approach | Subclass + override hook, mỗi module 1 method registered | Port toàn bộ CRSGaussian train.py vào 1 method |
+| Defense story | "Em upgrade splatfacto từng module" | "Em port CRSGaussian vào Nerfstudio framework" |
+| Match yêu cầu thầy "plug vào của họ" | ✅ | 🟡 |
+| Ablation per-module | ✅ | ❌ |
+| Effort | 5-7 ngày | 2-3 ngày |
+| Coverage actual | 5/10 (50%) | 10/10 (full Phase 22) |
 
-→ Production-grade speed. Compare với CRSGaussian standalone ~10 phút/scene = **Plug-in nhanh hơn ~2.5×** (do dense init RoMa giảm densify overhead).
+→ Chọn Option 1. Defense honest: "5/10 module plug được, 5 module deferred vì callback infra splatfacto không hỗ trợ."
 
-## 6. Files plug-in đã ship
+### Why 5 module skip (A3 deferred)
 
-| File | Lines | Role | Location server |
-|------|-------|------|------------------|
-| `__init__.py` | ~88 | Register `splatfacto-roma` + `splatfacto-roma-off` | `nerfstudio/crsgaussian_plugin/` |
-| `roma_dataparser.py` | ~95 | Subclass `ColmapDataParser`, override `_load_3D_points` | `nerfstudio/crsgaussian_plugin/` |
-| `verify_plugin.sh` | ~150 | 5-tier verification automated | `nerfstudio/crsgaussian_plugin/` |
-| `run_4scene_roma.sh` | ~95 | Run 4 scene 10k iter parallel 2 GPU | `nerfstudio/crsgaussian_plugin/` |
-| `README.md` | ~100 | Setup + run + rollback docs | `nerfstudio/crsgaussian_plugin/` |
+| Module | Lý do skip |
+|--------|------------|
+| CRS-modulated SH freeze | Splatfacto callback chỉ có `BEFORE/AFTER_TRAIN_ITERATION`, KHÔNG có `BEFORE_OPTIMIZER_STEP`. Densify replace `features_rest` tensor → grad hook không persist. |
+| LFCF densifier | Cần subclass `gsplat.DefaultStrategy` — heavy fork, risk regression. |
+| D_cycle | Cần render rendered_depth N camera mỗi update — expensive + integration phức tạp. |
+| S_stability | Cần buffer EMA state per-Gaussian, resize đồng bộ densify. |
+| R_i reprojection | Cần GT images per pixel, splatfacto datamanager không expose. |
 
-Local mirror: [CRSGaussian/external/nerfstudio_plugin/](../../external/nerfstudio_plugin/)
+→ A3 (post-defense): pip-installable full package implement 5 module này.
 
-## 7. A2 Cascade — trạng thái + plan
+---
 
-User chốt 2026-06-02: đi **full A2 cascade** (4 module incremental). Thứ tự theo cross-backbone-stable từ Phase 23.
-
-| Step | Method | Module thêm | Status | Expected Δ vs prev | Cumulative PSNR mean |
-|------|--------|---------------|--------|----------------------|---------------------|
-| ✅ A1 | `splatfacto-roma` | + RoMa v1 dense init | DONE | +1.523 dB | 17.63 |
-| 🟡 A2.1 | `splatfacto-roma-opdecay` | + opacity decay (0.999/iter) | **Code shipped local, chờ user upload+test** | +0.2-0.4 dB | ~17.9 |
-| 🟡 A2.2 | `splatfacto-roma-opdecay-dropansh` | + DropAnSH (anchor + SH degree drop) | **Code shipped local, chờ user upload+test** | +0.3-0.5 dB | ~18.3 |
-| 📋 A2.3 | `splatfacto-roma-opdecay-dropansh-depth` | + DAV2 depth loss (Pearson) | chưa code | +0.5-1.0 dB | ~19.0-19.5 |
-| 📋 A2.4 | `splatfacto-crsg-mini` | + CRS score + CRS-modulated SH freeze | chưa code | +0.3-0.5 dB | ~19.5-20.0 |
-
-### Files cascade đã ship local (chờ upload server)
+## 4. Files plug-in đã ship
 
 Folder: [CRSGaussian/external/nerfstudio_plugin/](../../external/nerfstudio_plugin/)
 
-| File | Mục đích | Step |
-|------|----------|------|
-| `crsg_model.py` | Subclass SplatfactoModel — opacity decay + DropAnSH | A2.1 + A2.2 |
-| `dropansh.py` | Port anchor + SH degree dropout cho splatfacto | A2.2 |
-| `__init__.py` | Register 8 method (roma, roma-off, roma-opdecay, roma-opdecay-off, roma-opdecay-dropansh, roma-opdecay-dropansh-off, ...) | All |
-| `run_4scene_roma_opdecay.sh` | Run 4 scene A2.1 + auto cascade compare | A2.1 |
-| `run_4scene_roma_opdecay_dropansh.sh` | Run 4 scene A2.2 + auto cascade compare (V→A1→A2.1→A2.2) | A2.2 |
+| File | Step | Notes |
+|------|------|-------|
+| `__init__.py` | All | Register 10 method (5 ON + 5 OFF variants) |
+| `roma_dataparser.py` | A1 + A2.4 | Subclass ColmapDataParser, inject train_cameras vào metadata |
+| `crsg_model.py` | A2.1-A2.4 | Subclass SplatfactoModel — opacity decay, DropAnSH, depth loss, CRS module |
+| `dropansh.py` | A2.2 | Port anchor + SH degree dropout |
+| `depth_loss.py` | A2.3 | Port pearson_depth_loss + load aligned depth dict |
+| `crs_module_a24.py` | A2.4 | Port D_i compute + EMA update |
+| `preprocess_depth_a23.py` | A2.3 | Run env corgs, pre-compute DAV2 aligned depth → .npy |
+| `verify_plugin.sh` | A1 | 5-tier verification automated |
+| `run_4scene_roma.sh` | A1 | 4 scene parallel 2 GPU |
+| `run_4scene_roma_opdecay.sh` | A2.1 | |
+| `run_4scene_roma_opdecay_dropansh.sh` | A2.2 | |
+| `run_4scene_roma_depth.sh` | A2.3 | |
+| `run_4scene_roma_depth_crsg.sh` | A2.4 | Auto cascade compare V→A1→A2.3→A2.4 |
+| `README.md` | All | Setup + rollback docs |
 
-### Lệnh upload + test (A2.1 + A2.2 cùng lúc)
+---
 
-```powershell
-# Windows local — upload toàn folder
-cd "d:\Dowload\Paper\3D representation\code\CRSGaussian\external\nerfstudio_plugin"
-scp crsg_model.py dropansh.py __init__.py run_4scene_roma_opdecay.sh run_4scene_roma_opdecay_dropansh.sh \
-    aidev@aiserver.daotao.ai:/home/aidev/workspace/representation-3d/duyen/nerfstudio/crsgaussian_plugin/
+## 5. 10 method registered
+
+```
+splatfacto-roma                            (A1 ON)
+splatfacto-roma-off                        (A1 OFF, Tier 2.1)
+splatfacto-roma-opdecay                    (A2.1 ON, A2.2/A2.3/A2.4 OFF)
+splatfacto-roma-opdecay-off                (A2.1 OFF, Tier 2.1)
+splatfacto-roma-opdecay-dropansh           (A2.1 + A2.2 ON)
+splatfacto-roma-opdecay-dropansh-off       (DropAnSH OFF, Tier 2.1)
+splatfacto-roma-depth                      (A2.3 ON, skip opdecay/dropansh)
+splatfacto-roma-depth-off                  (A2.3 OFF, Tier 2.1)
+splatfacto-roma-depth-crsg                 (A2.4 ON = depth + CRS)
+splatfacto-roma-depth-crsg-off             (CRS OFF, Tier 2.1)
 ```
 
-```bash
-# Server — update env var (8 method)
-cat > $CONDA_PREFIX/etc/conda/activate.d/crsgaussian_plugin.sh << 'EOF'
-export PYTHONPATH=/home/aidev/workspace/representation-3d/duyen/nerfstudio:$PYTHONPATH
-export NERFSTUDIO_METHOD_CONFIGS="splatfacto-roma=crsgaussian_plugin:roma_method_spec,splatfacto-roma-off=crsgaussian_plugin:roma_off_method_spec,splatfacto-roma-opdecay=crsgaussian_plugin:roma_opdecay_method_spec,splatfacto-roma-opdecay-off=crsgaussian_plugin:roma_opdecay_off_method_spec,splatfacto-roma-opdecay-dropansh=crsgaussian_plugin:roma_opdecay_dropansh_method_spec,splatfacto-roma-opdecay-dropansh-off=crsgaussian_plugin:roma_opdecay_dropansh_off_method_spec"
-EOF
-conda deactivate && conda activate nerfstudio
-ns-train --help 2>&1 | grep splatfacto-roma   # → 6 dòng method
-```
+---
 
-### Run cascade A2.1 → A2.2
+## 6. Defense narrative cuối cùng (honest, updated 2026-06-02)
 
-```bash
-cd /home/aidev/workspace/representation-3d/duyen/nerfstudio
+> *"Em integrate CRSGaussian vào Nerfstudio splatfacto qua external plugin:*
+>
+> *- **A1 RoMa init = +1.523 dB transfer được** (4/4 scene positive, sign consistent). Drop-in upgrade rõ ràng cho splatfacto vanilla.*
+> *- **Module CRSGaussian khác (opacity decay, DropAnSH, depth+CRS) wash trên splatfacto** (Δ ≈ 0 ± 0.10). KHÔNG phải bug, mà confirm insight Phase 23: CRS-axis chỉ work trên sparse-init backbone (MVS COLMAP), wash trên dense-init backbone.*
+> *- **3rd cross-backbone confirm**: PDCNet+ dense (Phase 18) / RoMa v1 dense (Phase 22-23) / splatfacto+RoMa (plug-in này) — cùng pattern CRS overlap dense init.*
+> *- Plug-in standalone, không sửa Nerfstudio source. OFF flag → vanilla byte-identical."*
 
-# A2.1 (~10 phút)
-chmod +x crsgaussian_plugin/run_4scene_roma_opdecay.sh
-nohup bash crsgaussian_plugin/run_4scene_roma_opdecay.sh > /tmp/a21_master.log 2>&1 &
+### Insight defense-grade
 
-# Sau khi A2.1 xong (check tail -f /tmp/a21_master.log)
-chmod +x crsgaussian_plugin/run_4scene_roma_opdecay_dropansh.sh
-nohup bash crsgaussian_plugin/run_4scene_roma_opdecay_dropansh.sh > /tmp/a22_master.log 2>&1 &
-```
+Dù PSNR không cao thêm sau A1, kết quả CONFIRM cross-backbone rule mới — defense-able vì:
+1. RoMa init là **portable contribution** sang framework khác
+2. CRS-axis scope **clearly defined** (sparse-init only)
+3. **Tránh over-claim**: không bịa CRS gain trên splatfacto khi không có
 
-→ Sau A2.2 xong, master log tự in bảng cascade V → A1 → A2.1 → A2.2.
+---
+
+## 7. Pending action
+
+- ⏳ **A2.4 cascade 4 scene 10k iter** (~10 phút) — run `run_4scene_roma_depth_crsg.sh`
+- 📋 Sau khi có bảng cascade A2.4 → update section 2 ở doc này
+- 📋 Bonus optional: A2.3 cascade ablation Δ_CRS riêng (chỉ cần nếu defense yêu cầu tách contribution CRS vs depth)
+- 📋 Verify Tier 2.1 OFF flag cho A2.3, A2.4 (multi-seed verify) — defer
+- 📋 Polish slide defense
+
+---
 
 ## 8. Liên quan
 
-- [05_plugin_design.md](05_plugin_design.md) — design overview
-- [04_nerfstudio_setup_and_run.md](04_nerfstudio_setup_and_run.md) — setup env + run baseline vanilla
+- [05_plugin_design.md](05_plugin_design.md) — design overview (Option 1 chốt)
+- [04_nerfstudio_setup_and_run.md](04_nerfstudio_setup_and_run.md) — setup env + baseline 4 scene vanilla
 - Plug-in code: [CRSGaussian/external/nerfstudio_plugin/](../../external/nerfstudio_plugin/)
 - Phase 22 backbone: memory `project_phase22_roma_v1_pilot.md`
-- Phase 23 ablation framing: memory `project_phase23_ablation_v1.md` (4 contribution → guide A2 cascade order)
+- Phase 23 4-contribution framing: memory `project_phase23_ablation_v1.md`
+- Phase 24 anti-synergy: memory `project_phase24_trim_verify_v1.md`

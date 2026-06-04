@@ -90,14 +90,15 @@ roma_off_method_spec = MethodSpecification(
 # ============================================================
 # [CRSGaussian Plug-in A2.1] splatfacto-roma + opacity decay
 # ============================================================
-from .crsg_model import CrsgSplatfactoModelConfig
-
+# NOTE: import CrsgSplatfactoModelConfig LAZY (inside function body) để tránh
+# circular import — tyro re-discover plugin lúc import nerfstudio splatfacto.
 
 def _make_crsg_model_config(base_model, **overrides):
     """Helper: build CrsgSplatfactoModelConfig từ vanilla SplatfactoModelConfig.
 
     Preserve field inherit + cho overrides (vd use_opacity_decay, use_dropansh).
     """
+    from .crsg_model import CrsgSplatfactoModelConfig  # LAZY import
     return CrsgSplatfactoModelConfig(
         warmup_length=base_model.warmup_length,
         refine_every=base_model.refine_every,
@@ -197,4 +198,99 @@ def _build_roma_opdecay_dropansh_off_config():
 roma_opdecay_dropansh_off_method_spec = MethodSpecification(
     config=_build_roma_opdecay_dropansh_off_config(),
     description="[A2.2 Test 2.1] DropAnSH OFF",
+)
+
+
+# ============================================================
+# [CRSGaussian Plug-in A2.3] splatfacto + RoMa + DAV2 depth loss
+# (Clean ablation: SKIP opdecay + dropansh vì cả 2 wash trên splatfacto)
+# ============================================================
+
+def _build_roma_depth_config():
+    """[A2.3] A1 (RoMa init) + DAV2 depth loss only.
+
+    Skip opdecay + dropansh để clean ablation: chỉ verify depth loss alone effect.
+    Phase 23 depth+CRS cascade = biggest contribution (−0.86).
+    """
+    base = _build_roma_config()
+    base.method_name = "splatfacto-roma-depth"
+    base.pipeline.model = _make_crsg_model_config(
+        base.pipeline.model,
+        use_opacity_decay=False,    # SKIP A2.1
+        use_dropansh=False,          # SKIP A2.2
+        use_depth_loss=True,
+        depth_loss_weight=0.05,
+        # Force depth output trong training (cần để compute depth_loss)
+        output_depth_during_training=True,
+    )
+    return base
+
+
+roma_depth_method_spec = MethodSpecification(
+    config=_build_roma_depth_config(),
+    description="[A2.3] splatfacto + RoMa init + DAV2 depth loss",
+)
+
+
+def _build_roma_depth_off_config():
+    """[A2.3 Tier 2.1] depth loss OFF — verify byte-identical splatfacto-roma."""
+    config = _build_roma_depth_config()
+    config.method_name = "splatfacto-roma-depth-off"
+    config.pipeline.model.use_depth_loss = False
+    return config
+
+
+roma_depth_off_method_spec = MethodSpecification(
+    config=_build_roma_depth_off_config(),
+    description="[A2.3 Test 2.1] depth loss OFF",
+)
+
+
+# ============================================================
+# [CRSGaussian Plug-in A2.4] splatfacto + RoMa + depth + CRS module
+# A2.4-minimal: CRS score (D-only) + log diagnostic. SH freeze deferred A3.
+# ============================================================
+
+def _build_roma_depth_crsg_config():
+    """[A2.4] A2.3 + CRS score per-Gaussian computation.
+
+    CRS score = sigmoid(scale × (D_i - 0.5)) updated EMA mỗi 100 iter.
+    A2.4-minimal: D-only (skip R for simplicity).
+    """
+    base = _build_roma_config()
+    base.method_name = "splatfacto-roma-depth-crsg"
+    base.pipeline.model = _make_crsg_model_config(
+        base.pipeline.model,
+        use_opacity_decay=False,
+        use_dropansh=False,
+        use_depth_loss=True,
+        depth_loss_weight=0.05,
+        output_depth_during_training=True,
+        # A2.4 — CRS module
+        use_crs=True,
+        crs_update_interval=100,
+        crs_update_warmup=1000,
+        crs_ema_decay=0.9,
+        crs_logit_scale=5.0,
+    )
+    return base
+
+
+roma_depth_crsg_method_spec = MethodSpecification(
+    config=_build_roma_depth_crsg_config(),
+    description="[A2.4] splatfacto + RoMa + depth + CRS module (Phase 22 cascade final)",
+)
+
+
+def _build_roma_depth_crsg_off_config():
+    """[A2.4 Tier 2.1] CRS OFF — verify byte-identical splatfacto-roma-depth."""
+    config = _build_roma_depth_crsg_config()
+    config.method_name = "splatfacto-roma-depth-crsg-off"
+    config.pipeline.model.use_crs = False
+    return config
+
+
+roma_depth_crsg_off_method_spec = MethodSpecification(
+    config=_build_roma_depth_crsg_off_config(),
+    description="[A2.4 Test 2.1] CRS OFF",
 )

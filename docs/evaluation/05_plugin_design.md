@@ -4,11 +4,18 @@
 >
 > **Mục tiêu defense**: chứng minh module CRSGaussian là **drop-in upgrade** cho Nerfstudio production (NVIDIA / Bentley / AWS / Adobe ecosystem) — không phải research toy độc lập.
 >
-> **Trạng thái** (cập nhật 2026-06-02):
+> **Trạng thái** (cập nhật 2026-06-02 evening):
 > - ✅ Architecture chốt: **Option 1** — Bổ trợ splatfacto (subclass + override hook)
-> - ✅ **A1 minimal (RoMa init) DONE + verified**: 4/4 scene Δ positive (+1.523 dB mean), 14/17 tier PASS — xem [06_plugin_a1_results.md](06_plugin_a1_results.md)
-> - 🟡 A2 cascade (depth + opacity decay + CRS): pending decision
-> - ⏳ A3 full package: post-defense
+> - ✅ **A1 (RoMa init) DONE**: +1.523 dB mean, 4/4 scene positive
+> - ✅ **A2.1 (opacity decay) DONE**: WASH alone (đúng Phase 23 synergy-only pattern)
+> - ✅ **A2.2 (DropAnSH) DONE**: WASH cumulative
+> - 🟡 **A2.3 (DAV2 depth loss) smoke PASS**, cascade pending
+> - 🟡 **A2.4 (CRS score D-only) smoke PASS**, cascade pending
+> - ⏳ **A3 (5 module deferred)**: SH freeze, LFCF, D_cycle, S_stability, R_i — pip-installable post-defense
+>
+> **Coverage Phase 22 recipe**: 4 FULL + 1 PARTIAL = **5/10 component (50%)**
+>
+> Chi tiết kết quả: [06_plugin_a1_results.md](06_plugin_a1_results.md)
 >
 > **Verified Nerfstudio**: 1.1.5 + gsplat 1.4.0 (Apache 2.0).
 

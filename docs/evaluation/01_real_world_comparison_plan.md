@@ -10,14 +10,17 @@
 > **Không phải research phase** — không thêm cơ chế mới, không tinh chỉnh hyperparameter.
 > Chỉ chạy recipe đã commit trên (a) production stack mới và (b) custom real-world data.
 >
-> **Trạng thái dự án (2026-06-02):**
-> - Phase 22 RoMa v1 = 21.92 dB LLFF 3-view (project best, +0.584 SIG vs MVS) — locked
-> - Phase 23 ablation v1 confirmed 4-contribution framing
-> - Phase 24 trim-add v1 đã verify
-> - **Evaluation direction**: Pattern 1 — plug-in module CRSGaussian vào **Nerfstudio splatfacto** (production-grade Apache 2.0)
-> - ✅ **A1 plug-in (RoMa init only) DONE + verified**: 4/4 scene Δ = +1.523 dB mean vs vanilla splatfacto. 14/17 tier PASS. Chi tiết: [06_plugin_a1_results.md](06_plugin_a1_results.md)
-> - 🟡 **A2 cascade** (depth + opacity decay + CRS module): pending decision
-> - Design overview: [05_plugin_design.md](05_plugin_design.md)
+> **Trạng thái dự án (2026-06-02 evening):**
+> - Phase 22 RoMa v1 = 21.92 dB LLFF 3-view (project best) — locked
+> - **Evaluation direction**: Pattern 1 — plug-in CRSGaussian recipe (Phase 22) vào **Nerfstudio splatfacto** qua external plugin (Option 1 — Bổ trợ, không sửa Nerfstudio source)
+> - **Plug-in progress**: 5/10 component Phase 22 plug được (4 FULL + 1 PARTIAL)
+>   - ✅ A1 RoMa init: +1.523 dB (4/4 scene positive)
+>   - ✅ A2.1 opacity decay: wash alone (Phase 23 synergy-only)
+>   - ✅ A2.2 DropAnSH: wash cumulative
+>   - 🟡 A2.3 DAV2 depth: smoke PASS, cascade pending
+>   - 🟡 A2.4 CRS score D-only: smoke PASS, cascade pending
+> - 5 module defer A3: SH freeze, LFCF, D_cycle, S_stability, R_i
+> - Chi tiết: [06_plugin_a1_results.md](06_plugin_a1_results.md), design: [05_plugin_design.md](05_plugin_design.md)
 
 ---
 
