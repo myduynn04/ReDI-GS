@@ -51,15 +51,24 @@ def _build_crsgaussian_config():
     )
 
     dataparser_config = CrsGaussianDataParserConfig(
-        # LLFF CoR-GS layout defaults
-        colmap_path=Path("triangulated"),
+        # [B3 split-fix 2026-06-04] Full data folder convention (fern/, NOT fern/3_views/):
+        #   fern/sparse/0/      → COLMAP 24 cams (replace `triangulated/` of 3_views/)
+        #   fern/images_8/      → ns auto-load via downscale_factor=8
+        #   fern/3_views/dense/fused.ply.romav1  → RoMa init
+        #   fern/3_views/aligned_depth_a23/      → DAV2 aligned depth
+        # Phase 22 split protocol port (dataset_readers.py:356-366):
+        #   Step 1: eval_interval=8 → test=3 cams, train_pool=21 cams
+        #   Step 2: n_views_phase22=3 → linspace subsample → 3 train cams
+        colmap_path=Path("sparse/0"),
         images_path=Path("images"),
         eval_mode="interval",
         eval_interval=8,
-        # Path A specific
+        n_views_phase22=3,
+        llffhold=8,
+        downscale_factor=1,  # [B3 split-fix v2] in-memory resize qua camera_res_scale_factor
         use_roma_init=True,
-        roma_ply_relpath="dense/fused.ply.romav1",
-        aligned_depth_relpath="aligned_depth_a23",
+        roma_ply_relpath="3_views/dense/fused.ply.romav1",
+        aligned_depth_relpath="3_views/aligned_depth_a23",
         load_3D_points=True,
     )
 
@@ -75,6 +84,12 @@ def _build_crsgaussian_config():
             datamanager=FullImageDatamanagerConfig(
                 dataparser=dataparser_config,
                 cache_images_type="uint8",
+                # [B3 split-fix v2 2026-06-04] In-memory resize 1/8 thay vì pre-gen folder.
+                # ns InputDataset.scale_factor (base_dataset.py:88-91) resize ảnh
+                # qua PIL.resize(BILINEAR) khi load. Cameras width/height tự rescale
+                # qua line 59 self.cameras.rescale_output_resolution(scale_factor).
+                # = Phase 22 standalone behavior (in-memory resize tại Camera __init__).
+                camera_res_scale_factor=0.125,  # 1/8 — match Phase 22 args.resolution=8
             ),
             model=model_config,
         ),
@@ -99,4 +114,173 @@ crsgaussian_method_spec = MethodSpecification(
 )
 
 
-__all__ = ["crsgaussian_method_spec"]
+# ════════════════════════════════════════════════════════
+# [B5 Defense Compare 2026-06-04 evening] `splatfacto-sparse` method spec
+# Mục đích: Fair compare baseline — Splatfacto model + plug-in Phase 22 split
+#          (3 train + 3 test) + RoMa init.
+# Khác với `splatfacto` default ns:
+#   - ns default: random split full cams (~17 train cho fern)
+#   - splatfacto-sparse: Phase 22 3-cam protocol
+# Use case: Viewer demo so sánh visual quality 3-cam:
+#   - crsgaussian (full Phase 22 8 modules) vs splatfacto-sparse (vanilla baseline)
+# ════════════════════════════════════════════════════════
+
+def _build_splatfacto_sparse_config():
+    """[B5] Splatfacto vanilla + Phase 22 3-view sparse split + RoMa init."""
+
+    from nerfstudio.models.splatfacto import SplatfactoModelConfig
+    from nerfstudio.engine.schedulers import ExponentialDecaySchedulerConfig
+
+    dataparser_config = CrsGaussianDataParserConfig(
+        colmap_path=Path("sparse/0"),
+        images_path=Path("images"),
+        eval_mode="interval",
+        eval_interval=8,
+        n_views_phase22=3,
+        llffhold=8,
+        downscale_factor=1,
+        use_roma_init=True,  # same init as plug-in cho fair compare
+        roma_ply_relpath="3_views/dense/fused.ply.romav1",
+        aligned_depth_relpath="3_views/aligned_depth_a23",
+        load_3D_points=True,
+    )
+
+    return TrainerConfig(
+        method_name="splatfacto-sparse",
+        steps_per_eval_image=500,
+        steps_per_eval_batch=0,
+        steps_per_save=2000,
+        steps_per_eval_all_images=10000,
+        max_num_iterations=10000,
+        mixed_precision=False,
+        pipeline=VanillaPipelineConfig(
+            datamanager=FullImageDatamanagerConfig(
+                dataparser=dataparser_config,
+                cache_images_type="uint8",
+                camera_res_scale_factor=0.125,  # Phase 22 res=1/8
+            ),
+            model=SplatfactoModelConfig(),
+        ),
+        # Splatfacto-specific optimizers (ported từ ns method_configs.py:607-643)
+        optimizers={
+            "means": {
+                "optimizer": AdamOptimizerConfig(lr=1.6e-4, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=1.6e-6, max_steps=10000),
+            },
+            "features_dc": {
+                "optimizer": AdamOptimizerConfig(lr=0.0025, eps=1e-15),
+                "scheduler": None,
+            },
+            "features_rest": {
+                "optimizer": AdamOptimizerConfig(lr=0.0025 / 20, eps=1e-15),
+                "scheduler": None,
+            },
+            "opacities": {
+                "optimizer": AdamOptimizerConfig(lr=0.05, eps=1e-15),
+                "scheduler": None,
+            },
+            "scales": {
+                "optimizer": AdamOptimizerConfig(lr=0.005, eps=1e-15),
+                "scheduler": None,
+            },
+            "quats": {
+                "optimizer": AdamOptimizerConfig(lr=0.001, eps=1e-15),
+                "scheduler": None,
+            },
+            "camera_opt": {
+                "optimizer": AdamOptimizerConfig(lr=1e-4, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(
+                    lr_final=5e-7, max_steps=10000, warmup_steps=1000, lr_pre_warmup=0
+                ),
+            },
+            "bilateral_grid": {
+                "optimizer": AdamOptimizerConfig(lr=2e-3, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(
+                    lr_final=1e-4, max_steps=10000, warmup_steps=1000, lr_pre_warmup=0
+                ),
+            },
+        },
+        viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
+        vis="tensorboard",
+    )
+
+
+splatfacto_sparse_method_spec = MethodSpecification(
+    config=_build_splatfacto_sparse_config(),
+    description="[B5 Defense] Splatfacto vanilla baseline trên Phase 22 3-view sparse split + RoMa init (fair compare với crsgaussian)",
+)
+
+
+# ════════════════════════════════════════════════════════
+# [B5 Defense Compare] `splatfacto-17` method spec
+# Mục đích: Splatfacto vanilla với 17-cam ns default split + COLMAP init.
+# Khác `splatfacto` default ns: dùng ColmapDataParser (KHÔNG NerfstudioDataParser)
+# vì LLFF fern là COLMAP format, không có transforms.json.
+# ════════════════════════════════════════════════════════
+
+def _build_splatfacto_17_config():
+    """[B5] Splatfacto vanilla + ColmapDataParser default (17 train + 3 test cho fern)."""
+
+    from nerfstudio.models.splatfacto import SplatfactoModelConfig
+    from nerfstudio.data.dataparsers.colmap_dataparser import ColmapDataParserConfig
+    from nerfstudio.engine.schedulers import ExponentialDecaySchedulerConfig
+
+    return TrainerConfig(
+        method_name="splatfacto-17",
+        steps_per_eval_image=500,
+        steps_per_eval_batch=0,
+        steps_per_save=2000,
+        steps_per_eval_all_images=10000,
+        max_num_iterations=10000,
+        mixed_precision=False,
+        pipeline=VanillaPipelineConfig(
+            datamanager=FullImageDatamanagerConfig(
+                dataparser=ColmapDataParserConfig(
+                    colmap_path=Path("sparse/0"),
+                    images_path=Path("images"),
+                    downscale_factor=1,
+                    eval_mode="interval",
+                    eval_interval=8,
+                    load_3D_points=True,
+                ),
+                cache_images_type="uint8",
+                camera_res_scale_factor=0.125,  # match plug-in resolution
+            ),
+            model=SplatfactoModelConfig(),
+        ),
+        # Splatfacto-specific optimizers (ported từ ns method_configs.py:607-643)
+        optimizers={
+            "means": {
+                "optimizer": AdamOptimizerConfig(lr=1.6e-4, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=1.6e-6, max_steps=10000),
+            },
+            "features_dc": {"optimizer": AdamOptimizerConfig(lr=0.0025, eps=1e-15), "scheduler": None},
+            "features_rest": {"optimizer": AdamOptimizerConfig(lr=0.0025/20, eps=1e-15), "scheduler": None},
+            "opacities": {"optimizer": AdamOptimizerConfig(lr=0.05, eps=1e-15), "scheduler": None},
+            "scales": {"optimizer": AdamOptimizerConfig(lr=0.005, eps=1e-15), "scheduler": None},
+            "quats": {"optimizer": AdamOptimizerConfig(lr=0.001, eps=1e-15), "scheduler": None},
+            "camera_opt": {
+                "optimizer": AdamOptimizerConfig(lr=1e-4, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(
+                    lr_final=5e-7, max_steps=10000, warmup_steps=1000, lr_pre_warmup=0
+                ),
+            },
+            "bilateral_grid": {
+                "optimizer": AdamOptimizerConfig(lr=2e-3, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(
+                    lr_final=1e-4, max_steps=10000, warmup_steps=1000, lr_pre_warmup=0
+                ),
+            },
+        },
+        viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
+        vis="tensorboard",
+    )
+
+
+splatfacto_17_method_spec = MethodSpecification(
+    config=_build_splatfacto_17_config(),
+    description="[B5 Defense] Splatfacto vanilla baseline COLMAP 17-cam ns default (data abundance compare)",
+)
+
+
+__all__ = ["crsgaussian_method_spec", "splatfacto_sparse_method_spec", "splatfacto_17_method_spec"]

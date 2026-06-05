@@ -149,8 +149,25 @@ def ns_camera_to_corgs_camera(
 
     # ── Load image PIL → torch (3, H, W) float [0, 1] CPU ──
     # PORTED FROM: utils/general_utils.py:25 PILtoTorch + utils/camera_utils.py:43-45
+    # [B3 split-fix 2026-06-04] Fallback fullres → resize in-memory (như Phase 22 standalone).
+    # Lý do: ns ColmapDataParser hardcode build path images_{factor}/ với COLMAP naming.
+    # Nếu folder tồn tại NHƯNG khác naming (vd CRSGaussian preprocess image000.png),
+    # em fallback về images/ + resize 1/8 — KHÔNG cần user pre-generate folder.
     from PIL import Image
-    pil = Image.open(str(image_filename))
+    import re
+    img_path = Path(str(image_filename))
+    if not img_path.exists():
+        fullres = Path(re.sub(r'images_\d+/', 'images/', str(img_path)))
+        if fullres.exists():
+            img_path = fullres
+        else:
+            raise FileNotFoundError(
+                f"[Path A] Image not found:\n"
+                f"  expected: {image_filename}\n"
+                f"  fallback: {fullres}\n"
+                f"  Check folder structure or COLMAP naming."
+            )
+    pil = Image.open(str(img_path))
     # Match exactly ns_cam.image_width/height (resolution-aligned via downscale_factor=8)
     pil_resized = pil.resize((width, height))
     arr = np.array(pil_resized).astype(np.float32) / 255.0

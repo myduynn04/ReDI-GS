@@ -24,17 +24,18 @@ import numpy as np
 import torch
 
 
-def load_aligned_depth_dict(data_root: Path) -> Tuple[Dict[str, torch.Tensor], float]:
+def load_aligned_depth_dict(depth_dir: Path) -> Tuple[Dict[str, torch.Tensor], float]:
     """Load tất cả aligned depth .npy → (dict[image_stem] → tensor cuda, depth_range).
 
-    Path convention: <data_root>/aligned_depth_a23/<stem>.npy + _meta.json
+    [B3 split-fix 2026-06-04] depth_dir là FULL PATH tới folder (không phải data_root).
+    Caller phải compute full path: data_root/aligned_depth_relpath.
 
     Returns:
         (depth_dict, depth_range) — depth_dict={} + depth_range=1.0 nếu folder không tồn tại.
     """
-    depth_dir = Path(data_root) / "aligned_depth_a23"
+    depth_dir = Path(depth_dir)
     if not depth_dir.is_dir():
-        print(f"[Path A B2] aligned_depth_a23 folder không tồn tại: {depth_dir}")
+        print(f"[Path A B2] aligned_depth folder không tồn tại: {depth_dir}")
         return {}, 1.0
 
     depth_dict = {}

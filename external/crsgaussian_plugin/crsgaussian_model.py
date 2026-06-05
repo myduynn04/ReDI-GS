@@ -204,9 +204,13 @@ class CrsGaussianModel(Model):
         self.depth_by_idx: List[Optional[torch.Tensor]] = []
         self.depth_range: float = 1.0
         data_root = self._ds_metadata.get("data_root", None)
+        aligned_depth_dir = self._ds_metadata.get("aligned_depth_dir", None)
         image_filenames = self._ds_metadata.get("image_filenames", [])
-        if self.config.use_depth_prior and data_root and image_filenames:
-            depth_dict_by_stem, depth_range = load_aligned_depth_dict(Path(data_root))
+        # [B3 split-fix 2026-06-04] Use aligned_depth_dir metadata (full path)
+        # KHÔNG dùng data_root + hardcode "aligned_depth_a23" — split-fix moved
+        # depth folder vào fern/3_views/aligned_depth_a23/
+        if self.config.use_depth_prior and aligned_depth_dir and image_filenames:
+            depth_dict_by_stem, depth_range = load_aligned_depth_dict(Path(aligned_depth_dir))
             self.depth_range = depth_range
             for fn in image_filenames:
                 stem = Path(str(fn)).stem

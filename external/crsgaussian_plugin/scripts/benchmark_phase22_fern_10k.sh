@@ -20,18 +20,23 @@ export NERFSTUDIO_METHOD_CONFIGS="crsgaussian=crsgaussian_plugin:crsgaussian_met
 
 DATA_ROOT=/home/aidev/workspace/representation-3d/duyen/CoR-GS/data/nerf_llff_data
 SCENE=fern
-OUT_ROOT=/home/aidev/workspace/representation-3d/duyen/nerfstudio/outputs_phase22_b3
-LOG_DIR=/home/aidev/workspace/representation-3d/duyen/nerfstudio/logs/phase22_b3
+OUT_ROOT=/home/aidev/workspace/representation-3d/duyen/nerfstudio/outputs_phase22_split
+LOG_DIR=/home/aidev/workspace/representation-3d/duyen/nerfstudio/logs/phase22_split
 mkdir -p $OUT_ROOT $LOG_DIR
 
 LOG=$LOG_DIR/phase22_${SCENE}_10k.log
 
 echo "[$(date +%H:%M:%S)] Phase 22 plug-in benchmark fern 10k (~12-15 min)"
+echo "  Data: $DATA_ROOT/$SCENE/ (full 24 cams, Phase 22 split protocol)"
+echo "  Split: llffhold=8 → 3 test + 21 train_pool → linspace 3 train"
 
 cd /home/aidev/workspace/representation-3d/duyen/nerfstudio
 
+# [Path A B3 split-fix] --data trỏ vào fern/ (full 24 cams) thay vì fern/3_views/.
+# DataParser sẽ apply Phase 22 split (3 train + 3 test) qua n_views_phase22=3 + llffhold=8.
+# RoMa PLY load từ relative path fern/3_views/dense/fused.ply.romav1.
 CUDA_VISIBLE_DEVICES=1 ns-train crsgaussian \
-    --data $DATA_ROOT/$SCENE/3_views/ \
+    --data $DATA_ROOT/$SCENE/ \
     --output-dir $OUT_ROOT \
     --experiment-name $SCENE \
     --max-num-iterations 10000 \

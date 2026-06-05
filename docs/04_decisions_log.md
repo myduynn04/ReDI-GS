@@ -2400,3 +2400,47 @@
 **Related:** [[phase24-trim-verify-v1]] (memory), [[phase23-ablation-v1]] (4 contributions), Phase 22 anchor 21.918, Phase 20 TRIM MVS verify.
 
 ---
+
+### [2026-06-02] Phase 25_2 — Phase 22 PSNR LOCK CONFIRMED (4 N=24 runs)
+
+**Motivation:** Phase 22 pilot báo 21.918 (single N=24). 2 re-runs sau (Phase 24 c0_base + post-cleanup) cho 21.882 + 21.869 → trend đi xuống. Cần 4th N=24 measurement để lock final value cho paper narrative.
+
+**Setup:** N=24 (3 seeds × 8 scenes), Phase 22 A3-TRIM 8-module recipe (10k iter, RoMa v1 init), POST-cleanup code state.
+
+**🎯 RESULTS — 4 N=24 measurements:**
+
+| Run | Date | Code state | PSNR mean N=24 |
+|---|---|---|---|
+| Phase 22 pilot | 2026-05-25 | Pre-cleanup | 21.918 |
+| Phase 24 c0_base | 2026-05-29 | Pre-cleanup re-run | 21.882 |
+| Phase 24 postcleanup | 2026-05-29 | Post-cleanup | 21.869 |
+| **Phase 25_2 lock** | **2026-06-02** | **Post-cleanup** | **21.892** |
+
+**Statistics**:
+- Mean of 4 = **21.890**
+- Std (ddof=1) = ±0.021
+- SEM = ±0.010
+- Range (max-min) = 0.049 dB
+- Δ Phase 25_2 vs prior 3-run mean = +0.003 (within noise)
+
+→ **Range 0.049 < noise floor ±0.10** → reproducibility STRONG across 4 weeks + 2 code states.
+
+**Per-scene Phase 25_2 (3-seed mean) drift vs Phase 22 pilot ref**: fern −0.01 / flower +0.10 / fortress +0.08 / horns −0.07 / leaves +0.05 / orchids −0.04 / room −0.22 / trex −0.09. Room scene specifically sensitive (consistent drop ~0.2 dB across all 3 re-runs) but doesn't change mean materially.
+
+**Decision: D-COMMIT FINAL = 21.89 ± 0.10**
+
+**Narrative update**:
+- Replace 21.918 (single pilot) → 21.89 ± 0.10 (mean of 4 N=24)
+- Caveat footnote: "Single-seed N=24 values: 21.918 / 21.882 / 21.869 / 21.892 — demonstrating atomicAdd non-determinism within paired noise floor"
+- Defense edge: 4 N=24 measurements > baseline single-seed standard (rigor advantage)
+
+**vs SOTA (final)**:
+- 10k bucket FAIR: +1.78 CoR-GS / +1.58 FSGS (clean win)
+- 30k bucket cross-budget: +0.45 Binocular3DGS at 3× less compute
+- ICO-GS preprint: −0.31 gap
+
+**Files updated**: CLAUDE.md current state, memory `project_phase25_2_phase22_lock.md` (NEW), memory MEMORY.md index, docs/24_3_paper_defense_removed_features.md (section 5 reproducibility Q&A).
+
+**Related:** [[phase25-2-phase22-lock]] (memory), [[phase22-roma-v1-pilot]] (original pilot), [[phase24-trim-verify-v1]] (cleanup verification), [[3dgs-variance-floor]] (methodology basis).
+
+---

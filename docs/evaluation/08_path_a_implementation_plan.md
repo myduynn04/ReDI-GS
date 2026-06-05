@@ -338,9 +338,48 @@ Files re-upload server (sau khi sửa local):
 |-------|--------|--------|------|
 | B1 Scaffolding | ✅ **PASS** | All 4 gates | 2026-06-03 |
 | B2 Loss+render | ✅ **PARTIAL PASS** | Train PSNR 23.4 ✓ / Eval gap 14.7 — debug pending | 2026-06-03 |
-| B3 Full Phase 22 callbacks + ckpt save/load | ✅ **PASS** | **Eval PSNR 25.08 dB** trên fern (vượt Phase 22 standalone 23.84) | 2026-06-04 |
+| B3 Full Phase 22 callbacks + ckpt save/load | ✅ **PASS** (caveat split) | **Eval PSNR 25.08 dB** trên fern — NHƯNG eval cam = 1/3 Phase 22 train cam, KHÔNG novel view. KHÔNG strict comparable với standalone 23.84. | 2026-06-04 |
+| B3.5 Split-fix v2 (Phase 22 protocol PROPER) | ✅ **PASS** | **Eval PSNR 25.77 dB** trên 3 NOVEL test cam (vượt Phase 22 standalone 23.84 +1.93). N_gauss=49410, reset_opacity=4. STRICT comparable. 4 bug fix journey (split path / depth path / images_8 naming / camera rescale). | 2026-06-04 |
 | B3 Densify+CB | ⏳ PENDING | — | — |
-| B4 Benchmark | ⏳ PENDING | — | — |
+| B4 Benchmark 4-scene single-seed | ✅ **PASS 4/4 GATES** | **AVG PSNR 23.61 vs Phase 22 std 22.98 (+0.63)**. fern +1.93, horns +0.33, fortress −0.13, flower +0.39. All 4 within ±1 dB. | 2026-06-04 |
+
+### B4 Plan (2026-06-04 evening — starting)
+
+**Objective**: Multi-scene evidence cho defense-grade. Plug-in CrsGaussian vs Phase 22 standalone N=24.
+
+**Scenes (first pass)**: 4 scene — fern + horns + fortress + flower
+- Lý do chọn 4 (KHÔNG 8): balance speed (30 phút 2 GPU) vs coverage (1 dễ fern + 2 trung bình horns/flower + 1 khó fortress).
+- Phase 22 standalone reference: fern 23.84, horns 21.08, fortress 25.57, flower 21.41 (3-seed N=24 mean).
+
+**Compute budget**:
+- First pass: 4 scenes × 1 seed × 2 GPU parallel = ~30 phút wall-clock.
+- Nếu positive (≥3/4 scenes ≥ Phase 22 N=24 ±1 dB): multi-seed N=12 (3 seeds × 4 scenes paired) ~1.5 hour.
+- Stretch: full 8 scenes × 3 seeds N=24 ~5-6 hours.
+
+**Methodology** (per memory `feedback_use_both_gpus` + `feedback_full_8scene_ablation`):
+- Split scenes GPU 0 + GPU 1 song song với `&` + `wait`
+- 1-scene Δ within noise (±0.05) → KHÔNG REJECT vội, run full 4 scene
+- 3DGS atomicAdd variance ±1.3 dB single-scene single-seed → multi-seed paired needed cho confidence
+
+**Output structure**:
+```
+outputs_phase22_b4/
+├── fern/crsgaussian/<timestamp>/
+├── horns/crsgaussian/<timestamp>/
+├── fortress/crsgaussian/<timestamp>/
+└── flower/crsgaussian/<timestamp>/
+logs/phase22_b4/
+└── <scene>_seed<n>.log
+/tmp/eval_phase22_b4_<scene>.json  (eval results)
+```
+
+**Acceptance gates B4**:
+- Gate 1: All 4 scenes train complete (no crash)
+- Gate 2: PSNR avg(4 scenes) > 22.5 (target: Phase 22 standalone avg ≈ 22.97)
+- Gate 3: 3/4 scenes PSNR ≥ Phase 22 standalone reference −1 dB
+- Gate 4: Defense story strong — "match/exceed Phase 22 standalone trên multiple scenes"
+
+**Script template**: `scripts/benchmark_phase22_4scenes.sh` (em sẽ tạo trong B4 execution)
 
 ### B1 results (2026-06-03)
 

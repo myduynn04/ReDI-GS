@@ -143,3 +143,80 @@
 ---
 
 **Maintenance**: Khi reject feature mới trong tương lai, copy template + fill in. Đây là file canonical cho reviewer defense.
+
+---
+
+## 5. Reproducibility — 4 N=24 Lock Confirmation (Phase 25_2, 2026-06-02)
+
+**Final commit value**: **PSNR = 21.89 ± 0.10** (mean of 4 independent N=24 runs, SEM ±0.010).
+
+### Q: Tại sao báo mean of 4 N=24 runs thay vì 1 pilot?
+
+**A:** 3DGS rasterizer dùng CUDA atomicAdd non-deterministic (verified project memory: 3 runs cùng seed/code chênh 1.31 dB single-scene). Multi-seed averaging cần thiết để giảm variance. Báo mean of 4 INDEPENDENT N=24 runs:
+
+| Run | Date | Code state | PSNR mean |
+|---|---|---|---|
+| Phase 22 pilot | 2026-05-25 | Pre-cleanup | 21.918 |
+| Phase 24 c0_base | 2026-05-29 | Pre-cleanup re-run | 21.882 |
+| Phase 24 postcleanup | 2026-05-29 | Post-cleanup | 21.869 |
+| Phase 25_2 lock | 2026-06-02 | Post-cleanup | 21.892 |
+| **Mean of 4** | — | — | **21.890** |
+
+**Statistics**:
+- SEM = ±0.010
+- Std (ddof=1) = ±0.021
+- Range (max-min) = 0.049 dB < noise floor ±0.10
+- Span: 4 weeks, 2 code states (pre/post Phase 24 cleanup)
+
+→ **Reproducibility VERIFIED** despite atomicAdd noise.
+
+### Q: Tại sao không cherry-pick best seed (21.918)?
+
+**A:** 4 lý do:
+
+1. **Cherry-picking fail reproducibility** — Reviewer reproduce single run kỳ vọng rơi vào ±0.46 dB single-seed mean. Báo lucky pilot → reviewer get lower → "không reproduce paper claim". Verified empirically: 3 re-runs sau pilot cho 21.882/21.869/21.892 (mean 21.881 < pilot 21.918).
+
+2. **Statistical significance không tính được** với single number. Mean ± SEM cho paired t-test + bootstrap CI. NeurIPS/ICLR modern đòi multi-seed cho claim < 0.5 dB.
+
+3. **Δ inflation chỉ 0.03 dB** (21.918 vs 21.890) **KHÔNG đáng risk**. Δ vs Binocular3DGS 30k = +0.45 (4× noise floor) — đã significant không cần thêm.
+
+4. **Paper card fail**: NeurIPS reproducibility checklist đòi mean + std + N seeds + hardware. Cherry-pick fail.
+
+### Q: Baselines (CoR-GS, FSGS, Binocular3DGS) báo gì?
+
+**A:** **0/9 baselines verified** dùng multi-seed averaging (grep code):
+- CoR-GS: HARDCODED `seed_everything(42)`, no override → single seed
+- FSGS, Binocular3DGS, DNGaussian, NexusGS, LoopSparseGS, SCGaussian, Co-Adapt, DepthRegularizedGS: **NO seed setting** → non-deterministic single run
+
+→ Baselines paper PSNR có ±0.46 dB noise (8-scene mean, 1 seed). Ta báo **mean of 4 N=24** với CI ±0.10 = **rigorous hơn community standard**.
+
+### Q: Compare 21.89 (ours) vs SOTA fair không?
+
+**A:** YES — eval protocol verified identical (linspace 3-train, hold-out test) across 6 sparse-view methods (CoR-GS / CRSGaussian / FSGS / Binocular3DGS / DNGaussian / NexusGS):
+
+| Method | iter | PSNR | Bucket | Δ vs ours | Note |
+|---|---|---|---|---|---|
+| CoR-GS (parent) | 10k | 20.11 | FAIR (10k) | **+1.78** | Same code, same eval |
+| FSGS | 10k | 20.31 | FAIR (10k) | **+1.58** | Same protocol |
+| Binocular3DGS | 30k | 21.44 | cross-budget | **+0.45 at 3× less compute** | Same eval, different iter |
+| DOC-GS | unknown | 21.38 | unknown | +0.51 | Code not available |
+| ICO-GS | unknown | 22.20 | unknown | −0.31 | Code not available |
+
+### Q: 30k iter ta đã thử chưa?
+
+**A:** Có (Phase 25_0). Partial result (10/24 cells before abort):
+- fern 30k = 23.74 (≈ 10k 23.84, saturation)
+- fortress 30k = 20.57 vs 10k 25.57 = **−5.0 catastrophic**
+- Root cause: opacity_decay_factor 0.995 ở 30k cumulative 10^61 lần aggressive hơn 0.999 ở 10k → Gaussian collapse trên hard scenes
+
+→ **10k empirically optimal cho sparse-view 3-view với recipe của ta**. Sparse-view literature support (FSGS 10k, CoR-GS 10k, DNGaussian 6k, LoopSparseGS 10k).
+
+### Q: Tại sao 3 seeds (42, 137, 9999)?
+
+**A:**
+- **Số seeds = 3**: Balance compute (3× cost) vs noise reduction (÷√3). 8 scenes × 3 seeds paired → ±0.10 dB detectable Δ.
+- **Seeds (42, 137, 9999)**: 42 inherit từ CoR-GS hardcoded; 137 arbitrary memorable (physics fine-structure); 9999 arbitrary. Locked từ Phase 11 (2026-05-09) cho cross-phase consistency. Bất kỳ 3 different ints đều equivalent — paired comparison cùng (seed, scene) cancels common atomic noise.
+
+---
+
+**Final narrative cho paper**: "Chúng tôi report **21.89 ± 0.10 (mean of 4 N=24 runs)** at 10k iter, more rigorous than community single-seed standard. **Beats 10k peers cleanly** (+1.58 FSGS, +1.78 CoR-GS) and **matches/exceeds 30k SOTA** (+0.45 Binocular3DGS) at 3× less compute. Reproducibility verified across 4 weeks + 2 code states (Δ extreme = 0.049 dB < noise floor)."
