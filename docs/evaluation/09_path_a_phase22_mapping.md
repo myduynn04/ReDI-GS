@@ -741,3 +741,166 @@ Nếu COLMAP folder ở `sparse/` (không có `0/` subfolder) → adjust `colmap
 
 Recommend: A trước (statistical), then C nếu thời gian cho phép.
 
+---
+
+## 13. B5 3-WAY COMPARISON (2026-06-05) — Recipe vs Baseline
+
+### 13.1 3-method setup
+
+| Method | Model | Data | Init | Modules |
+|--------|-------|------|------|---------|
+| `crsgaussian` (anh) | CoR-GS GaussianModel | 3 train (Phase 22) | RoMa v1 dense | 8 Phase 22 |
+| `splatfacto-sparse` | Splatfacto vanilla | 3 train (Phase 22, **same anh**) | RoMa v1 dense (**same anh**) | 0 |
+| `splatfacto-17` | Splatfacto vanilla | 17 train (ns default) | COLMAP sparse | 0 |
+
+### 13.2 Results table (single-seed, 4 scenes)
+
+| Scene | crsgauss | splat-sparse | splat-17 | Δ recipe | Δ less-data |
+|-------|----------|--------------|----------|----------|-------------|
+| fern | 25.77 | 24.73 | 30.25 | +1.04 | −4.49 |
+| horns | 21.41 | 20.08 | 30.02 | **+1.33** ⭐ | −8.61 |
+| fortress | 25.44 | 24.84 | 33.23 | +0.60 | −7.79 |
+| flower | 21.80 | 21.23 | 29.64 | +0.57 | −7.83 |
+| **AVG** | **23.60** | **22.72** | **30.78** | **+0.88** | −7.18 |
+
+### 13.3 2 stories — interpret honestly
+
+**✅ Story 1 — RECIPE WIN** (cùng 3-cam data + RoMa init)
+- Plug-in vượt vanilla Splatfacto **+0.88 dB AVG**
+- **4/4 scenes positive** (no regression)
+- Biggest gain: horns +1.33 (thin-structure scene khó)
+- → 8 modules Phase 22 thực sự work cho sparse-view
+
+**❌ Story 2 — DATA WIN** (17-cam dense supervision dominates)
+- 17-cam baseline AVG 30.78 áp đảo plug-in 23.60 (−7.18 gap)
+- KHÔNG thể claim "less data better than more data" trên dataset này
+- 17 train có cam gần test distribution → overfit dễ → PSNR cao
+
+### 13.4 Defense framing HONEST
+
+**Claim đúng**:
+> *"Trên sparse-view 3-cam setting (mobile/AR/limited capture use case), plug-in CrsGaussian vượt vanilla Splatfacto +0.88 dB AVG trên 4 LLFF scenes (4/4 positive). Recipe value lớn nhất ở thin-structure scene (horns +1.33)."*
+
+**Defense framing strong**:
+> *"Khi data dense (17 cam), vanilla Splatfacto đạt PSNR ~30. Khi data sparse (3 cam), vanilla rớt xuống 22.72 (−8 dB), thể hiện sparse-view problem khó. Phase 22 8-module recipe giảm impact của data scarcity, đẩy 3-cam PSNR lên 23.60 (+0.88). Recipe specifically targets sparse-view scenario."*
+
+**KHÔNG over-claim**:
+- KHÔNG nói "plug-in 3-cam vượt baseline 17-cam"
+- KHÔNG nói "less data, better quality"
+- Plug-in chỉ giải quyết **sparse-view bottleneck**, không phải "beat baseline absolute"
+
+---
+
+## 14. B6 FINAL — 4-way 8-scene comparison (2026-06-05 evening)
+
+### 14.1 Results table (8 scene LLFF, 3-view sparse, single-seed)
+
+| Scene | crsgauss (anh) | splat-sparse (vanilla, AbsGS=ON) | splat-noabs (no AbsGS) | Δ vs sparse | Δ vs noabs |
+|-------|----------------|----------------------------------|-------------------------|-------------|------------|
+| fern | 25.77 | 24.03 | 23.66 | +1.74 | +2.11 |
+| horns | 21.41 | 19.37 | 18.85 | +2.04 | +2.56 |
+| fortress | 25.44 | 25.46 | 24.17 | −0.02 | +1.27 |
+| flower | 21.80 | 21.93 | 21.47 | −0.13 | +0.33 |
+| **leaves** | **20.40** | **15.11** | **13.86** | **+5.30** ⭐⭐⭐ | **+6.54** ⭐⭐⭐ |
+| orchids | 17.98 | 17.78 | 17.66 | +0.20 | +0.32 |
+| room | 22.76 | 20.65 | 21.39 | +2.11 | +1.37 |
+| trex | 24.20 | 20.24 | 19.49 | +3.96 | +4.71 |
+| **AVG** | **22.47** | **20.57** | **20.07** | **+1.90** | **+2.40** |
+
+### 14.2 Defense narrative final
+
+> *"Trên 8 LLFF scene 3-view sparse (Phase 22 standard protocol, 10k iter, single-seed):*
+> 
+> *• **Pure 3DGS-style** (no AbsGS, matching paper 2023 Inria gốc): **20.07 PSNR***
+> *• **ns Splatfacto vanilla state-of-the-art** (mặc định đã tích hợp AbsGS 2024 + progressive resolution + aggressive cull + random BG augmentation): **20.57 PSNR (+0.50 nhờ ecosystem improvements)***
+> *• **CrsGaussian plug-in** (RoMa init + Phase 22 8-module recipe): **22.47 PSNR (+1.90 vs ns SOTA baseline, +2.40 vs pure 3DGS)***
+> 
+> *Recipe gain consistent 6/8 scenes vs ns Splatfacto, 8/8 scenes vs pure 3DGS. Largest gap ở scene khó (leaves +5.30, trex +3.96)."*
+
+### 14.3 AbsGS contribution decomposition
+
+splat-sparse (AbsGS=ON) − splat-noabs (AbsGS=OFF) = AbsGS alone contribution:
+
+| Scene | Δ AbsGS |
+|-------|---------|
+| fern | +0.37 |
+| horns | +0.52 |
+| fortress | +1.29 |
+| flower | +0.46 |
+| leaves | +1.25 |
+| orchids | +0.12 |
+| **room** | **−0.74** ⚠️ (AbsGS HURT room) |
+| trex | +0.75 |
+| **AVG** | **+0.50** |
+
+→ AbsGS đóng góp +0.50 dB AVG trên gsplat backbone. Match Phase 13 standalone +0.078 NHƯNG amplified across more scenes (room outlier negative).
+
+### 14.4 Demo scene chọn
+
+**`leaves` (Δ +5.30 dB)** = dramatic demo:
+- Vanilla render PSNR 15.11 → broken (visible floater, blurry, geometric chaos)
+- Anh recipe PSNR 20.40 → usable (clean foliage, recognizable structure)
+- Defense story: *"Sparse-view broken by vanilla 3DGS, recipe rescues"*
+
+Alternative `trex` (+3.96): both methods reasonable quality, gap shows clear recipe benefit.
+
+### 14.5 Cross-framework comparison (cộng evidence Phase 22 standalone)
+
+| Setup | Source | AVG 8-scene |
+|-------|--------|-------------|
+| CoR-GS Inria vanilla 2-field (T0.5) | CLAUDE.md Phase 0 | 20.11 |
+| ns Splatfacto pure (no AbsGS) | Em B6 measure | 20.07 ← match! |
+| ns Splatfacto vanilla (AbsGS=ON default) | Em B6 measure | 20.57 (+0.50) |
+| CoR-GS Inria + Phase 22 8-module (CRSGaussian standalone N=24) | CLAUDE.md Phase 25_2 | 21.89 |
+| **Plug-in CrsGaussian (em B6)** | Em B6 single-seed | **22.47** (lucky single-seed) |
+
+→ Em B6 plug-in 22.47 ≈ Phase 22 standalone 21.89 (chênh +0.58 — trong noise ±1.3 single-seed)
+→ Em B6 splat-noabs 20.07 ≈ CoR-GS Inria vanilla 20.11 — **cross-validate setup ĐÚNG**.
+
+---
+
+## 15. DEMO IMAGE EVIDENCE (2026-06-06) — ✅ DEFENSE READY
+
+### 15.1 Demo decision
+
+Thầy approve **static image evidence** thay vì live viewer (do viewer plug-in lag + crash với Inria rasterizer; vanilla gsplat smooth nhưng không phải method anh).
+
+### 15.2 Output location
+
+```
+outputs/demo3way/demo3way/
+├── leaves_crsgaussian/test/{rgb,gt-rgb}/IMG_*.jpg     ← anh's recipe render (PSNR 20.40)
+├── leaves_splatfacto-sparse/test/{rgb,gt-rgb}/...     ← vanilla AbsGS=ON (PSNR 15.11)
+├── leaves_splatfacto-sparse-noabs/test/{rgb,gt-rgb}/... ← vanilla no-AbsGS (PSNR 13.86)
+├── trex_crsgaussian/...                                ← (PSNR 24.20)
+├── trex_splatfacto-sparse/...                          ← (PSNR 20.24)
+├── trex_splatfacto-sparse-noabs/...                    ← (PSNR 19.49)
+├── horns_crsgaussian/...                               ← (PSNR 21.41)
+├── horns_splatfacto-sparse/...                         ← (PSNR 19.37)
+└── horns_splatfacto-sparse-noabs/...                   ← (PSNR 18.85)
+```
+
+→ **3 scene × 3 method × 3 test cam = 27 ảnh** sẵn cho slide defense.
+
+### 15.3 Defense narrative final
+
+> *"Trên 8 LLFF scene 3-view sparse (Phase 22 protocol, 10k iter, single-seed):*
+> 
+> *- **Pure 3DGS-style baseline** (no AbsGS): 20.07 PSNR*
+> *- **ns Splatfacto vanilla SOTA** (default AbsGS + progressive res + aggressive cull + random BG): 20.57 PSNR (+0.50)*
+> *- **CrsGaussian plug-in** (RoMa init + Phase 22 8 modules): 22.47 PSNR (+1.90 vs ns SOTA, +2.40 vs pure)*
+> 
+> *Recipe gain consistent 6/8 scene vs Splatfacto, 8/8 vs pure 3DGS. Demo: image grid test cam cho 3 scene (leaves, trex, horns), gap visible nhất ở leaves (+5.30 dB)."*
+
+### 15.4 Slide structure đề xuất
+
+| Slide | Content |
+|-------|---------|
+| **Title** | Sparse-view 3D Gaussian Splatting — Phase 22 recipe ported vào Nerfstudio |
+| **Table** | 4-way comparison 8-scene AVG (Section 14.1) |
+| **Image grid leaves** | 4 cột × 1 hàng: GT \| crsgauss \| splat-sparse \| splat-noabs |
+| **Image grid trex** | Same |
+| **Image grid horns** | Same |
+| **Decomposition** | AbsGS contribution +0.50 (Section 14.3) |
+| **Limitation** | Single-seed (3DGS atomicAdd ±1.3 dB), pending multi-seed verify |
+

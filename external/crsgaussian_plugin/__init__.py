@@ -139,7 +139,9 @@ def _build_splatfacto_sparse_config():
         n_views_phase22=3,
         llffhold=8,
         downscale_factor=1,
-        use_roma_init=True,  # same init as plug-in cho fair compare
+        # [B5 v2 FIX 2026-06-05] use_roma_init=False — RoMa = anh's Phase 22
+        # contribution, baseline phải dùng COLMAP sparse init thật cho fair compare.
+        use_roma_init=False,
         roma_ply_relpath="3_views/dense/fused.ply.romav1",
         aligned_depth_relpath="3_views/aligned_depth_a23",
         load_3D_points=True,
@@ -283,4 +285,88 @@ splatfacto_17_method_spec = MethodSpecification(
 )
 
 
-__all__ = ["crsgaussian_method_spec", "splatfacto_sparse_method_spec", "splatfacto_17_method_spec"]
+# ════════════════════════════════════════════════════════
+# [B5 v3 2026-06-05] `splatfacto-sparse-noabs` method spec
+# Mục đích: Splatfacto vanilla NHƯNG disable AbsGS (use_absgrad=False).
+# Lý do: ns Splatfacto mặc định BẬT AbsGS (splatfacto.py:107) — đó là cải tiến từ
+#        paper AbsGS 2024, KHÔNG phải vanilla 3DGS Inria gốc.
+# So sánh "pure 3DGS vanilla" cần disable AbsGS để fair với anh's recipe Inria.
+# ════════════════════════════════════════════════════════
+
+def _build_splatfacto_sparse_noabs_config():
+    """[B5 v3] Splatfacto vanilla + 3-cam + COLMAP init + use_absgrad=False (pure 3DGS-style)."""
+
+    from nerfstudio.models.splatfacto import SplatfactoModelConfig
+    from nerfstudio.engine.schedulers import ExponentialDecaySchedulerConfig
+
+    dataparser_config = CrsGaussianDataParserConfig(
+        colmap_path=Path("sparse/0"),
+        images_path=Path("images"),
+        eval_mode="interval",
+        eval_interval=8,
+        n_views_phase22=3,
+        llffhold=8,
+        downscale_factor=1,
+        use_roma_init=False,  # COLMAP init (KHÔNG RoMa)
+        roma_ply_relpath="3_views/dense/fused.ply.romav1",
+        aligned_depth_relpath="3_views/aligned_depth_a23",
+        load_3D_points=True,
+    )
+
+    return TrainerConfig(
+        method_name="splatfacto-sparse-noabs",
+        steps_per_eval_image=500,
+        steps_per_eval_batch=0,
+        steps_per_save=2000,
+        steps_per_eval_all_images=10000,
+        max_num_iterations=10000,
+        mixed_precision=False,
+        pipeline=VanillaPipelineConfig(
+            datamanager=FullImageDatamanagerConfig(
+                dataparser=dataparser_config,
+                cache_images_type="uint8",
+                camera_res_scale_factor=0.125,
+            ),
+            # [v3 KEY] use_absgrad=False — disable AbsGS (KHÔNG vanilla, AbsGS là paper 2024)
+            model=SplatfactoModelConfig(use_absgrad=False),
+        ),
+        optimizers={
+            "means": {
+                "optimizer": AdamOptimizerConfig(lr=1.6e-4, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=1.6e-6, max_steps=10000),
+            },
+            "features_dc": {"optimizer": AdamOptimizerConfig(lr=0.0025, eps=1e-15), "scheduler": None},
+            "features_rest": {"optimizer": AdamOptimizerConfig(lr=0.0025/20, eps=1e-15), "scheduler": None},
+            "opacities": {"optimizer": AdamOptimizerConfig(lr=0.05, eps=1e-15), "scheduler": None},
+            "scales": {"optimizer": AdamOptimizerConfig(lr=0.005, eps=1e-15), "scheduler": None},
+            "quats": {"optimizer": AdamOptimizerConfig(lr=0.001, eps=1e-15), "scheduler": None},
+            "camera_opt": {
+                "optimizer": AdamOptimizerConfig(lr=1e-4, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(
+                    lr_final=5e-7, max_steps=10000, warmup_steps=1000, lr_pre_warmup=0
+                ),
+            },
+            "bilateral_grid": {
+                "optimizer": AdamOptimizerConfig(lr=2e-3, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(
+                    lr_final=1e-4, max_steps=10000, warmup_steps=1000, lr_pre_warmup=0
+                ),
+            },
+        },
+        viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
+        vis="tensorboard",
+    )
+
+
+splatfacto_sparse_noabs_method_spec = MethodSpecification(
+    config=_build_splatfacto_sparse_noabs_config(),
+    description="[B5 v3] Splatfacto 3-cam + COLMAP init + use_absgrad=False (pure 3DGS-style, no AbsGS)",
+)
+
+
+__all__ = [
+    "crsgaussian_method_spec",
+    "splatfacto_sparse_method_spec",
+    "splatfacto_17_method_spec",
+    "splatfacto_sparse_noabs_method_spec",
+]

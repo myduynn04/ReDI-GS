@@ -1,17 +1,17 @@
 #!/bin/bash
 # ============================================================
-# [B5 Defense Compare] 2 Splatfacto baselines × 4 scene
+# [B5 Defense Compare v2 — 2026-06-05] 2 Splatfacto baselines × 4 scene
 # File: crsgaussian_plugin/scripts/benchmark_baselines_4scenes.sh
 #
 # 2 baselines × 4 scenes = 8 runs total trên 2 GPU parallel.
-# GPU 0: splatfacto (17-cam ns default) × 4 scene sequential
-# GPU 1: splatfacto-sparse (3-cam Phase 22 protocol) × 4 scene sequential
+# GPU 0: splatfacto-17  (17-cam ns default + COLMAP init) × 4 scene
+# GPU 1: splatfacto-sparse  (3-cam Phase 22 split + COLMAP init, NO RoMa) × 4 scene
+#
+# ⚠️ v2 FIX (2026-06-05): splat-sparse pass --use-roma-init False
+# Vì RoMa init = anh's Phase 22 contribution, baseline phải dùng COLMAP sparse.
 #
 # Wall-clock: ~30-40 phút.
-#
-# Output structure (convention mới):
-#   outputs/splatfacto_17view/<scene>/splatfacto/<timestamp>/
-#   outputs/splatfacto_3view/<scene>/splatfacto-sparse/<timestamp>/
+# Output: outputs/splatfacto_17view/<scene>/ + outputs/splatfacto_3view/<scene>/
 # ============================================================
 
 set -e
@@ -25,7 +25,12 @@ export NERFSTUDIO_METHOD_CONFIGS="crsgaussian=crsgaussian_plugin:crsgaussian_met
 DATA_ROOT=/home/aidev/workspace/representation-3d/duyen/CoR-GS/data/nerf_llff_data
 OUT_17=/home/aidev/workspace/representation-3d/duyen/nerfstudio/outputs/splatfacto_17view
 OUT_3=/home/aidev/workspace/representation-3d/duyen/nerfstudio/outputs/splatfacto_3view
-LOG_DIR=/home/aidev/workspace/representation-3d/duyen/nerfstudio/logs/baselines_b5
+LOG_DIR=/home/aidev/workspace/representation-3d/duyen/nerfstudio/logs/baselines_b5_v2
+
+# Backup old (if exists) — v1 had splat-sparse với RoMa unfair
+[ -d "$OUT_17" ] && [ "$(ls -A $OUT_17 2>/dev/null)" ] && mv $OUT_17 ${OUT_17}_v1_old 2>/dev/null
+[ -d "$OUT_3" ] && [ "$(ls -A $OUT_3 2>/dev/null)" ] && mv $OUT_3 ${OUT_3}_v1_roma_unfair 2>/dev/null
+
 mkdir -p $OUT_17 $OUT_3 $LOG_DIR
 
 cd /home/aidev/workspace/representation-3d/duyen/nerfstudio
@@ -57,14 +62,18 @@ run_splatfacto_17() {
 }
 
 # ────────────────────────────────────────────────────────
-# GPU 1 sequential: splatfacto-sparse 3-cam × 4 scene
+# GPU 1 sequential: splatfacto-sparse 3-cam COLMAP init (NO RoMa) × 4 scene
+# ⚠️ FIX v2 (2026-06-05): --use-roma-init False
+# Vì RoMa = anh's contribution; baseline phải dùng COLMAP sparse init thật.
 # ────────────────────────────────────────────────────────
 run_splatfacto_3() {
     for SCENE in $SCENES; do
         LOG=$LOG_DIR/splatfacto3_${SCENE}.log
         EVAL=/tmp/eval_splatfacto3_${SCENE}.json
-        echo "[$(date +%H:%M:%S)] [GPU 1] splatfacto-sparse $SCENE 10k..."
+        echo "[$(date +%H:%M:%S)] [GPU 1] splatfacto-sparse $SCENE 10k (COLMAP init)..."
 
+        # [v2 FIX] use_roma_init=False NÀY GẮN DEFAULT trong __init__.py method spec
+        # (KHÔNG dùng CLI flag vì plug-in DataParser KHÔNG register thành tyro subcommand)
         CUDA_VISIBLE_DEVICES=1 ns-train splatfacto-sparse \
             --data $DATA_ROOT/$SCENE/ \
             --output-dir $OUT_3 \
@@ -82,9 +91,10 @@ run_splatfacto_3() {
 
 # Launch parallel
 echo "═══════════════════════════════════════════════════════════"
-echo "  B5 Defense Compare — 2 baselines × 4 scenes"
-echo "  GPU 0: splatfacto 17-cam × 4 scene"
-echo "  GPU 1: splatfacto-sparse 3-cam × 4 scene"
+echo "  B5 v2 Defense Compare — 2 baselines × 4 scenes"
+echo "  GPU 0: splatfacto-17 (17-cam + COLMAP init)"
+echo "  GPU 1: splatfacto-sparse (3-cam + COLMAP init, NO RoMa)"
+echo "  Old (v1 RoMa unfair): backed up tới *_v1_roma_unfair/"
 echo "  Wall-clock: ~30-40 phút"
 echo "═══════════════════════════════════════════════════════════"
 
@@ -147,11 +157,11 @@ if [ $COUNT -gt 0 ]; then
 fi
 
 echo ""
-echo "  Legend:"
-echo "    crsgauss        = method anh, 3-cam + 8 modules"
-echo "    splat-sparse    = Splatfacto vanilla, 3-cam (fair compare)"
-echo "    splat-17        = Splatfacto vanilla, 17-cam (more data)"
-echo "    Δ anh→17        = anh's gain even với less data"
+echo "  Legend (all baselines TRULY vanilla, no anh's contribution):"
+echo "    crsgauss     = anh full (3-cam + RoMa init + 8 Phase 22 modules)"
+echo "    splat-sparse = Splatfacto vanilla, 3-cam + COLMAP init (NO RoMa)"
+echo "    splat-17     = Splatfacto vanilla, 17-cam + COLMAP init"
+echo "    Δ anh→17     = anh 3-cam vs baseline 17-cam (5.6× more data)"
 echo ""
 echo "  Outputs: $OUT_17 + $OUT_3"
 echo "  Logs:    $LOG_DIR"

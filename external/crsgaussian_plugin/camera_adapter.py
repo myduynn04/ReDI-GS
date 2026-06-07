@@ -41,7 +41,13 @@ from .corgs_imports import (
 
 
 def _fov_from_focal(focal: float, length: int) -> float:
-    """FoV (radians) = 2 * atan(L / (2 * f))."""
+    """FoV (radians) = 2 * atan(L / (2 * f)).
+
+    [B6 viewer fix 2026-06-06] Guard against focal=0 (ns viewer pass invalid
+    intrinsics ở first frame trước khi user move camera). Fallback default 60° FoV.
+    """
+    if focal <= 1e-6 or length <= 0:
+        return math.radians(60.0)  # safe default
     return 2.0 * math.atan(length / (2.0 * focal))
 
 
@@ -60,6 +66,20 @@ def _extract_RT_FoV(camera) -> Tuple[np.ndarray, np.ndarray, float, float, int, 
     fy = float(camera.fy[0].item() if camera.fy.numel() > 1 else camera.fy.item())
     width = int(camera.width[0].item() if camera.width.numel() > 1 else camera.width.item())
     height = int(camera.height[0].item() if camera.height.numel() > 1 else camera.height.item())
+
+    # [B6 viewer fix 2026-06-06] Guard zero width/height (ns viewer init frame
+    # có thể pass camera với dim=0 → rasterizer launch grid (0,0) → CUDA error
+    # "invalid configuration argument").
+    # Fallback Phase 22 res: 504×378 (= fern 4032×3024 / 8).
+    if width <= 0:
+        width = 504
+    if height <= 0:
+        height = 378
+    if fx <= 1e-6:
+        fx = width  # arbitrary positive focal
+    if fy <= 1e-6:
+        fy = height
+
     fov_x = _fov_from_focal(fx, width)
     fov_y = _fov_from_focal(fy, height)
 
