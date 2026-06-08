@@ -50,13 +50,17 @@ Lệnh: `cd duyen/CoR-GS && conda run -n corgs python metrics.py -s <data/scene>
 | 5 | AVGE | ↓ | average-error geom-mean `[√(1−SSIM), 10^(−PSNR/10), LPIPS]` (`utils.image_utils.avge`) |
 | 6 | AVGE_sk | ↓ | AVGE dùng SSIM_sk |
 
-**Nhóm 2 — Hiệu quả / chi phí** (5, ta tự đo — KHÔNG repo nào đo sẵn; "always measure compute cost"):
+**Nhóm 2 — Hiệu quả / chi phí** (3 chính + 2 optional, ta tự đo):
 | # | Metric | Hướng | Cách đo |
 |---|---|:---:|---|
-| 7 | **#Gaussians** | — | `get_xyz.shape[0]` lúc render (`bench_render_speed.py`) |
+| 7 | **#Gaussians** | — | `get_xyz.shape[0]` lúc render (proxy cho model size; MB ≈ N_gauss × 236 bytes) |
 | 8 | Train time (s/scene) | ↓ | wall-clock quanh `train.py` |
-| 9 | FPS (infer) | ↑ | warmup 20 + timed 5×N test views, `cuda.synchronize` @ -r 8 |
-| 10 | Model size (MB) | ↓ | size `point_cloud.ply` |
+| 9 | FPS (infer) | ↑ | warmup 50 + timed 300 renders, `cuda.synchronize` @ -r 8 |
+
+**Optional (chỉ khi cần — KHÔNG bắt buộc):**
+| # | Metric | Hướng | Cách đo |
+|---|---|:---:|---|
+| 10 | Model size (MB) | ↓ | size `point_cloud.ply` — **redundant với N_gauss** (correlation ~1.0). Chỉ report nếu reviewer hỏi deployment size |
 | 11 | Peak VRAM render (MB) | ↓ | `torch.cuda.max_memory_allocated` quanh render loop |
 
 > (ms/frame = nghịch đảo FPS, có trong `speed.json`.)
@@ -88,27 +92,67 @@ Lệnh: `cd duyen/CoR-GS && conda run -n corgs python metrics.py -s <data/scene>
 **Kết luận khảo sát:**
 - Core PSNR/SSIM(GS)/LPIPS-vgg = **đồng thuận 100%** → bộ tối thiểu.
 - SSIM_sk + AVGE = subset report (CoR-GS/DNGaussian/SCGaussian) → ta report cả để khớp họ.
-- **FPS/model-size: KHÔNG repo nào đo** → ta thêm như bonus efficiency, không phải để so paper.
+- **FPS/model-size/train-time: KHÔNG repo nào đo trong code** (verified: arg `fps` của FSGS/CoR-GS/NexusGS/Binocular = framerate xuất **video mp4** `VideoWriter`, KHÔNG phải infer speed). → FPS infer ta **tự đo** (`bench_render_speed.py`: warmup+timed+`cuda.synchronize`; `ms_per_frame`=1000/FPS=thời gian infer/ảnh). Đo CẢ train-time + infer-FPS = superset.
+- **FPS@-r8 chỉ so NỘI BỘ** giữa các reproduction -r8 của ta — KHÔNG đặt cạnh FPS paper (khác res + GPU).
 - LLFF chỉ có ở 9/13 repo. EFA-GS/FreGS/mip-splatting/GDAGS = không LLFF (Mip360/T&T/Blender) → **không phải baseline LLFF 3-view**, chỉ tham khảo cơ chế.
 - Khác biệt resolution (Binocular/Co-Adapt r2, DepthReg r1, SCGaussian full) = **lý do bắt buộc dùng evaluator chung + ép -r 8**.
 
 ---
 
-## 3. Bảng tổng baseline (điền dần)
+## 3. BẢNG MASTER — kết quả các mô hình (LLFF, -r8, evaluator chung)
 
-| # | Method | Venue | LLFF iter | PSNR paper | PSNR reproduced (-r8, unified) | Status | Doc |
-|---|--------|-------|------|-----------|-------------------------------|--------|-----|
-| 01 | Binocular3DGS | NeurIPS'24 | 30k | 21.44 (r2) | _pending_ | 🔧 build rasterizer | [01_binocular3dgs.md](01_binocular3dgs.md) |
-| — | FSGS | ICLR'24 | 10k | 20.31* | — | ⬜ chưa | — |
-| — | DNGaussian | CVPR'24 | 6k | 19.94 (MVS) | — | ⬜ chưa | — |
-| — | CoR-GS | ECCV'24 | 10k | 20.11* | — | ⬜ chưa | — |
-| — | DepthRegularizedGS | CVPRW'24 | 30k | — | — | ⬜ chưa | — |
-| — | Co-Adaptation | — | 30k | 20.20 | — | ⬜ chưa | — |
-| — | LoopSparseGS | — | multi | — | — | ⬜ chưa | — |
-| — | NexusGS | CVPR'25 | 30k | — | — | ⬜ chưa | — |
-| — | SCGaussian | NeurIPS'24 | 2k | — | — | ⬜ chưa | — |
+> **3-view = REPRODUCED** trên server (unified eval `corgs/metrics.py`).
+> **6-view & 9-view = LẤY TỪ PAPER** (không tự chạy — quyết định 2026-06-07).
+> Legend: ✅ done · ▶️ running · 🔧 setup · ❌ blocked · ⬜ chưa làm · `P`=số paper
 
-`*` = số ours đã cite ở fair-compare 10k bucket (CLAUDE.md). Legend: 🔧 setup · ▶️ running · ✅ done · ❌ blocked · ⬜ chưa làm
+### 3.1 — 3-view (reproduced, đủ metric)
+
+| Method | Venue | Iter | PSNR ↑ | SSIM ↑ | SSIM_sk ↑ | LPIPS ↓ | AVGE ↓ | N_gauss | FPS ↑ | Train s/scene ↓ | Status |
+|--------|-------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| 3DGS (vanilla) | SIGGRAPH'23 | — | — | — | — | — | — | — | — | — | ⬜ |
+| FSGS | ICLR'24 | 10k | — | — | — | — | — | — | — | — | ⬜ |
+| CoR-GS | ECCV'24 | 10k | — | — | — | — | — | — | — | — | ⬜ |
+| NexusGS | CVPR'25 | 30k | — | — | — | — | — | — | — | — | ⬜ |
+| Binocular3DGS | NeurIPS'24 | 30k | 21.356 | 0.744 | 0.742 | 0.171 | 0.092 | 106,620 | 266.6 | 1483 (~25m) | ✅ |
+| **CRSGaussian (ours)** | — | 10k | **21.918** | **0.769** | **0.767** | **0.158** | **0.084** | **94,917** | 175.4 | **676 (~11m)** | ⭐ |
+
+> **Ours**: 21.918 = Phase 22 pilot **N=24** (3-seed mean). Commit/defense = **21.89 ± 0.10** (mean 4× N=24, Phase 25_2). Chi tiết per-scene: [ours_crsgaussian.md](ours_crsgaussian.md).
+> **FPS = unified protocol** (warmup50+300timed, -r8, cùng GPU → SO THẲNG được). Binocular 266.6 vs ours 175.4: Binocular render nhanh hơn nhưng **cả hai real-time** (≫30 FPS); ours chậm hơn/frame do rasterizer-confidence.
+> **vs Binocular3DGS**: ours thắng MỌI metric chất lượng (PSNR **+0.562**, SSIM/SSIM_sk/LPIPS/AVGE) + **ít Gaussian** (95k<107k) + **train ~2.2× nhanh** (676 vs 1483s) ở **3× ít iter** — **infer là trục DUY NHẤT Binocular nhỉnh hơn**.
+
+### 3.2 — 6-view (từ paper)
+
+| Method | PSNR `P` | SSIM `P` | LPIPS `P` | Nguồn |
+|--------|:---:|:---:|:---:|---|
+| 3DGS (vanilla) | _ | _ | _ | paper |
+| FSGS | _ | _ | _ | paper |
+| CoR-GS | _ | _ | _ | paper |
+| NexusGS | _ | _ | _ | paper |
+| Binocular3DGS | _ | _ | _ | paper Table |
+| **CRSGaussian (ours)** | _ | _ | _ | ours |
+
+### 3.3 — 9-view (từ paper)
+
+| Method | PSNR `P` | SSIM `P` | LPIPS `P` | Nguồn |
+|--------|:---:|:---:|:---:|---|
+| 3DGS (vanilla) | _ | _ | _ | paper |
+| FSGS | _ | _ | _ | paper |
+| CoR-GS | _ | _ | _ | paper |
+| NexusGS | _ | _ | _ | paper |
+| Binocular3DGS | _ | _ | _ | paper Table |
+| **CRSGaussian (ours)** | _ | _ | _ | ours |
+
+### Paper-reported 3-view (tham chiếu, KHÔNG trộn với cột reproduced)
+
+| Method | PSNR paper | Protocol gốc | Ghi chú |
+|--------|-----------|--------------|---------|
+| Binocular3DGS | 21.44 | r2, 30k | ✅ reproduced 21.356 (−0.084) → [01](01_binocular3dgs.md) |
+| FSGS | 20.31 | 10k bucket | ours đã cite |
+| CoR-GS | 20.11 | 10k bucket | ours đã cite |
+| NexusGS | _điền_ | 30k | — |
+| 3DGS (vanilla) | ~thấp (floater) | — | lower-bound |
+
+> Baselines khác đã khảo sát (DNGaussian/DepthReg/Co-Adapt/LoopSparse/SCGaussian) — xem §2, chạy sau nếu cần.
 
 ---
 

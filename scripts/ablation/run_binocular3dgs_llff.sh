@@ -128,6 +128,10 @@ PY
 run_scene() {
   local gpu=$1 scene=$2
   local M="$OUT_DIR/${scene}_${N_VIEWS}views"
+  # Skip nếu đã train xong (idempotent: full bỏ qua fern đã chạy smoke). FORCE=1 để train lại.
+  if [ -z "${FORCE:-}" ] && [ -f "$M/point_cloud/iteration_${ITER}/point_cloud.ply" ]; then
+    echo ">> [GPU$gpu] $scene — đã có model, SKIP (FORCE=1 để train lại)"; return 0
+  fi
   local slog="$LOG_DIR/${scene}_r${RES}_$(date +%Y%m%d_%H%M%S).log"
   (  # toàn bộ scene chạy trong 1 subshell, log riêng ra $slog (vẫn hiện màn hình)
     exec > >(tee -a "$slog") 2>&1
@@ -211,9 +215,9 @@ PY
 # ---- Dispatch ----
 case "$MODE" in
   build) ensure_build; ensure_bench ;;
-  smoke) ensure_build; ensure_bench; : > "$LOGCSV"; run_scene "$GPU_A" fern; unified_eval fern; aggregate ;;
+  smoke) ensure_build; ensure_bench; run_scene "$GPU_A" fern; unified_eval fern; aggregate ;;
   full)
-    ensure_build; ensure_bench; : > "$LOGCSV"
+    ensure_build; ensure_bench
     ( for s in "${SCENES_A[@]}"; do run_scene "$GPU_A" "$s"; done ) &
     ( for s in "${SCENES_B[@]}"; do run_scene "$GPU_B" "$s"; done ) &
     wait

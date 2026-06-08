@@ -4,7 +4,7 @@
 > [Paper](https://arxiv.org/abs/2410.18822) · [Project](https://hanl2010.github.io/Binocular3DGS/) · repo: `graphdeco/3DGS` base
 > Mục tiêu: chạy lại full method trên LLFF 3-view ở **protocol của CRSGaussian (-r 8, hold-out test)** để có số fair so với 21.89.
 
-**Trạng thái (2026-06-07): 🔧 SETUP — còn 1 blocker (build rasterizer trong env `binocular3dgs`).**
+**Trạng thái (2026-06-07): ✅ DONE — reproduced AVG PSNR 21.356 (paper 21.44, lệch −0.084 = trung thực).**
 
 ---
 
@@ -182,32 +182,50 @@ python read_eval_result.py   # (kiểm tra script này gom PSNR/SSIM/LPIPS từ 
 > Binocular3DGS — KHÔNG dùng `metrics.py` riêng của repo (xem `00_index.md` §1.2).
 > Script tự in bảng này khi chạy `agg`.
 
-**Config chạy**: resolution = `__`, iter = 30k, render-env `binocular3dgs`, eval-env `corgs`, ngày `____`, GPU `____`.
+**Config chạy**: resolution = **-r 8**, iter = 30k, n_views=3, render-env `binocular3dgs` (torch 2.4.1+cu121, CUDA 12.4), eval-env `corgs` (unified), ngày **2026-06-07**, 2× GPU. Output `output/LLFF_ablation/`.
 
 | Scene | PSNR ↑ | SSIM ↑ | SSIM_sk ↑ | LPIPS ↓ | AVGE ↓ | N_gauss | FPS ↑ | MB ↓ | VRAM ↓ | train(s) |
 |-------|--------|--------|-----------|---------|--------|---------|-------|------|--------|----------|
-| fern | | | | | | | | | | |
-| flower | | | | | | | | | | |
-| fortress | | | | | | | | | | |
-| horns | | | | | | | | | | |
-| leaves | | | | | | | | | | |
-| orchids | | | | | | | | | | |
-| room | | | | | | | | | | |
-| trex | | | | | | | | | | |
-| **Avg** | | | | | | | | | | |
+| fern | 22.583 | 0.7582 | 0.7558 | 0.1604 | 0.0777 | 115,560 | 347.7 | 12.0 | 116.6 | ~1951 |
+| flower | 21.231 | 0.6755 | 0.6712 | 0.2212 | 0.1094 | 101,631 | 455.0 | 10.6 | 104.1 | 538 |
+| fortress | 25.555 | 0.8083 | 0.8019 | 0.1305 | 0.0551 | 68,786 | 348.0 | 7.2 | 88.4 | 565 |
+| horns | 20.614 | 0.7513 | 0.7420 | 0.1965 | 0.1009 | 93,315 | 180.8 | 9.7 | 128.8 | 623 |
+| leaves | 18.634 | 0.7051 | 0.7186 | 0.1600 | 0.1060 | 227,444 | 179.7 | 23.7 | 149.9 | 2470 |
+| orchids | 16.436 | 0.5379 | 0.5439 | 0.2362 | 0.1544 | 131,952 | 187.3 | 13.7 | 123.6 | 1810 |
+| room | 22.598 | 0.8656 | 0.8552 | 0.1409 | 0.0667 | 38,677 | 253.7 | 4.0 | 86.4 | 1575 |
+| trex | 23.200 | 0.8492 | 0.8458 | 0.1239 | 0.0623 | 75,596 | 180.4 | 7.9 | 126.6 | 2803 |
+| **Avg** | **21.356** | **0.744** | **0.742** | **0.171** | **0.092** | **106,620** | **266.6** | **11.1** | **115.6** | **1483** |
 
-**So với CRSGaussian** (cùng -r 8, hold-out test, cùng evaluator):
+> Per-scene: fortress 25.56 (cao nhất) · trex 23.20 · room 22.60 · fern 22.58 · flower 21.23 · horns 20.61 ·
+> leaves 18.63 · orchids 16.44 (thấp nhất — scene khó). fern train_s ~1951 từ smoke (full skip fern).
+> **FPS = unified protocol** (warmup50+300timed) — đã thay số speed.json cũ (đo thiếu warmup). Avg 266.6 FPS.
+
+**So với CRSGaussian** (cùng -r 8, hold-out test, **cùng evaluator + unified FPS protocol**):
 
 | Method | Iter | PSNR | SSIM | LPIPS | AVGE | N_gauss | FPS | Δ PSNR | Compute |
 |--------|------|------|------|-------|------|---------|-----|--------|---------|
-| Binocular3DGS (reproduced, -r8) | 30k | _ | _ | _ | _ | _ | _ | — | 1× |
+| Binocular3DGS (reproduced, -r8) | 30k | 21.356 | 0.744 | 0.171 | 0.092 | 106,620 | 266.6 | (ref) | 1× |
 | Binocular3DGS (paper, r2) | 30k | 21.44 | — | — | — | — | — | — | native |
-| **CRSGaussian (ours)** | 10k | **21.89** | _ | _ | _ | _ | _ | **+_** | 3× ít hơn |
+| **CRSGaussian (ours)** | 10k | **21.918** | **0.769** | **0.158** | **0.084** | **94,917** | 175.4 | **+0.562** | **3× ít hơn** |
+
+> **FPS so thẳng (unified)**: Binocular 266.6 > ours 175.4 → Binocular render nhanh hơn, nhưng **cả hai real-time**
+> (≫30 FPS); ours chậm hơn/frame do rasterizer-confidence. **Infer là trục DUY NHẤT Binocular nhỉnh hơn** —
+> ours thắng PSNR/SSIM/SSIM_sk/LPIPS/AVGE + ít Gaussian + train 2.2× nhanh ở 3× ít iter.
+
+> **Reproduction trung thực**: 21.356 vs paper 21.44 = **−0.084** (trong noise floor) → pipeline + evaluator chuẩn.
+> **Kết luận**: CRSGaussian **vượt Binocular3DGS +0.562 PSNR** (ours = Phase 22 pilot N=24, cùng unified eval) **+ ít Gaussian hơn (95k<107k) + train ~2.2× nhanh** (676 vs 1483 s/scene) ở **3× ít iter** (10k vs 30k). Ours commit value = 21.89 (4× N=24). FPS chờ bench unified. Chi tiết: [ours_crsgaussian.md](ours_crsgaussian.md).
 
 ---
 
 ## 8. Caveats cho paper (ghi để dùng khi viết)
 
+- **Chỉ reproduce 3-view**. Số **6-view / 9-view LẤY TỪ PAPER** (không tự chạy) → khi lên bảng paper,
+  ghi rõ 3-view = "reproduced (our protocol)", 6/9-view = "from paper". Điền số paper:
+  | View | Binocular3DGS (paper) PSNR | Nguồn |
+  |---|---|---|
+  | 3 | 21.44 | reproduced 21.356 ở đây |
+  | 6 | _điền từ paper_ | paper Table |
+  | 9 | _điền từ paper_ | paper Table |
 - **Cross-budget**: Binocular3DGS 30k vs ours 10k → nếu ta ≥ họ thì "match/beat SOTA ở 3× ít compute" (narrative doc 24_3).
 - **Cross-resolution**: số paper 21.44 ở r2; reproduced của ta ở r8 — KHÔNG trộn 2 cột.
 - **Non-deterministic**: Binocular3DGS không set seed → single-run có atomicAdd noise (±1.3 dB single-scene). Avg 8-scene ổn định hơn (±0.46). Nếu cần CI, lặp ≥3 lần.
