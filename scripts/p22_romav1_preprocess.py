@@ -239,8 +239,12 @@ def main():
     print(f"[P22] RoMa v1 init: {time.time()-t0:.1f}s")
     torch.cuda.reset_peak_memory_stats()
 
-    # ── 3 pairs ──
-    pairs = [(0, 1), (0, 2), (1, 2)]
+    # ── All pairs C(N_VIEWS, 2) — dynamic, work với mọi N ──
+    # N=3 → 3 pairs (same as hardcode cũ).
+    # N=6 → 15 pairs. N=9 → 36 pairs. Cost ~1.11s/pair on H100.
+    from itertools import combinations
+    pairs = list(combinations(range(N_VIEWS), 2))
+    print(f"[P22] N_VIEWS={N_VIEWS} → {len(pairs)} pairs (C({N_VIEWS},2))")
     all_xyz, all_rgb, totals = [], [], []
     t_pair = time.time()
     for ia, ib in pairs:
