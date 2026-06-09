@@ -50,6 +50,145 @@
 
 ---
 
+## 6-view (reproduced — N=24, 3-seed mean, full metrics)
+
+> Ours 6-view **đã chạy thật** (không lấy từ paper). Recipe IDENTICAL Phase 22 + `--n_views 6`, 10k iter, -r8.
+
+### Per-scene full metrics (3-seed mean, metrics.py recompute)
+
+| Scene | PSNR ↑ | SSIM ↑ | SSIM_sk ↑ | LPIPS ↓ | AVGE ↓ | N_gauss | FPS ↑ |
+|-------|--------|--------|-----------|---------|--------|---------|-------|
+| fern | 26.158 | 0.8746 | 0.8751 | 0.0835 | 0.0415 | 144,831 | 82.8 |
+| flower | 26.059 | 0.8618 | 0.8671 | 0.0898 | 0.0438 | 143,443 | 66.6 |
+| fortress | 29.467 | 0.9095 | 0.9079 | 0.0667 | 0.0286 | 144,891 | 87.2 |
+| horns | 25.324 | 0.8797 | 0.8758 | 0.1056 | 0.0527 | 148,587 | 67.4 |
+| leaves | 21.057 | 0.8000 | 0.8130 | 0.1190 | 0.0747 | 308,937 | 42.9 |
+| orchids | 18.870 | 0.6636 | 0.6737 | 0.1652 | 0.1078 | 157,622 | 65.1 |
+| room | 29.788 | 0.9467 | 0.9413 | 0.0657 | 0.0288 | 100,070 | 98.7 |
+| trex | 25.517 | 0.9129 | 0.9105 | 0.0772 | 0.0403 | 130,493 | 67.9 |
+| **MEAN** | **25.280** | **0.8561** | **0.8581** | **0.0966** | **0.0523** | **159,859** | **72.3** |
+
+### Per-seed PSNR breakdown (training-time, 24 cells)
+
+| Scene | seed 42 | seed 137 | seed 9999 | 3-seed mean | Range |
+|-------|---------|----------|-----------|-------------|-------|
+| fern | 26.159 | 26.213 | 26.169 | 26.180 | 0.054 |
+| flower | 26.001 | 26.081 | 26.144 | 26.075 | 0.143 |
+| fortress | 29.538 | 29.578 | 29.422 | 29.513 | 0.156 |
+| horns | 25.083 | 25.337 | 25.564 | 25.328 | 0.481 |
+| leaves | 21.031 | 21.076 | 21.069 | 21.059 | 0.045 |
+| orchids | 18.947 | 18.894 | 18.968 | 18.936 | 0.074 |
+| room | 29.787 | 29.927 | 29.765 | 29.826 | 0.162 |
+| trex | 25.532 | 25.573 | 25.512 | 25.539 | 0.061 |
+| **8-scene mean** | **25.260** | **25.335** | **25.327** | **25.307** | 0.075 |
+
+→ **Per-seed 8-scene mean range = 0.075** (vs noise floor ±0.10) → **rất ổn định**, mọi seed đều converge tới ~25.3 PSNR. Reproducibility cực mạnh.
+
+→ **Worst-cell variance**: horns range 0.481 dB (single-cell variance từ atomicAdd). Mean qua 8 scenes vẫn cancel ra ±0.05.
+
+- **2 PSNR**: **25.307** (training-time analyzer 3-seed) vs **25.280** (metrics.py recompute từ PNG renders, drift −0.027 do quantize). Cả 2 đều dùng được.
+- **Δ 6-view vs 3-view**:
+  - PSNR: **+3.389** (21.918 → 25.307)
+  - SSIM: **+0.087** (0.769 → 0.856)
+  - LPIPS: **−0.061** (0.158 → 0.097)
+  - N_gauss: **+1.7×** (95K → 160K)
+  - FPS: **−58%** (175 → 72) — vẫn ≫ 30 FPS real-time
+- **Per-scene highlights**:
+  - **room +6.86 dB** (22.97 → 29.83) — biggest jump (sparse init thiếu cho geometry phẳng)
+  - **fortress +3.94** (25.57 → 29.51)
+  - **leaves/orchids +1.4-1.7** — least improvement (foliage/thin texture hard regardless)
+
+### Provenance 6-view
+
+- Recipe: identical Phase 22 + `--n_views 6`. RoMa preprocess: C(6,2)=15 pairs (`scripts/p22_romav1_preprocess.py` với N_VIEWS=6, ~30s/scene).
+- Outputs: `output/p25_3_6view/A3_seed{42,137,9999}_<scene>/` (24 dirs).
+- Logs: `logs/p25_3_6view/A3_seed*_*.log` (KEEP — archive cho future re-analysis sau khi xóa output).
+- FPS bench: same protocol Phase 22 (warmup50 + timed300, -r8, seed42), output `output/ablation/crsgaussian_6view/<scene>.json`.
+
+> Baseline 6-view (FSGS/CoR-GS/Binocular/...) = **lấy từ paper** (không tự chạy) — xem `00_index.md` §3.2.
+
+---
+
+## 9-view (reproduced — N=24, 3-seed mean, full metrics)
+
+> Ours 9-view **đã chạy thật**. Recipe IDENTICAL Phase 22 + `--n_views 9`, 10k iter, -r8.
+
+### Per-scene full metrics (3-seed mean, metrics.py recompute)
+
+| Scene | PSNR ↑ | SSIM ↑ | SSIM_sk ↑ | LPIPS ↓ | AVGE ↓ | N_gauss | FPS ↑ |
+|-------|--------|--------|-----------|---------|--------|---------|-------|
+| fern | 27.454 | 0.9027 | 0.9034 | 0.0661 | 0.0333 | 255,259 | 61.0 |
+| flower | 27.154 | 0.8875 | 0.8930 | 0.0723 | 0.0360 | 246,358 | 54.8 |
+| fortress | 29.239 | 0.8977 | 0.8962 | 0.0672 | 0.0300 | 269,304 | 62.4 |
+| horns | 26.887 | 0.9197 | 0.9180 | 0.0709 | 0.0379 | 275,809 | 56.2 |
+| leaves | 21.909 | 0.8293 | 0.8413 | 0.1055 | 0.0655 | 381,280 | 41.7 |
+| orchids | 19.665 | 0.7054 | 0.7166 | 0.1451 | 0.0952 | 246,837 | 54.6 |
+| room | 29.751 | 0.9560 | 0.9509 | 0.0579 | 0.0256 | 198,840 | 76.9 |
+| trex | 27.628 | 0.9393 | 0.9380 | 0.0545 | 0.0292 | 230,059 | 59.9 |
+| **MEAN** | **26.211** | **0.8797** | **0.8822** | **0.0799** | **0.0441** | **262,968** | **58.4** |
+
+### Per-seed PSNR breakdown (training-time, 24 cells)
+
+| Scene | seed 42 | seed 137 | seed 9999 | 3-seed mean | Range |
+|-------|---------|----------|-----------|-------------|-------|
+| fern | 27.470 | 27.475 | 27.464 | 27.470 | 0.011 |
+| flower | 27.120 | 27.235 | 27.159 | 27.171 | 0.115 |
+| fortress | 29.209 | 29.150 | 29.510 | 29.290 | 0.360 |
+| horns | 27.303 | 26.674 | 26.706 | 26.894 | 0.630 |
+| leaves | 21.934 | 21.869 | 21.929 | 21.911 | 0.065 |
+| orchids | 19.705 | 19.730 | 19.755 | 19.730 | 0.050 |
+| room | 30.179 | 29.374 | 29.791 | 29.781 | 0.806 |
+| trex | 27.628 | 27.716 | 27.606 | 27.650 | 0.110 |
+| **8-scene mean** | **26.319** | **26.153** | **26.240** | **26.237** | 0.166 |
+
+→ **Per-seed 8-scene range = 0.166** (slightly larger than 6-view 0.075 nhưng vẫn trong noise floor ±0.10 chút). Reproducibility tốt.
+
+→ **room range 0.806 + horns 0.630**: largest single-cell atomicAdd variance ở 9-view (init dense hơn 6-view nhiều → race condition cao hơn). Mean qua 8 scenes vẫn cancel.
+
+- **2 PSNR**: **26.237** (training-time analyzer 3-seed) vs **26.211** (metrics.py recompute từ PNG renders, drift −0.026).
+- **Δ 9-view vs 6-view**:
+  - PSNR: **+0.930** (25.307 → 26.237) — **diminishing returns 3.6× vs 3→6 jump (+3.389)**
+  - SSIM: **+0.024** (0.856 → 0.880)
+  - LPIPS: **−0.017** (0.097 → 0.080)
+  - N_gauss: **+1.6×** (160K → 263K)
+  - FPS: **−19%** (72 → 58) — vẫn ≫ 30 FPS real-time
+- **Per-view gain analysis**:
+  - 3→6 view: **+1.13 dB/view** (3 extra views = +3.39 dB)
+  - 6→9 view: **+0.31 dB/view** (3 extra views = +0.93 dB)
+  - **Diminishing rate: 3.6×** — gain/view giảm mạnh khi tăng N
+- **Per-scene highlights**:
+  - **fern** +1.29 dB (26.18 → 27.47) — biggest single-scene jump
+  - **horns** +1.57 (25.33 → 26.89)
+  - **fortress −0.22** (29.51 → 29.29) — slight decrease (already saturated ở 6-view, atomicAdd noise)
+  - **leaves/orchids +0.85** — vẫn limit by thin-structure
+
+### Provenance 9-view
+
+- Recipe: identical Phase 22 + `--n_views 9`. RoMa preprocess: C(9,2)=36 pairs (`scripts/p22_romav1_preprocess.py` với N_VIEWS=9, ~50s/scene).
+- Outputs: `output/p25_4_9view/A3_seed{42,137,9999}_<scene>/` (24 dirs).
+- Logs: `logs/p25_4_9view/A3_seed*_*.log` (KEEP — evidence cho 26.237).
+- FPS bench: same protocol (warmup50 + timed300, -r8, seed42), output `output/ablation/crsgaussian_9view/<scene>.json`.
+
+> Baseline 9-view (FSGS/CoR-GS/Binocular/...) = **lấy từ paper** — xem `00_index.md` §3.3.
+
+---
+
+## Progression summary (3-view → 9-view, ours)
+
+| n_views | PSNR | SSIM | LPIPS | N_gauss | FPS | Δ PSNR / view |
+|---------|------|------|-------|---------|-----|---------------|
+| 3 | 21.918 | 0.7692 | 0.158 | 95K | 175 | — |
+| 6 | 25.307 | 0.8561 | 0.097 | 160K | 72 | +1.13/view |
+| 9 | 26.237 | 0.8797 | 0.080 | 263K | 58 | +0.31/view |
+
+→ **Strong diminishing returns**: gain per added view giảm 3.6× từ 3→6 sang 6→9. Consistent với sparse-view literature.
+
+→ **FPS scales inversely with N_gauss** (PSNR ↑ ⇄ FPS ↓): 9-view có N_gauss 2.8× hơn 3-view nhưng FPS chỉ giảm 3×.
+
+→ **Real-time threshold maintained**: cả 3 setting ≫ 30 FPS (real-time).
+
+---
+
 ## Provenance
 - Recipe: Phase 22 RoMa v1 + A3-TRIM, 10k, -r8. Models: `CoR-GS/output/p22_pilot/A3_seed42_<scene>/` (seed42 đại diện cho FPS). Commit value 21.89 (mean 4× N=24, [[project_phase25_2_phase22_lock]]).
 - Bộ số trên = N=24 (3-seed) mean, eval unified `corgs/metrics.py`. PSNR 21.918 = Phase 22 pilot.

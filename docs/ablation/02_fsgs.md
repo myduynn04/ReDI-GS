@@ -4,7 +4,7 @@
 > [Paper](https://arxiv.org/abs/2312.00451) · [Project](https://zehaozhu.github.io/FSGS/) · base 3DGS.
 > Mục tiêu: reproduce LLFF 3-view ở protocol ta (images_8 ≈ -r8, 10k) → unified eval + unified FPS.
 
-**Trạng thái (2026-06-08): 🔧 SETUP — chờ diagnostic server (env + fused.ply + MiDaS).**
+**Trạng thái (2026-06-08): ✅ DONE — reproduced AVG PSNR 20.407 (paper ~20.43, −0.023 = trung thực).**
 
 ---
 
@@ -28,7 +28,7 @@ Paper LLFF 3-view PSNR ≈ **20.31** (số ours đã cite, 10k bucket). Đặc �
 |---|---|---|
 | Env | `environment.yml`: python 3.8, **torch 1.12.1 + cudatoolkit 11.6** | ⚠️ server chỉ có **CUDA 12.4** → build rasterizer torch-cu116 với nvcc 12.4 dễ FAIL. Cân nhắc env torch cu121 (như binocular3dgs) + cài deps tay |
 | Rasterizer | `diff-gaussian-rasterization-confidence` (depth-enabled) + simple-knn | build `--no-build-isolation` |
-| **Init ply** | `<scene>/3_views/dense/fused.ply` (COLMAP-MVS) | ⚠️ **Phase 18 ĐÃ swap file này** (backup `.colmap_mvs_backup`). FSGS phải dùng **COLMAP-MVS gốc** → restore backup trước khi chạy |
+| **Init ply** | `<scene>/3_views/dense/fused.ply` (COLMAP-MVS) | ⚠️ **8/8 scene đã bị swap = RoMa init của ta** (verified 2026-06-08, đều có `.colmap_mvs_backup`). FSGS phải dùng COLMAP-MVS gốc. **KHÔNG ghi đè data Phase 22** → dùng `prepare`: tạo data tree RIÊNG `FSGS/dataset_ablation/nerf_llff_data/` (symlink images/sparse/poses + copy MVS từ backup). Data gốc nguyên vẹn. |
 | **Depth model** | **MiDaS DPT_Hybrid** qua `torch.hub` (load lúc import `depth_utils`, gọi mỗi camera trong `loadCam`) | cần internet 1 lần (~470MB DPT + repo MiDaS) hoặc torch-hub cache. `timm` bắt buộc |
 | Resolution | đọc folder **`images_8`** (≈ ảnh//8) | ✓ khớp -r8 ta (cùng test pixel) |
 | Iter / split | 10k · llffhold=8 + linspace(3) | ✓ khớp ta |
@@ -97,12 +97,29 @@ Mỗi scene (KHÔNG có bước triangulate riêng — init = fused.ply có sẵ
 
 ## 6. Kết quả (điền sau khi chạy)
 
-| Scene | PSNR ↑ | SSIM ↑ | SSIM_sk ↑ | LPIPS ↓ | AVGE ↓ | N_gauss | FPS ↑ | Train(s) |
-|-------|--------|--------|-----------|---------|--------|---------|-------|----------|
-| (8 scenes) | | | | | | | | |
-| **Avg** | | | | | | | | |
+**Config**: images_8 (≈-r8), 10k iter, init COLMAP-MVS (data tree riêng), env `fsgs` (torch 2.4.1+cu121), MiDaS DPT_Hybrid. 1-seed.
 
-vs ours 21.918 / Binocular 21.356. Paper FSGS ≈ 20.31.
+| Scene | PSNR ↑ | SSIM ↑ | SSIM_sk ↑ | LPIPS ↓ | AVGE ↓ | N_gauss | Train(s) | FPS ↑ |
+|-------|--------|--------|-----------|---------|--------|---------|----------|-------|
+| fern | 21.896 | 0.7213 | 0.7166 | 0.2085 | 0.0919 | 184,370 | 2603 | 223.5 |
+| flower | 20.383 | 0.6273 | 0.6226 | 0.2467 | 0.1243 | 522,152 | 2744 | 206.8 |
+| fortress | 23.367 | 0.7258 | 0.7128 | 0.1694 | 0.0754 | 72,698 | 2768 | 290.2 |
+| horns | 20.192 | 0.7157 | 0.7063 | 0.2289 | 0.1100 | 93,413 | 2492 | 259.5 |
+| leaves | 17.629 | 0.6347 | 0.6498 | 0.2064 | 0.1293 | **1,051,981** | 3785 | 115.8 |
+| orchids | 16.258 | 0.5115 | 0.5186 | 0.2596 | 0.1633 | 103,390 | 2439 | 322.5 |
+| room | 21.720 | 0.8437 | 0.8319 | 0.1666 | 0.0777 | 47,110 | 2339 | 609.3 |
+| trex | 21.810 | 0.8139 | 0.8082 | 0.1520 | 0.0765 | 184,770 | 2626 | 222.0 |
+| **Avg** | **20.407** | **0.699** | **0.696** | **0.205** | **0.106** | **282,486** | **2724** | **281.2** |
+
+**Reproduction**: 20.407 vs paper ~20.43 = **−0.023** → khớp.
+
+**So với ours**: ours 21.918 = **+1.511 PSNR** vs FSGS, **SSIM/LPIPS/AVGE đều tốt hơn**, và **ít Gaussian hơn ~3×**
+(ours 94,917 vs FSGS **282,486**) + **train ~4× nhanh** (676 vs 2724 s/scene).
+- **FPS (unified)**: FSGS **281.2** > ours 175.4 → FSGS render nhanh hơn (dù nhiều Gaussian hơn) vì render path nhẹ
+  (không tính confidence/depth như rasterizer ours). Cả hai real-time. **Infer cũng là trục FSGS nhỉnh hơn ours** (giống Binocular).
+- FSGS densify khổng lồ (leaves **1.05M** Gaussian → OOM nếu GPU <10GB).
+
+> Caveat: FSGS chậm-train + nặng do `sample_pseudo_interval=1` + Gaussian Unpooling. Train time đo trên GPU shared (~45 phút/scene).
 
 ---
 

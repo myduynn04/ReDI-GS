@@ -110,8 +110,8 @@ Lệnh: `cd duyen/CoR-GS && conda run -n corgs python metrics.py -s <data/scene>
 | Method | Venue | Iter | PSNR ↑ | SSIM ↑ | SSIM_sk ↑ | LPIPS ↓ | AVGE ↓ | N_gauss | FPS ↑ | Train s/scene ↓ | Status |
 |--------|-------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | 3DGS (vanilla) | SIGGRAPH'23 | — | — | — | — | — | — | — | — | — | ⬜ |
-| FSGS | ICLR'24 | 10k | — | — | — | — | — | — | — | — | ⬜ |
-| CoR-GS | ECCV'24 | 10k | — | — | — | — | — | — | — | — | ⬜ |
+| FSGS | ICLR'24 | 10k | 20.407 | 0.699 | 0.696 | 0.205 | 0.106 | 282,486 | 281.2 | 2724 (~45m) | ✅ |
+| CoR-GS (base của ours) | ECCV'24 | 10k | 20.110 | 0.704 | 0.699 | 0.201 | 0.110 | 80,680 | _bench_ | n/a | ✅ |
 | NexusGS | CVPR'25 | 30k | — | — | — | — | — | — | — | — | ⬜ |
 | Binocular3DGS | NeurIPS'24 | 30k | 21.356 | 0.744 | 0.742 | 0.171 | 0.092 | 106,620 | 266.6 | 1483 (~25m) | ✅ |
 | **CRSGaussian (ours)** | — | 10k | **21.918** | **0.769** | **0.767** | **0.158** | **0.084** | **94,917** | 175.4 | **676 (~11m)** | ⭐ |
@@ -120,27 +120,31 @@ Lệnh: `cd duyen/CoR-GS && conda run -n corgs python metrics.py -s <data/scene>
 > **FPS = unified protocol** (warmup50+300timed, -r8, cùng GPU → SO THẲNG được). Binocular 266.6 vs ours 175.4: Binocular render nhanh hơn nhưng **cả hai real-time** (≫30 FPS); ours chậm hơn/frame do rasterizer-confidence.
 > **vs Binocular3DGS**: ours thắng MỌI metric chất lượng (PSNR **+0.562**, SSIM/SSIM_sk/LPIPS/AVGE) + **ít Gaussian** (95k<107k) + **train ~2.2× nhanh** (676 vs 1483s) ở **3× ít iter** — **infer là trục DUY NHẤT Binocular nhỉnh hơn**.
 
-### 3.2 — 6-view (từ paper)
+### 3.2 — 6-view (ours = reproduced · baselines = từ paper)
 
-| Method | PSNR `P` | SSIM `P` | LPIPS `P` | Nguồn |
+| Method | PSNR ↑ | SSIM ↑ | LPIPS ↓ | Nguồn |
 |--------|:---:|:---:|:---:|---|
 | 3DGS (vanilla) | _ | _ | _ | paper |
 | FSGS | _ | _ | _ | paper |
 | CoR-GS | _ | _ | _ | paper |
 | NexusGS | _ | _ | _ | paper |
 | Binocular3DGS | _ | _ | _ | paper Table |
-| **CRSGaussian (ours)** | _ | _ | _ | ours |
+| **CRSGaussian (ours)** | **25.307** | **0.856** | **0.097** | **reproduced N=24** |
 
-### 3.3 — 9-view (từ paper)
+> Ours 6-view = PROJECT BEST (Δ vs 3-view: PSNR **+3.389**, SSIM +0.087, LPIPS −0.061). Full metrics + per-scene + provenance: [ours_crsgaussian.md](ours_crsgaussian.md) §6-view.
 
-| Method | PSNR `P` | SSIM `P` | LPIPS `P` | Nguồn |
+### 3.3 — 9-view (ours = reproduced · baselines = từ paper)
+
+| Method | PSNR ↑ | SSIM ↑ | LPIPS ↓ | Nguồn |
 |--------|:---:|:---:|:---:|---|
 | 3DGS (vanilla) | _ | _ | _ | paper |
 | FSGS | _ | _ | _ | paper |
 | CoR-GS | _ | _ | _ | paper |
 | NexusGS | _ | _ | _ | paper |
 | Binocular3DGS | _ | _ | _ | paper Table |
-| **CRSGaussian (ours)** | _ | _ | _ | ours |
+| **CRSGaussian (ours)** | **26.237** | **0.880** | **0.080** | **reproduced N=24** |
+
+> Ours 9-view: Δ vs 6-view = PSNR **+0.930** (diminishing returns 3.6× vs 3→6 jump), SSIM +0.024, LPIPS −0.017. Full metrics + per-scene + provenance: [ours_crsgaussian.md](ours_crsgaussian.md) §9-view + §Progression summary.
 
 ### Paper-reported 3-view (tham chiếu, KHÔNG trộn với cột reproduced)
 
