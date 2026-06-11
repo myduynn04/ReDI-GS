@@ -112,12 +112,13 @@ Lệnh: `cd duyen/CoR-GS && conda run -n corgs python metrics.py -s <data/scene>
 | 3DGS (vanilla) | SIGGRAPH'23 | — | — | — | — | — | — | — | — | — | ⬜ |
 | FSGS | ICLR'24 | 10k | 20.407 | 0.699 | 0.696 | 0.205 | 0.106 | 282,486 | 281.2 | 2724 (~45m) | ✅ |
 | CoR-GS (base của ours) | ECCV'24 | 10k | 20.110 | 0.704 | 0.699 | 0.201 | 0.110 | 80,680 | _bench_ | n/a | ✅ |
+| DNGaussian | CVPR'24 | 6k | 19.091 | 0.597 | 0.586 | 0.295 | 0.140 | 46,894 | 305.1 | ~492 (~8m) | ✅ |
 | NexusGS | CVPR'25 | 30k | — | — | — | — | — | — | — | — | ⬜ |
 | Binocular3DGS | NeurIPS'24 | 30k | 21.356 | 0.744 | 0.742 | 0.171 | 0.092 | 106,620 | 266.6 | 1483 (~25m) | ✅ |
-| **CRSGaussian (ours)** | — | 10k | **21.918** | **0.769** | **0.767** | **0.158** | **0.084** | **94,917** | 175.4 | **676 (~11m)** | ⭐ |
+| **CRSGaussian (ours)** | — | 10k | **21.918** | **0.769** | **0.767** | **0.158** | **0.084** | **94,917** | 213.2 | **676 (~11m)** | ⭐ |
 
 > **Ours**: 21.918 = Phase 22 pilot **N=24** (3-seed mean). Commit/defense = **21.89 ± 0.10** (mean 4× N=24, Phase 25_2). Chi tiết per-scene: [ours_crsgaussian.md](ours_crsgaussian.md).
-> **FPS = unified protocol** (warmup50+300timed, -r8, cùng GPU → SO THẲNG được). Binocular 266.6 vs ours 175.4: Binocular render nhanh hơn nhưng **cả hai real-time** (≫30 FPS); ours chậm hơn/frame do rasterizer-confidence.
+> **FPS = unified protocol** (warmup50+300timed, -r8, cùng GPU → SO THẲNG được). Ranking: **DNGaussian 305.1 > FSGS 281.2 > Binocular 266.6 > ours 213.2**. Ours = số **FAIR** (`bench_fps_crsgaussian_fair.sh`): bỏ pass SH→RGB Python *chỉ-dùng-lúc-train* khỏi đường infer — verified **bit-identical ảnh** (img_max_abs_diff=0.0 mọi scene); raw-có-pass ≈ 175-188 (biến thiên GPU ±10). FPS **KHÔNG đơn thuần tỉ lệ nghịch N_gauss**: ours (95k) ít Gaussian hơn FSGS (282k) lẫn Binocular (107k) nhưng vẫn chậm hơn → nguyên nhân chính = **chi phí thật của rasterizer-confidence** (CUDA kernel mang trọng số confidence per-Gaussian), không phải N_gauss. **Cả 4 đều real-time** (≫30 FPS) → infer KHÔNG phải bottleneck thực tế; ours đánh đổi tốc độ/frame lấy chất lượng (thắng MỌI metric quality). DNGaussian nhanh nhất nhờ ít Gaussian nhất (~47k).
 > **vs Binocular3DGS**: ours thắng MỌI metric chất lượng (PSNR **+0.562**, SSIM/SSIM_sk/LPIPS/AVGE) + **ít Gaussian** (95k<107k) + **train ~2.2× nhanh** (676 vs 1483s) ở **3× ít iter** — **infer là trục DUY NHẤT Binocular nhỉnh hơn**.
 
 ### 3.2 — 6-view (ours = reproduced · baselines = từ paper)
@@ -153,10 +154,11 @@ Lệnh: `cd duyen/CoR-GS && conda run -n corgs python metrics.py -s <data/scene>
 | Binocular3DGS | 21.44 | r2, 30k | ✅ reproduced 21.356 (−0.084) → [01](01_binocular3dgs.md) |
 | FSGS | 20.31 | 10k bucket | ours đã cite |
 | CoR-GS | 20.11 | 10k bucket | ours đã cite |
+| DNGaussian | 19.12 | r8, 6k | ✅ reproduced 19.091 (−0.029, khớp gần hoàn hảo) → [05](05_dngaussian.md) |
 | NexusGS | _điền_ | 30k | — |
 | 3DGS (vanilla) | ~thấp (floater) | — | lower-bound |
 
-> Baselines khác đã khảo sát (DNGaussian/DepthReg/Co-Adapt/LoopSparse/SCGaussian) — xem §2, chạy sau nếu cần.
+> Baselines khác đã khảo sát (DepthReg/Co-Adapt/LoopSparse/SCGaussian) — xem §2, chạy sau nếu cần.
 
 ---
 

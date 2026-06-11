@@ -15,18 +15,18 @@
 
 | Scene | PSNR ↑ | SSIM ↑ | SSIM_sk ↑ | LPIPS ↓ | AVGE ↓ | N_gauss | Train (s) ↓ | FPS ↑ |
 |-------|--------|--------|-----------|---------|--------|---------|-------------|-------|
-| fern | 23.840 | 0.7970 | 0.7947 | 0.1426 | 0.0660 | 86,715 | 672 | 122.6 |
-| flower | 21.413 | 0.6915 | 0.6872 | 0.2086 | 0.1054 | 107,109 | 984 | 84.6 |
-| fortress | 25.569 | 0.8369 | 0.8312 | 0.1173 | 0.0518 | 60,316 | 492 | 254.7 |
-| horns | 21.079 | 0.7749 | 0.7658 | 0.1849 | 0.0942 | 69,765 | 414 | 175.5 |
-| leaves | 19.375 | 0.7287 | 0.7425 | 0.1630 | 0.0995 | 246,378 | 1482 | 83.0 |
-| orchids | 17.582 | 0.5815 | 0.5891 | 0.2053 | 0.1333 | 78,492 | 580 | 157.5 |
-| room | 22.970 | 0.8808 | 0.8696 | 0.1274 | 0.0622 | 39,852 | 336 | 351.4 |
-| trex | 23.514 | 0.8626 | 0.8585 | 0.1155 | 0.0584 | 70,711 | 450 | 173.6 |
-| **MEAN** | **21.918** | **0.7692** | **0.7673** | **0.1581** | **0.0839** | **94,917** | **676** | **175.4** |
+| fern | 23.840 | 0.7970 | 0.7947 | 0.1426 | 0.0660 | 86,715 | 672 | 221.9 |
+| flower | 21.413 | 0.6915 | 0.6872 | 0.2086 | 0.1054 | 107,109 | 984 | 145.9 |
+| fortress | 25.569 | 0.8369 | 0.8312 | 0.1173 | 0.0518 | 60,316 | 492 | 295.8 |
+| horns | 21.079 | 0.7749 | 0.7658 | 0.1849 | 0.0942 | 69,765 | 414 | 194.2 |
+| leaves | 19.375 | 0.7287 | 0.7425 | 0.1630 | 0.0995 | 246,378 | 1482 | 96.0 |
+| orchids | 17.582 | 0.5815 | 0.5891 | 0.2053 | 0.1333 | 78,492 | 580 | 174.3 |
+| room | 22.970 | 0.8808 | 0.8696 | 0.1274 | 0.0622 | 39,852 | 336 | 389.7 |
+| trex | 23.514 | 0.8626 | 0.8585 | 0.1155 | 0.0584 | 70,711 | 450 | 188.0 |
+| **MEAN** | **21.918** | **0.7692** | **0.7673** | **0.1581** | **0.0839** | **94,917** | **676** | **213.2** |
 
 - Train ≈ **676 s/scene (~11.3 phút)** ở 10k iter (3-seed mean).
-- **FPS = 175.4** (unified protocol warmup50+300timed, -r8, đo trên seed42; FPS N_gauss lệch nhẹ so cột N_gauss 3-seed).
+- **FPS = 213.2 (FAIR)** — unified protocol warmup50+300timed, -r8, seed42. **FAIR** = bỏ pass SH→RGB Python *chỉ-dùng-lúc-train* khỏi đường infer (`bench_fps_crsgaussian_fair.sh`), **verified bit-identical ảnh** (img_max_abs_diff=0.0 mọi scene). Raw-có-pass ≈ 175-188 (biến thiên GPU ±10 giữa các lần đo). N_gauss FPS đo trên seed42, lệch nhẹ so cột N_gauss 3-seed.
 
 > Per-scene PSNR: fortress 25.57 (cao nhất) · fern 23.84 · trex 23.51 · room 22.97 · flower 21.41 · horns 21.08 ·
 > leaves 19.38 · orchids 17.58 (thấp nhất). Pattern khớp đặc tính LLFF.
@@ -38,14 +38,15 @@
 | Method | Iter | PSNR | SSIM | SSIM_sk | LPIPS | AVGE | N_gauss | Train s/scene | FPS (unified) |
 |--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Binocular3DGS | 30k | 21.356 | 0.744 | 0.742 | 0.171 | 0.092 | 106,620 | 1483 | **266.6** |
-| **CRSGaussian (ours)** | 10k | **21.918** | **0.769** | **0.767** | **0.158** | **0.084** | **94,917** | **676** | 175.4 |
-| **Δ ours − Bino** | | **+0.562** | **+0.025** | **+0.025** | **−0.013** | **−0.008** | **−11,703** | **−807 (~2.2×)** | −91 |
+| **CRSGaussian (ours)** | 10k | **21.918** | **0.769** | **0.767** | **0.158** | **0.084** | **94,917** | **676** | 213.2 |
+| **Δ ours − Bino** | | **+0.562** | **+0.025** | **+0.025** | **−0.013** | **−0.008** | **−11,703** | **−807 (~2.2×)** | −53 |
 
 **Luận điểm cho paper:** ours **thắng mọi metric chất lượng** (PSNR +0.562, SSIM/SSIM_sk/LPIPS/AVGE đều tốt hơn) + **ít Gaussian hơn** (95k vs 107k) + **train ~2.2× nhanh** (676 vs 1483 s/scene) ở **3× ít iter**.
 
-> **FPS (unified protocol — so thẳng được)**: Binocular **266.6** vs ours **175.4** → Binocular render nhanh hơn,
-> NHƯNG **cả hai đều real-time** (≫30 FPS). Ours chậm hơn/frame do **rasterizer-confidence** (xuất thêm kênh
-> confidence + depth) — đây là chi phí của cơ chế CRS, đổi lấy +0.56 PSNR + ít Gaussian + train nhanh.
+> **FPS (unified protocol — so thẳng được)**: Binocular **266.6** vs ours **213.2 (FAIR)** → Binocular render nhanh hơn,
+> NHƯNG **cả hai đều real-time** (≫30 FPS). Ours chậm hơn/frame do **rasterizer-confidence** (CUDA kernel mang
+> trọng số confidence per-Gaussian) — chi phí thật của cơ chế CRS, đổi lấy +0.56 PSNR + ít Gaussian + train nhanh.
+> (FAIR = đã loại pass SH→RGB train-only khỏi đo infer, img_diff=0; raw-có-pass ≈ 175-188.)
 > Trình bày thành thật: **infer là trục DUY NHẤT Binocular nhỉnh hơn**; ours thắng tất cả còn lại.
 
 ---
@@ -175,11 +176,15 @@
 
 ## Progression summary (3-view → 9-view, ours)
 
-| n_views | PSNR | SSIM | LPIPS | N_gauss | FPS | Δ PSNR / view |
-|---------|------|------|-------|---------|-----|---------------|
+| n_views | PSNR | SSIM | LPIPS | N_gauss | FPS (raw) | Δ PSNR / view |
+|---------|------|------|-------|---------|-----------|---------------|
 | 3 | 21.918 | 0.7692 | 0.158 | 95K | 175 | — |
 | 6 | 25.307 | 0.8561 | 0.097 | 160K | 72 | +1.13/view |
 | 9 | 26.237 | 0.8797 | 0.080 | 263K | 58 | +0.31/view |
+
+> ⚠️ **FPS ở bảng này = RAW** (có pass SH→RGB train-only, đo cùng cách cho cả 3/6/9 → nội-bộ apples-to-apples).
+> Số **canonical cross-method cho 3-view = 213.2 (FAIR)** (xem §3-view + §Binocular). 6/9-view CHƯA đo lại fair
+> (không có so cross-method ở đó vì baselines = paper); nếu áp fair thì ~+14% (≈82/66). Tất cả vẫn ≫30 FPS.
 
 → **Strong diminishing returns**: gain per added view giảm 3.6× từ 3→6 sang 6→9. Consistent với sparse-view literature.
 
