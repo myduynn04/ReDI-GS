@@ -23,3 +23,7 @@ logs/
 
 run_scripts*
 thesis/*
+
+docs/
+thesis.zip
+train.py.pre_p29_20260626
