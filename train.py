@@ -1053,25 +1053,32 @@ if __name__ == "__main__":
     # parser.add_argument("--configs", type=str, default = "")
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[500, 2000, 3000, 5000, 7000, 10000, 15000, 30000])  # Số vòng lặp được chấm điểm 
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[10000, 30000])   # vòng lặp lưu kết quả .ply
-    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--quiet", action="store_true") #Dùng để tăt toàn bộ  mọi print() trong code , tắt log in ra màn hình terminal 
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[10_000]) # Tại vòng nào thì lưu checkpoint (để train tiếp sau này được).
     parser.add_argument("--start_checkpoint", type=str, default = None)
-    # parser.add_argument("--checkpoint2", type=str, default = None) # Không bật, Gốc lưu checkpoint cho model thứ 2 của Corgs
-    # parser.add_argument("--train_bg", action="store_true")  # Có train luôn cả phần nền (background) hay không. mặc định tắt khi 3 views
+    # parser.add_argument("--checkpoint2", type=str, default = None) # Không bật, Đã xóa Gốc lưu checkpoint cho model thứ 2 của Corgs
+    parser.add_argument("--train_bg", action="store_true")  # Có train luôn cả phần nền (background) hay không. mặc định tắt khi 3 views
 
     parser.add_argument('--gaussiansN', type=int, default=1) #Không bật, số Gaussian field song song, base của CoRGS, của mình chạy theo 3dgs gốc thì là 1 field
 
-    parser.add_argument("--onlyrgb", action='store_true', default=False) # Dùng để tắt cái nhánh pseudo-camera của corgs, Hiện tại set False nhưng tương lai set False sẽ tiết kiệm trainning time. Về mặt kết quả là không ảnh hưởng
+    # parser.add_argument("--onlyrgb", action='store_true', default=False) # Đã xóa, cần thêm lại trên code gốc Dùng để tắt cái nhánh pseudo-camera của corgs, Hiện tại set False nhưng tương lai set False sẽ tiết kiệm trainning time. Về mặt kết quả là không ảnh hưởng
 
-    parser.add_argument("--coreg", action='store_true', default=False) #Không bật , Co-regularization giữa 2 Gaussian field.
-    parser.add_argument("--coprune", action='store_true', default=False) #Không bật, Co-pruning giữa 2 field.
-    parser.add_argument('--coprune_threshold', type=int, default=5) #Không bật, threshold cho cái trên
+    # parser.add_argument("--coreg", action='store_true', default=False) #Không bật, đã xóa , Co-regularization giữa 2 Gaussian field.
+    # parser.add_argument("--coprune", action='store_true', default=False) #Không bật, đã xóa, Co-pruning giữa 2 field.
+    # parser.add_argument('--coprune_threshold', type=int, default=5) #Không bật, đã xóa, threshold cho cái trên
 
     parser.add_argument("--save_log_images", action="store_true") #Mỗi 100 iter, render một camera ngẫu nhiên và lưu ảnh debug dạng lưới 3×2
 
     # [CRSGaussian multi-seed] verify CUDA noise — default=42 giữ backward-compat
     parser.add_argument('--seed', type=int, default=42) # Quy định seed thôi, mình dùng 3 seed là 42 137 9999, do CUDA noise , chính vì atomicAdd non-determinism của rasterizer gây ±1.3 dB variance single-scene
-
+    """
+    42: seed chuẩn của cộng đồng ML ("the answer to everything"), dùng từ đầu dự án → backward-compatible với mọi single-seed run cũ
+    137: số nguyên tố, không có pattern đặc biệt, chỉ cần "khác 42 và không liên quan"
+    9999: số lớn tròn, dễ nhớ, rõ ràng khác hoàn toàn về magnitude
+    Yêu cầu thực tế chỉ là 3 seed độc lập nhau để average ra noise. Bất kỳ bộ 3 seed nào khác (ví dụ 0 1 2 hay 100 200 300) cũng cho kết quả thống kê tương đương. Chọn bộ này từ sớm rồi giữ nguyên xuyên suốt Phase 13→25 để các Δ có thể so sánh paired trực tiếp.
+    
+    """
+    
     # [CRSGaussian Phase 13] AbsGS flag auto-registered via OptimizationParams
     # (arguments/__init__.py:225 self.absdensify=False). DO NOT add here — gây
     # argparse conflict "conflicting option string: --absdensify".
@@ -1101,13 +1108,16 @@ if __name__ == "__main__":
     #     print(f"merge configs from {args.configs}")
 
     print(args.test_iterations)
-
     print("Optimizing " + args.model_path)
 
-    seed_everything(args.seed)
+    seed_everything(args.seed) #Set cùng một seed cho tất cả các thư viện đang dùng, nhằm đảm bảo rằng nếu chạy lại chương trình với cùng seed (ví dụ 42), thì các thao tác có yếu tố ngẫu nhiên sẽ diễn ra theo cùng một trình tự. Biết rằng với cùng một seed, Bộ sinh số ngẫu nhiên sẽ sinh ra cùng một chuỗi số mỗi lần chạy.
+    
 
     # Initialize system state (RNG)
-    safe_state(args.quiet)
+    ##[CLEAN]
+    # safe_state(args.quiet) # làm hai việc: 1. Thêm việc in log có thời gian 
+    safe_state(args.quiet, seed=args.seed)
+
 
     # Start GUI server, configure and run training
     # network_gui.init(args.ip, args.port)

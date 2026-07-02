@@ -113,13 +113,48 @@ def build_scaling_rotation(s, r):
     L = R @ L
     return L
 
-def safe_state(silent):
+# def safe_state(silent):
+#     old_f = sys.stdout
+#     class F:
+#         def __init__(self, silent):
+#             self.silent = silent
+
+#         def write(self, x):
+#             # In ra Mỗi dòng in ra kết thúc bằng \n sẽ được thêm timestamp [DD/MM HH:MM:SS].
+#             # Nếu silent = False thì in, ngược lại không in. Ở code mình mặc định để False
+#             if not self.silent:
+#                 if x.endswith("\n"):
+#                     old_f.write(x.replace("\n", " [{}]\n".format(str(datetime.now().strftime("%d/%m %H:%M:%S")))))
+#                 else:
+#                     old_f.write(x)
+
+#         def flush(self):
+#             old_f.flush()
+
+#     sys.stdout = F(silent)
+
+#     seed = 1
+#     os.environ['PYTHONHASHSEED'] = str(seed)
+#     torch.manual_seed(seed)
+#     torch.cuda.manual_seed(seed)
+#     torch.cuda.manual_seed_all(seed)
+#     torch.cuda.set_device(torch.device("cuda:0"))
+#     np.random.seed(seed)
+#     random.seed(seed)
+#     torch.backends.cudnn.benchmark = False
+#     torch.backends.cudnn.deterministic = True
+
+
+
+def safe_state(silent, seed=1):
     old_f = sys.stdout
     class F:
         def __init__(self, silent):
             self.silent = silent
 
         def write(self, x):
+            # In ra Mỗi dòng in ra kết thúc bằng \n sẽ được thêm timestamp [DD/MM HH:MM:SS].
+            # Nếu silent = False thì in, ngược lại không in. Ở code mình mặc định để False
             if not self.silent:
                 if x.endswith("\n"):
                     old_f.write(x.replace("\n", " [{}]\n".format(str(datetime.now().strftime("%d/%m %H:%M:%S")))))
@@ -131,7 +166,6 @@ def safe_state(silent):
 
     sys.stdout = F(silent)
 
-    seed = 1
     os.environ['PYTHONHASHSEED'] = str(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
@@ -141,6 +175,7 @@ def safe_state(silent):
     random.seed(seed)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
+
 
 
 def weighted_percentile(x, w, ps, assume_sorted=False):
