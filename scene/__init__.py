@@ -22,19 +22,42 @@ from utils.pose_utils import generate_random_poses_llff, generate_random_poses_3
 from scene.cameras import PseudoCamera
 
 class Scene:
+    """
+    Scene là object quản lý dữ liệu đầu vào — nó làm 4 việc chính khi khởi tạo:
+    1. Nhận dạng và load data:
+        if args.source_path.find('llff') != -1:
+            scene_info = sceneLoadTypeCallbacks["Colmap"](...)
+        Đọc COLMAP output (sparse point cloud + camera poses) từ data/nerf_llff_data/fern/.
 
+    2. Lưu file metadata ra output folder:
+        input.ply — copy point cloud ban đầu
+        cameras.json — thông tin tất cả cameras
+    
+    3. Load training/test cameras và pseudo cameras:
+        self.train_cameras[1.0] = cameraList_from_camInfos(...)
+        self.test_cameras[1.0]  = cameraList_from_camInfos(...)
+        self.pseudo_cameras[1.0] = pseudo_cams   # CoRGS legacy, vẫn tạo dù không dùng
+    
+    4. Đổ dữ liệu vào gaussians:
+        self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
+
+    """
+    # Type hint: Scene giữ một reference đến GaussianModel.
+    # Đây không phải khai báo biến thực sự — chỉ là gợi ý kiểu dữ liệu cho IDE.
     gaussians : GaussianModel
 
     def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
-        """b
-        :param path: Path to colmap scene main folder.
-        """
-        self.model_path = args.model_path
-        self.source_path = args.source_path 
+        self.model_path = args.model_path # Lưu model_path (đường dẫn output folder) vào self để dùng trong save() sau này
+        self.source_path = args.source_path  # Lưu source_path (đường dẫn data folder, vd: data/nerf_llff_data/fern) vào self
         print(f"args.source_path  is {args.source_path }")
-        self.loaded_iter = None
+        self.loaded_iter = None         # loaded_iter = None nghĩa là đang train mới từ đầu, không resume từ checkpoint
+        # Nhận reference đến GaussianModel được tạo từ bên ngoài (train.py).
+        # KHÔNG tạo GaussianModel mới ở đây — Scene và train.py dùng chung 1 object.
+        # Sau này khi Scene gọi self.gaussians.create_from_pcd(), nó sẽ đổ dữ liệu
+        # vào đúng object gaussians mà train.py đang giữ.
         self.gaussians = gaussians
-
+        # [NOT USE] Xử lý trường hợp resume từ checkpoint.
+        # Production luôn train mới (load_iteration=None) nên block này không chạy.
         if load_iteration:
             if load_iteration == -1:
                 self.loaded_iter = searchForMaxIteration(os.path.join(self.model_path, "point_cloud"))
@@ -42,11 +65,16 @@ class Scene:
                 self.loaded_iter = load_iteration
             print("Loading trained model at iteration {}".format(self.loaded_iter))
 
-        self.train_cameras = {}
-        self.test_cameras = {}
-        self.pseudo_cameras = {}
-        self.bounds = None
+        # Khởi tạo các dict rỗng để chứa cameras.
+        # Key của dict là resolution_scale (thường chỉ có 1.0 = full resolution).
+        self.train_cameras = {}   # 3 cameras dùng để train (LLFF 3-view)
+        self.test_cameras = {}    # các cameras còn lại dùng để eval PSNR
+        self.pseudo_cameras = {}  # [NOT USE] cameras ảo nội suy giữa train views — CoRGS legacy
+        # bounds trong LLFF là [near_depth, far_depth] — khoảng cách gần nhất và xa nhất có vật thể trong scene, tính từ góc nhìn của camera.
+        # Cụ thể, nó được load từ file poses_bounds.npy (file chuẩn của LLFF dataset)
+        self.bounds = None        # [NOT USE] giới hạn không gian của scene, lấy từ camera đầu tiên
 
+        # ── Nhận dạng loại dataset dựa vào cấu trúc thư mục ──
         if os.path.exists(os.path.join(args.source_path, "sparse")):
             if args.source_path.find('llff') != -1:
                 print("############ load llff ############")
@@ -63,34 +91,77 @@ class Scene:
         else:
             assert False, "Could not recognize scene type!"
 
-
+        # ── Lưu metadata ra output folder (chỉ khi train mới, không phải resume) ──
+        # Metadata nghĩa là "dữ liệu mô tả dữ liệu" (data about data). Nó không phải dữ liệu chính, mà là thông tin giúp giải thích dữ liệu chính.
         if not self.loaded_iter:
+            # Copy file fused.ply (point cloud init) vào output/input.ply
+            # Mục đích: lưu lại init để sau này biết run đó dùng init nào (MVS hay RoMa v1)
             with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
                 dest_file.write(src_file.read())
+                
+            # Gom tất cả cameras (train + test) vào một list để xuất ra JSON, cụ thể ở cameras.json
+            # Tính chất của camera được lưu ở utils/camera_utils.py, gồm 
+            """
+            Quy định ở utils/camera_utils.py:67. Mỗi camera trong JSON có 7 trường:
+
+            Trường	        Ý nghĩa
+            id	            index thứ tự trong list (test cameras trước, train cameras sau)
+            img_name	    tên ảnh gốc (vd: IMG_4026)
+            width, height	kích thước ảnh pixel (4032×3024 = ảnh iPhone full res)
+            position	    vị trí camera trong không gian 3D — vector [x, y, z]
+            rotation	    ma trận xoay 3×3 — hướng nhìn của camera
+            fx, fy	        tiêu cự (focal length) tính theo pixel — đây là thông số nội tại của camera
+
+            """
             json_cams = []
             camlist = []
+            
             if scene_info.test_cameras:
-                camlist.extend(scene_info.test_cameras)
+                camlist.extend(scene_info.test_cameras)   # thêm test cameras vào trước. Do thêm trc nên trong json test camera là 0,1,2
             if scene_info.train_cameras:
-                camlist.extend(scene_info.train_cameras)
+                camlist.extend(scene_info.train_cameras)  # thêm train cameras vào sau
+            
+            # Chuyển từng camera object sang dict JSON-serializable
             for id, cam in enumerate(camlist):
                 json_cams.append(camera_to_JSON(id, cam))
+
+            # Lưu toàn bộ camera info ra output/cameras.json
+            # Dùng để visualize hoặc load lại sau mà không cần re-parse COLMAP
             with open(os.path.join(self.model_path, "cameras.json"), 'w') as file:
                 json.dump(json_cams, file)
 
+        # [NOT USE] Shuffle thứ tự cameras.
+        # Production truyền shuffle=False → block này không chạy.
+        # Mục đích khi dùng: tránh model bị bias theo thứ tự camera của COLMAP.
         if shuffle:
-            random.shuffle(scene_info.train_cameras)  # Multi-res consistent random shuffling
-            random.shuffle(scene_info.test_cameras)  # Multi-res consistent random shuffling
+            random.shuffle(scene_info.train_cameras)
+            random.shuffle(scene_info.test_cameras)
 
+
+        """
+        Lấy bán kính (radius) của scene đã được tính trước và lưu vào self.cameras_extent.
+        self.cameras_extent = scene_info.nerf_normalization["radius"]
+        radius biểu thị kích thước của toàn bộ scene trong hệ tọa độ 3D (được tính từ các camera).
+        In giá trị đó ra màn hình để kiểm tra.
+        print(self.cameras_extent, 'cameras_extent')
+        """
         self.cameras_extent = scene_info.nerf_normalization["radius"]
         print(self.cameras_extent, 'cameras_extent')
 
+        # ── Load cameras theo từng resolution scale ──
+        # resolution_scale = 1.0 (multi-res của 3DGS gốc, bài KHÔNG dùng → loop 1 lần)
+        # Việc giảm ảnh 8 lần là do cờ -r 8 (= args.resolution), KHÔNG phải resolution_scale.
+        # Số chia thực tế = resolution_scale × args.resolution = 1.0 × 8 = 8.
         for resolution_scale in resolution_scales:
             print("Loading Training Cameras", resolution_scale)
-            self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args)
+            # Chuyển CameraInfo (raw data từ COLMAP) thành Camera object (có tensor GPU)
+            self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args) # resolution_scale của mình là -r 8 tức là giảm kích thước 8 lần
+
             print("Loading Test Cameras", resolution_scale)
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
-
+            
+            # [NOT USE] Tạo pseudo cameras — CoRGS legacy.
+            # Vẫn được tạo ra nhưng không có loss nào dùng đến trong production.
             pseudo_cams = []
             if args.source_path.find('llff') != -1:
                 pseudo_poses = generate_random_poses_llff(self.train_cameras[resolution_scale])
@@ -101,36 +172,55 @@ class Scene:
             elif args.source_path.find('DTU') != -1:
                 pseudo_poses = generate_random_poses_llff(self.train_cameras[resolution_scale])
 
+            # [NOT USE]
+            # Lấy camera đầu tiên làm template để copy FoV và image size
             view = self.train_cameras[resolution_scale][0]
-            self.bounds = view.bounds
+            self.bounds = view.bounds # lưu bounds của scene từ camera đầu tiên
             for pose in pseudo_poses:
                 pseudo_cams.append(PseudoCamera(
-                    R=pose[:3, :3].T, T=pose[:3, 3], FoVx=view.FoVx, FoVy=view.FoVy,
+                    R=pose[:3, :3].T, 
+                    T=pose[:3, 3], 
+                    FoVx=view.FoVx, 
+                    FoVy=view.FoVy,
                     width=view.image_width, height=view.image_height
                 ))
             self.pseudo_cameras[resolution_scale] = pseudo_cams
 
 
+        # ── Khởi tạo Gaussian model từ point cloud ──
         if self.loaded_iter:
+            # [NOT USE] Resume từ checkpoint: load .ply đã train từ output folder.
+            # Production không dùng nhánh này vì luôn train mới.
             self.gaussians.load_ply(os.path.join(self.model_path,
-                                                           "point_cloud",
-                                                           "iteration_" + str(self.loaded_iter),
-                                                           "point_cloud.ply"))
+                                                  "point_cloud",
+                                                  "iteration_" + str(self.loaded_iter),
+                                                  "point_cloud.ply"))
         else:
+            # Train mới: khởi tạo Gaussians từ point cloud init (fused.ply = MVS hoặc RoMa v1).
+            # Mỗi điểm trong point cloud → 1 Gaussian với vị trí, màu, opacity, scale, rotation ban đầu.
             self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
-            self.init_point_cloud = scene_info.point_cloud
+            self.init_point_cloud = scene_info.point_cloud # Lưu lại point cloud ban đầu để có thể phân tích sau này
+
+        point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
+        self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
 
     def save(self, iteration):
+        # Lưu Gaussian model ra file .ply tại iter được chỉ định.
+        # Được gọi khi iteration nằm trong saving_iterations (mặc định iter 10000).
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
         self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
 
     def getTrainCameras(self, scale=1.0):
+        # Trả về list training cameras ở resolution scale cho trước
         return self.train_cameras[scale]
 
     def getTestCameras(self, scale=1.0):
+        # Trả về list test cameras ở resolution scale cho trước
         return self.test_cameras[scale]
 
     def getPseudoCameras(self, scale=1.0):
+        # [NOT USE] Trả về list pseudo cameras — CoRGS legacy.
+        # Nếu không có pseudo cameras nào → trả về [None] thay vì list rỗng.
         if len(self.pseudo_cameras) == 0:
             return [None]
         else:

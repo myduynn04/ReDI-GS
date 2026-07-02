@@ -78,13 +78,31 @@ def seed_everything(seed):
 def training(dataset, opt, pipe, args):
     # implenmetation of more than 2 3d gaussian radiance fields currently is not supported in this code
     assert args.gaussiansN >= 1 and args.gaussiansN <=2 
+    """
+    Update tên ngắn hơn để dễ dùng
+        testing_iterations    = args.test_iterations        # [500, 2000, ..., 10000]
+        saving_iterations     = args.save_iterations        # [10000]
+        checkpoint_iterations = args.checkpoint_iterations  # [10000]
+        checkpoint            = args.start_checkpoint       # None (không resume)
+        debug_from            = args.debug_from             # -1 (không debug)
+
+    """
     testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from = args.test_iterations, \
             args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from
+    
     first_iter = 0
-    tb_writer = prepare_output_and_logger(dataset)
-    gaussians = GaussianModel(args)
-    scene = Scene(args, gaussians, shuffle=False)
+    tb_writer = prepare_output_and_logger(dataset)  #Thực tế không dùng
+    """
+    Khởi tạo object GaussianModel là object trung tâm của toàn bộ quá trình train — nó chứa:
+    Tham số học được (được optimize bằng Adam): xyz, SH coefficients, opacity, scale, rotation
+    Trạng thái phụ trợ (không optimize trực tiếp): CRS score, gradient accumulator cho densification, spawn iter
+    Các method để thao tác: densify_and_prune(), opacity_decay(), save_ply(), v.v.
+    Mọi thứ xảy ra trong vòng lặp train đều đọc hoặc ghi vào object này — render lấy tham số từ đây, loss backward cập nhật gradient vào đây, densification thêm/xóa Gaussian trong đây, CRS update score trong đây.
+    """
+    gaussians = GaussianModel(args) 
+    scene = Scene(args, gaussians, shuffle=False)  # Object xử lý dữ liệu đầu vào. Shuffle dùng để xáo ngẫu nhiên thứ tự cameras trước khi load nhưng bài mình không dùng
     print(f"scene.bounds is {scene.bounds}")
+    
     gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
@@ -907,16 +925,28 @@ def training(dataset, opt, pipe, args):
 
 
 def prepare_output_and_logger(args):
-    if not args.model_path:
-        if os.getenv('OAR_JOB_ID'):
-            unique_str=os.getenv('OAR_JOB_ID')
+    """
+    Tạo output folder, lưu config args vào cfg_args, khởi tạo TensorBoard writer.
+    Nếu model_path chưa được set, tự sinh tên từ OAR job ID (HPC) hoặc UUID.
+    Trả về tb_writer (None nếu TensorBoard không có).
+    """
+    # Tự tạo model_path nếu chưa có 
+    # model_path là đường dẫn thư mục output để lưu các kết quả huấn luyện, nếu không được cung cấp, nó sẽ tạo một thư mục mới với tên duy nhất dựa trên OAR_JOB_ID hoặc UUID.
+    # Trong arguments/__init__.py, model_path được đăng ký với tên ngắn -m
+    if not args.model_path: # Nếu không truyền -m
+        if os.getenv('OAR_JOB_ID'): # kiểm tra có đang chạy trên HPC cluster không
+            unique_str=os.getenv('OAR_JOB_ID')# có → dùng job ID làm tên
         else:
-            unique_str = str(uuid.uuid4())
+            unique_str = str(uuid.uuid4())# không → tạo chuỗi random
         args.model_path = os.path.join("./output/", unique_str[0:10])
 
     # Set up output folder
     print("Output folder: {}".format(args.model_path))
+    
+    # tạo thư mực output và lưu config
     os.makedirs(args.model_path, exist_ok = True)
+    
+    # Lưu toàn bộ args vào file cfg_args trong output folder — để sau này biết run đó dùng flags gì.
     with open(os.path.join(args.model_path, "cfg_args"), 'w') as cfg_log_f:
         cfg_log_f.write(str(Namespace(**vars(args))))
 
@@ -1121,8 +1151,23 @@ if __name__ == "__main__":
 
     # Start GUI server, configure and run training
     # network_gui.init(args.ip, args.port)
-    torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args)
+    torch.autograd.set_detect_anomaly(args.detect_anomaly) #Không bật, dùng để trace nan
+    """
+    Gọi hàm training, tách arg thành 3 nhóm tham số (Model, Optimization, Pipeline) rồi truyền vào training()
+    args ban đầu = một namespace chứa tất cả 50+ flags trộn lẫn vào nhau — do argparse parse từ CLI ra
+    lp.extract(args) → tách ra chỉ lấy phần thuộc ModelParams
+    op.extract(args) → tách ra chỉ lấy phần thuộc OptimizationParams
+    pp.extract(args) → tách ra chỉ lấy phần thuộc PipelineParams
+    Nhóm thực sự đã được định nghĩa từ trước trong __init__ của mỗi class (ở arguments/__init__.py). Đến đây chỉ là tách args theo đúng nhóm đó rồi truyền vào training().
+    training(
+        dataset,   # chỉ có ModelParams flags: source_path, sh_degree, use_depth_prior, ...
+        opt,       # chỉ có OptimizationParams flags: lr, iterations, densify, CRS flags, ...
+        pipe,      # chỉ có PipelineParams flags: dropansh config, convert_SHs_python, ...
+        args       # toàn bộ namespace gốc: seed, gaussiansN, save_log_images, ...
+    )
+ 
+    """
+    training(lp.extract(args), op.extract(args), pp.extract(args), args) #Hàm trainning
 
     # All done
     print("\nTraining complete.")

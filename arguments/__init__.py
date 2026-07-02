@@ -9,6 +9,11 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+"""
+    
+Convention: attribute nào trong __init__ có tên bắt đầu bằng _ thì tự động được đăng ký thêm shorthand flag = - + chữ cái đầu của tên.
+"""
+
 from argparse import ArgumentParser, Namespace
 import sys
 import os
