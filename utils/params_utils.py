@@ -1,4 +1,5 @@
 def merge_hparams(args, config):
+    # Duyệt qua bốn nhóm params 
     params = ["OptimizationParams", "ModelHiddenParams", "ModelParams", "PipelineParams"]
     for param in params:
         if param in config.keys():

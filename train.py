@@ -375,29 +375,30 @@ def training(dataset, opt, pipe, args):
                 else:
                     LossDict[f"loss_gs{i}"] = loss_photometric(image_i, gt_image, opt=opt)
 
-        if not args.onlyrgb:
-            if iteration % args.sample_pseudo_interval == 0 and iteration <= args.end_sample_pseudo:
-                loss_scale = min((iteration - args.start_sample_pseudo) / 500., 1)
-                if not pseudo_stack_co:
-                    pseudo_stack_co = scene.getPseudoCameras().copy()
-                pseudo_cam_co = pseudo_stack_co.pop(randint(0, len(pseudo_stack_co) - 1))
+        ## [CLEAN] 
+        # if not args.onlyrgb:
+        #     if iteration % args.sample_pseudo_interval == 0 and iteration <= args.end_sample_pseudo:
+        #         loss_scale = min((iteration - args.start_sample_pseudo) / 500., 1)
+        #         if not pseudo_stack_co:
+        #             pseudo_stack_co = scene.getPseudoCameras().copy()
+        #         pseudo_cam_co = pseudo_stack_co.pop(randint(0, len(pseudo_stack_co) - 1))
 
-                for i in range(args.gaussiansN):
-                        # [CRSGaussian Track B] Pseudo view: disable_dropout=True
-                        # (clean separation — pseudo_photo/depth loss dùng full-size render).
-                        RenderDict[f"render_pkg_pseudo_co_gs{i}"] = render(pseudo_cam_co, GsDict[f'gs{i}'], pipe, bg,
-                                                                          disable_dropout=True)
-                        RenderDict[f"image_pseudo_co_gs{i}"] = RenderDict[f"render_pkg_pseudo_co_gs{i}"]["render"]
-                        RenderDict[f"depth_pseudo_co_gs{i}"] = RenderDict[f"render_pkg_pseudo_co_gs{i}"]["depth"]
-                if iteration >= args.start_sample_pseudo:
-                    ####################################################################
-                    # co-reg
-                    if args.coreg:
-                        # co photometric
-                        for i in range(args.gaussiansN):
-                            for j in range(args.gaussiansN):
-                                if i != j:
-                                    LossDict[f"loss_gs{i}"] += loss_photometric(RenderDict[f"image_pseudo_co_gs{i}"], RenderDict[f"image_pseudo_co_gs{j}"].clone().detach(), opt=opt) / (args.gaussiansN - 1)
+        #         for i in range(args.gaussiansN):
+        #                 # [CRSGaussian Track B] Pseudo view: disable_dropout=True
+        #                 # (clean separation — pseudo_photo/depth loss dùng full-size render).
+        #                 RenderDict[f"render_pkg_pseudo_co_gs{i}"] = render(pseudo_cam_co, GsDict[f'gs{i}'], pipe, bg,
+        #                                                                   disable_dropout=True)
+        #                 RenderDict[f"image_pseudo_co_gs{i}"] = RenderDict[f"render_pkg_pseudo_co_gs{i}"]["render"]
+        #                 RenderDict[f"depth_pseudo_co_gs{i}"] = RenderDict[f"render_pkg_pseudo_co_gs{i}"]["depth"]
+        #         if iteration >= args.start_sample_pseudo:
+        #             ####################################################################
+        #             # co-reg
+        #             if args.coreg:
+        #                 # co photometric
+        #                 for i in range(args.gaussiansN):
+        #                     for j in range(args.gaussiansN):
+        #                         if i != j:
+        #                             LossDict[f"loss_gs{i}"] += loss_photometric(RenderDict[f"image_pseudo_co_gs{i}"], RenderDict[f"image_pseudo_co_gs{j}"].clone().detach(), opt=opt) / (args.gaussiansN - 1)
         #TODO: Cài đặt hàm loss liên quan đến kéo thông tin vào gần những point tốt
 
         # ── [CRSGaussian T3.3] Fixed Pearson depth loss ──
@@ -502,9 +503,10 @@ def training(dataset, opt, pipe, args):
             if iteration > first_iter and (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
-                if args.gaussiansN == 2:
-                    pcd_path = os.path.join(scene.model_path, "point_cloud_gs2/iteration_{}".format(iteration))
-                    GsDict["gs1"].save_ply(os.path.join(pcd_path, "point_cloud.ply"))
+                ## [CLEAN]
+                # if args.gaussiansN == 2:
+                #     pcd_path = os.path.join(scene.model_path, "point_cloud_gs2/iteration_{}".format(iteration))
+                #     GsDict["gs1"].save_ply(os.path.join(pcd_path, "point_cloud.ply"))
 
             if iteration > first_iter and (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
@@ -848,25 +850,26 @@ def training(dataset, opt, pipe, args):
                 # if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     print(f"reset opacity of gaussians-{i} at iteration {iteration}")
                     GsDict[f"gs{i}"].reset_opacity()
-                    
-            if args.coprune and iteration > opt.densify_from_iter and iteration % 500 == 0:
-                for i in range(args.gaussiansN):
-                    for j in range(args.gaussiansN):
-                        if i != j:
-                            source_cloud = o3d.geometry.PointCloud()
-                            source_cloud.points = o3d.utility.Vector3dVector(GsDict[f"gs{i}"].get_xyz.clone().cpu().numpy())
-                            target_cloud = o3d.geometry.PointCloud()
-                            target_cloud.points = o3d.utility.Vector3dVector(GsDict[f"gs{j}"].get_xyz.clone().cpu().numpy())
-                            trans_matrix = np.identity(4)
-                            threshold = args.coprune_threshold
-                            evaluation = o3d.pipelines.registration.evaluate_registration(source_cloud, target_cloud, threshold, trans_matrix)
-                            correspondence = np.array(evaluation.correspondence_set)
-                            mask_consistent = torch.zeros((GsDict[f"gs{i}"].get_xyz.shape[0], 1)).cuda()
-                            mask_consistent[correspondence[:, 0], :] = 1
-                            GsDict[f"indice_consistent_gs{i}to{j}"] = correspondence
-                            GsDict[f"mask_inconsistent_gs{i}"] = ~(mask_consistent.bool())
-                for i in range(args.gaussiansN):
-                    GsDict[f"gs{i}"].prune_from_mask(GsDict[f"mask_inconsistent_gs{i}"].squeeze(), iter=iteration)
+             
+            ## [CLEAN]       
+            # if args.coprune and iteration > opt.densify_from_iter and iteration % 500 == 0:
+            #     for i in range(args.gaussiansN):
+            #         for j in range(args.gaussiansN):
+            #             if i != j:
+            #                 source_cloud = o3d.geometry.PointCloud()
+            #                 source_cloud.points = o3d.utility.Vector3dVector(GsDict[f"gs{i}"].get_xyz.clone().cpu().numpy())
+            #                 target_cloud = o3d.geometry.PointCloud()
+            #                 target_cloud.points = o3d.utility.Vector3dVector(GsDict[f"gs{j}"].get_xyz.clone().cpu().numpy())
+            #                 trans_matrix = np.identity(4)
+            #                 threshold = args.coprune_threshold
+            #                 evaluation = o3d.pipelines.registration.evaluate_registration(source_cloud, target_cloud, threshold, trans_matrix)
+            #                 correspondence = np.array(evaluation.correspondence_set)
+            #                 mask_consistent = torch.zeros((GsDict[f"gs{i}"].get_xyz.shape[0], 1)).cuda()
+            #                 mask_consistent[correspondence[:, 0], :] = 1
+            #                 GsDict[f"indice_consistent_gs{i}to{j}"] = correspondence
+            #                 GsDict[f"mask_inconsistent_gs{i}"] = ~(mask_consistent.bool())
+            #     for i in range(args.gaussiansN):
+            #         GsDict[f"gs{i}"].prune_from_mask(GsDict[f"mask_inconsistent_gs{i}"].squeeze(), iter=iteration)
                     
                 #TODO thêm cập nhật cfs_score
 
@@ -1036,51 +1039,66 @@ def training_report(args, tb_writer, iteration, loss, l1_loss, testing_iteration
 
 if __name__ == "__main__":
     # Set up command line argument parser
-    parser = ArgumentParser(description="Training")
-    lp = ModelParams(parser)
-    op = OptimizationParams(parser)
-    pp = PipelineParams(parser)
-    parser.add_argument('--ip', type=str, default="127.0.0.1")
-    parser.add_argument('--port', type=int, default=6009)
-    parser.add_argument('--debug_from', type=int, default=-1)
-    parser.add_argument('--detect_anomaly', action='store_true', default=False)
+    parser = ArgumentParser(description="Training")  # Đóng vai trò dịch từ ngôn ngữ terminal sang biến python? chấp nhận việc chạy script? => tạo khung dịch thuật
+    # Gán 3 nhóm flags lớn => gắn thêm các bộ từ điển chuyên ngành vào khung phía trên
+    # 3 dòng dưới đăng ký các nhóm CLI arguments vào parser
+    lp = ModelParams(parser)         # Đăng ký nhóm tham số mô hình (scene + Gaussian config), định nghĩa trong arguments/__init__.py
+    op = OptimizationParams(parser)  # Đăng ký nhóm tham số tối ưu hóa (training schedule, LR, densification...)
+    pp = PipelineParams(parser)      # Đăng ký nhóm tham số pipeline/rendering
+    parser.add_argument('--ip', type=str, default="127.0.0.1") # Không bật,	Địa chỉ mạng cho cái GUI xem 3D real-time. Nhưng mà hiện không dùng nên tắt
+    parser.add_argument('--port', type=int, default=6009) # Không bật,	Địa chỉ mạng cho cái GUI xem 3D real-time. Nhưng mà hiện không dùng nên tắt
+    parser.add_argument('--debug_from', type=int, default=-1) #Bắt đầu bật chế độ debug từ vòng lặp số mấy. -1 = không debug.
+    parser.add_argument('--detect_anomaly', action='store_true', default=False) # Bật chế độ dò lỗi tính toán (chạy chậm hơn). Mặc định tắt.
 
-    parser.add_argument("--configs", type=str, default = "")
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[500, 2000, 3000, 5000, 7000, 10000, 15000, 30000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[10000, 30000])
+    # parser.add_argument("--configs", type=str, default = "")
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[500, 2000, 3000, 5000, 7000, 10000, 15000, 30000])  # Số vòng lặp được chấm điểm 
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[10000, 30000])   # vòng lặp lưu kết quả .ply
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[10_000])
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[10_000]) # Tại vòng nào thì lưu checkpoint (để train tiếp sau này được).
     parser.add_argument("--start_checkpoint", type=str, default = None)
-    parser.add_argument("--checkpoint2", type=str, default = None)
-    parser.add_argument("--train_bg", action="store_true")
+    # parser.add_argument("--checkpoint2", type=str, default = None) # Không bật, Gốc lưu checkpoint cho model thứ 2 của Corgs
+    # parser.add_argument("--train_bg", action="store_true")  # Có train luôn cả phần nền (background) hay không. mặc định tắt khi 3 views
 
-    parser.add_argument('--gaussiansN', type=int, default=1)
+    parser.add_argument('--gaussiansN', type=int, default=1) #Không bật, số Gaussian field song song, base của CoRGS, của mình chạy theo 3dgs gốc thì là 1 field
 
-    parser.add_argument("--onlyrgb", action='store_true', default=False)
+    parser.add_argument("--onlyrgb", action='store_true', default=False) # Dùng để tắt cái nhánh pseudo-camera của corgs, Hiện tại set False nhưng tương lai set False sẽ tiết kiệm trainning time. Về mặt kết quả là không ảnh hưởng
 
-    parser.add_argument("--coreg", action='store_true', default=False)
-    parser.add_argument("--coprune", action='store_true', default=False)
-    parser.add_argument('--coprune_threshold', type=int, default=5)
+    parser.add_argument("--coreg", action='store_true', default=False) #Không bật , Co-regularization giữa 2 Gaussian field.
+    parser.add_argument("--coprune", action='store_true', default=False) #Không bật, Co-pruning giữa 2 field.
+    parser.add_argument('--coprune_threshold', type=int, default=5) #Không bật, threshold cho cái trên
 
-    parser.add_argument("--save_log_images", action="store_true")
+    parser.add_argument("--save_log_images", action="store_true") #Mỗi 100 iter, render một camera ngẫu nhiên và lưu ảnh debug dạng lưới 3×2
 
     # [CRSGaussian multi-seed] verify CUDA noise — default=42 giữ backward-compat
-    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--seed', type=int, default=42) # Quy định seed thôi, mình dùng 3 seed là 42 137 9999, do CUDA noise , chính vì atomicAdd non-determinism của rasterizer gây ±1.3 dB variance single-scene
 
     # [CRSGaussian Phase 13] AbsGS flag auto-registered via OptimizationParams
     # (arguments/__init__.py:225 self.absdensify=False). DO NOT add here — gây
     # argparse conflict "conflicting option string: --absdensify".
     # parser.add_argument("--absdensify", action="store_true")
+    """
+    Block comment --absdensify
 
-    args = parser.parse_args(sys.argv[1:])
-    args.save_iterations.append(args.iterations)
+    --absdensify điều khiển AbsGS densification. Tưởng phải khai báo ở đây nhưng không được — vì OptimizationParams trong arguments/__init__.py:225 đã tự đăng ký --absdensify vào cùng parser rồi. Nếu khai báo thêm ở đây sẽ bị argparse báo lỗi conflicting option string. 
+    Comment này là cảnh báo để người sau không vô tình thêm lại.
+    """
 
-    if args.configs:
-        import mmcv
-        from utils.params_utils import merge_hparams
-        config = mmcv.Config.fromfile(args.configs)
-        args = merge_hparams(args, config)
-        print(f"merge configs from {args.configs}")
+    args = parser.parse_args(sys.argv[1:]) # Parse toàn bộ CLI flags thành object args. 
+    args.save_iterations.append(args.iterations) #Tự động thêm iter cuối cùng (thường = 10000) vào danh sách save.Ở đây save .ply 
+    """
+    File .ply này chứa toàn bộ tham số của các Gaussian tại iter đó: vị trí xyz, SH coefficients (màu sắc), opacity, scale, rotation. Đây là "mô hình đã train xong" dùng để render ảnh sau này.
+    """
+
+    # if args.configs: # Load thêm hyper para từ YAML bằng mmcv 
+    #     """
+    #     Tức là quy trình của nó là default values -> CLI flags (nếu có) -> args (cái tổ hợp các flag ở trên) -> YAML override -> args cuối cùng để train
+    #     Vì nếu không truyền gì, arg sẽ chạy giá trị mặc định. để lệ
+    #     """
+    #     import mmcv
+    #     from utils.params_utils import merge_hparams
+    #     config = mmcv.Config.fromfile(args.configs)
+    #     args = merge_hparams(args, config)
+    #     print(f"merge configs from {args.configs}")
 
     print(args.test_iterations)
 
