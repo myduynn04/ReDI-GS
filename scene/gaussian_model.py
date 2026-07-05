@@ -105,43 +105,70 @@ def _depth_constraint_mask(new_xyz, cameras, aligned_depth_dict, epsilon_depth):
 
 
 class GaussianModel:
+    """
+    GaussianModel — data structure trung tâm giữ TOÀN BỘ các Gaussian của scene.
+
+    Một Gaussian được mô tả bởi 6 thuộc tính học được (N = số Gaussian):
+        _xyz          (N, 3)     — tâm Gaussian trong không gian 3D
+        _features_dc  (N, 1, 3)  — màu cơ bản (SH bậc 0, DC)
+        _features_rest(N, 15, 3) — hệ số SH bậc 1-3 → màu đổi theo góc nhìn
+        _scaling      (N, 3)     — kích thước ellipsoid theo 3 trục
+        _rotation     (N, 4)     — hướng xoay (quaternion)
+        _opacity      (N, 1)     — độ đặc/trong suốt
+
+    Dấu `_` = giá trị THÔ (raw, trước activation). Muốn giá trị thật phải qua
+    getter (get_scaling = exp(_scaling), get_opacity = sigmoid(_opacity)...).
+
+    Lúc __init__ tất cả tensor đều rỗng (N=0); được nạp thật khi create_from_pcd().
+    """
 
     def setup_functions(self):
+        # Đăng ký các "activation function" — hàm chuyển giá trị thô (_) → giá trị thật.
+        # Lý do phải có activation: optimizer cần param tự do trong (-∞, +∞), nhưng
+        # giá trị vật lý có ràng buộc (scale > 0, opacity ∈ [0,1]). Activation ép về miền hợp lệ.
+
+        # Ghép scaling + rotation → ma trận covariance 3D của Gaussian (dùng khi render).
         def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
-            L = build_scaling_rotation(scaling_modifier * scaling, rotation)
-            actual_covariance = L @ L.transpose(1, 2)
-            symm = strip_symmetric(actual_covariance)
+            L = build_scaling_rotation(scaling_modifier * scaling, rotation)  # L = R·S (ma trận biến đổi)
+            actual_covariance = L @ L.transpose(1, 2)   # Σ = L·Lᵀ (đảm bảo đối xứng, semi-definite dương)
+            symm = strip_symmetric(actual_covariance)   # lấy 6 phần tử tam giác trên (Σ đối xứng nên đủ)
             return symm
 
+        # scale: raw ∈ (-∞,+∞) → exp → (0,+∞). Đảm bảo kích thước luôn dương.
         self.scaling_activation = torch.exp
-        self.scaling_inverse_activation = torch.log
+        self.scaling_inverse_activation = torch.log      # nghịch đảo: giá trị thật → raw (dùng khi khởi tạo)
 
         self.covariance_activation = build_covariance_from_scaling_rotation
 
+        # opacity: raw → sigmoid → (0,1). Đảm bảo độ trong suốt hợp lệ.
         self.opacity_activation = torch.sigmoid
-        self.inverse_opacity_activation = inverse_sigmoid
+        self.inverse_opacity_activation = inverse_sigmoid  # nghịch đảo
 
+        # rotation: normalize quaternion về độ dài 1 (quaternion đơn vị mới biểu diễn phép xoay đúng).
         self.rotation_activation = torch.nn.functional.normalize
 
     def __init__(self, args):
-        self.args = args
-        self.active_sh_degree = 0
-        self.max_sh_degree = args.sh_degree
-        self.init_point = torch.empty(0)
-        self._xyz = torch.empty(0)
-        self._features_dc = torch.empty(0)
-        self._features_rest = torch.empty(0)
-        self._scaling = torch.empty(0)
-        self._rotation = torch.empty(0)
-        self._opacity = torch.empty(0)
-        self.max_radii2D = torch.empty(0)
-        self.xyz_gradient_accum = torch.empty(0)
-        self.denom = torch.empty(0)
-        self.optimizer = None
-        self.percent_dense = 0
-        self.spatial_lr_scale = 0
-        self.setup_functions()
-        self.bg_color = torch.empty(0)
+        # ── Phần A — Metadata cơ bản ──
+        self.args = args                      # lưu toàn bộ args (ModelParams) để các method sau đọc flag
+        self.active_sh_degree = 0             # bậc SH đang dùng, bắt đầu = 0 (chỉ màu cơ bản, warm-up)
+        self.max_sh_degree = args.sh_degree   # bậc SH tối đa (thường = 3); oneupSHdegree() tăng dần tới đây
+
+        # ── Phần B — 6 thuộc tính Gaussian + buffer densify (tất cả rỗng, N=0) ──
+        self.init_point = torch.empty(0)      # lưu point cloud init gốc (để phân tích sau)
+        self._xyz = torch.empty(0)            # (N,3) vị trí tâm Gaussian
+        self._features_dc = torch.empty(0)    # (N,1,3) màu cơ bản — SH bậc 0
+        self._features_rest = torch.empty(0)  # (N,15,3) màu view-dependent — SH bậc 1-3
+        self._scaling = torch.empty(0)        # (N,3) kích thước ellipsoid (raw, qua exp mới ra thật)
+        self._rotation = torch.empty(0)       # (N,4) quaternion hướng xoay
+        self._opacity = torch.empty(0)        # (N,1) độ đặc (raw, qua sigmoid mới ra thật)
+        self.max_radii2D = torch.empty(0)     # (N,) bán kính lớn nhất khi chiếu 2D — dùng để prune Gaussian quá to
+        self.xyz_gradient_accum = torch.empty(0)  # (N,1) tích lũy gradient vị trí — quyết định densify chỗ nào
+        self.denom = torch.empty(0)               # (N,1) đếm số lần accum → lấy trung bình gradient
+        self.optimizer = None                 # Adam optimizer, gắn sau ở training_setup()
+        self.percent_dense = 0                # ngưỡng % kích thước scene để phân biệt clone vs split
+        self.spatial_lr_scale = 0             # scale learning rate của xyz theo kích thước scene
+        self.setup_functions()                # đăng ký các activation function (xem ở trên)
+        self.bg_color = torch.empty(0)        # màu nền (nếu train background)
         # ── [CRSGaussian DIAG E1] Freeze SH flag ──
         # Khi True → f_dc/f_rest lr đã bị set=0, gradient vẫn flow nhưng
         # param không update. Dùng để test SH overfit hypothesis.
@@ -167,22 +194,25 @@ class GaussianModel:
         self.split_multiplier = 2.0  # constant per EFA-GS pattern
 
     def capture(self):
+        # Gói toàn bộ trạng thái model thành 1 tuple để lưu checkpoint (.pth).
+        # Bao gồm 6 thuộc tính Gaussian + buffer densify + optimizer state + CRS score.
         return (
-            self.active_sh_degree,
-            self._xyz,
-            self._features_dc,
-            self._features_rest,
-            self._scaling,
-            self._rotation,
-            self._opacity,
-            self.max_radii2D,
-            self.xyz_gradient_accum,
-            self.denom,
-            self.optimizer.state_dict(),
-            self.spatial_lr_scale,
+            self.active_sh_degree,          # bậc SH đang active
+            self._xyz,                      # vị trí
+            self._features_dc,              # màu DC
+            self._features_rest,            # màu SH bậc cao
+            self._scaling,                  # kích thước
+            self._rotation,                 # xoay
+            self._opacity,                  # độ đặc
+            self.max_radii2D,               # buffer prune
+            self.xyz_gradient_accum,        # tích lũy gradient
+            self.denom,                     # mẫu số accum
+            self.optimizer.state_dict(),    # trạng thái Adam (momentum, variance)
+            self.spatial_lr_scale,          # scale LR
             self._crs_score,  # [CRSGaussian T2.2] Save CRS to checkpoint
         )
 
+    # [NOT USE] restore chỉ chạy khi resume từ checkpoint — production luôn train mới.
     def restore(self, model_args, training_args):
         # [CRSGaussian T2.2] Backward-compatible: old checkpoints have 12 fields, new have 13
         if len(model_args) == 13:
@@ -219,28 +249,32 @@ class GaussianModel:
         self.denom = denom
         # self.optimizer.load_state_dict(opt_dict)
 
+    # ── Getters — đọc giá trị THẬT của Gaussian (raw _ → activation) ──
+    # @property = gọi như thuộc tính (gm.get_scaling) chứ không phải hàm (gm.get_scaling()).
+
     @property
     def get_scaling(self):
-        return self.scaling_activation(self._scaling)
+        return self.scaling_activation(self._scaling)   # exp(_scaling) → kích thước dương
 
     @property
     def get_rotation(self):
-        w = self.rotation_activation(self._rotation)
-        return self.rotation_activation(self._rotation)
+        w = self.rotation_activation(self._rotation)    # [NOT USE] dòng thừa, w không được dùng
+        return self.rotation_activation(self._rotation) # normalize quaternion về độ dài 1
 
     @property
     def get_xyz(self):
-        return self._xyz
+        return self._xyz                                # vị trí không cần activation (raw = thật)
 
     @property
     def get_features(self):
+        # Ghép màu cơ bản (DC) + màu view-dependent (rest) thành 1 tensor SH đầy đủ (N,16,3)
         features_dc = self._features_dc
         features_rest = self._features_rest
         return torch.cat((features_dc, features_rest), dim=1)
 
     @property
     def get_opacity(self):
-        return self.opacity_activation(self._opacity)
+        return self.opacity_activation(self._opacity)   # sigmoid(_opacity) → độ đặc ∈ (0,1)
 
     # ============================================================
     # [CRSGaussian Phase 2c] Opacity decay (inspired by Binocular3DGS)
@@ -263,6 +297,7 @@ class GaussianModel:
         return torch.sigmoid(self._crs_score)
 
     def get_covariance(self, scaling_modifier=1):
+        # Ghép scale + rotation → ma trận covariance Σ (dùng khi rasterizer render Gaussian)
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
     # ── [CRSGaussian Phase 13] In-place scaling delta helper ──
@@ -278,6 +313,8 @@ class GaussianModel:
         real_attr = "_" + attribute
         getattr(self, real_attr).data[mask] += changes.to(self._scaling.device)
 
+    # Tăng bậc SH active lên 1 (warm-up màu). train.py gọi định kỳ: học màu thô trước,
+    # chi tiết view-dependent (bậc cao) sau, tới khi đạt max_sh_degree.
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
@@ -293,33 +330,52 @@ class GaussianModel:
                 [CRSGaussian T5.3] Informed CRS₀ từ compute_informed_crs0().
                 None → neutral CRS₀=0.5 (behavior cũ).
         """
-        self.spatial_lr_scale = spatial_lr_scale
+        self.spatial_lr_scale = spatial_lr_scale   # lưu scale LR (= cameras_extent, radius scene)
+
+        # ── Bước 1: nạp vị trí + màu từ point cloud lên GPU ──
+        # pcd.points (N,3) numpy → tensor float CUDA. Đây là tọa độ 3D của mỗi điểm.
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).cuda().float()
+        # pcd.colors (N,3) RGB ∈ [0,1] → RGB2SH đổi sang hệ số SH bậc 0 (DC).
+        # Vì 3DGS lưu màu dưới dạng SH chứ không phải RGB trực tiếp.
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
 
+        # ── Bước 2: dựng tensor SH features (N, 3, 16) — 3 kênh màu × 16 hệ số SH ──
+        # (max_sh_degree+1)² = (3+1)² = 16 hệ số cho SH bậc 3.
         features = torch.zeros((fused_point_cloud.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
         if self.args.use_color:
-            features[:, :3, 0] =  fused_color
-        features[:, 3:, 1:] = 0.0
+            features[:, :3, 0] =  fused_color   # đặt màu DC (hệ số SH[0]) = màu điểm; bậc cao để = 0
+        features[:, 3:, 1:] = 0.0               # (an toàn) các hệ số bậc cao khởi tạo 0
 
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
-        self.init_point = fused_point_cloud
+        self.init_point = fused_point_cloud     # lưu point cloud gốc để phân tích sau
 
+        # ── Bước 3: khởi tạo SCALE dựa trên khoảng cách tới láng giềng ──
+        # distCUDA2 = khoảng cách bình phương tới điểm gần nhất (k-nearest). Điểm càng thưa
+        # → Gaussian càng to để lấp khoảng trống. clamp_min tránh chia 0 / log(0).
         dist2 = torch.clamp_min(distCUDA2(fused_point_cloud)[0], 0.0000001)
+        # scale thật = sqrt(dist2); lưu ở raw space nên phải log (vì get_scaling = exp).
+        # repeat(1,3): cùng 1 scale cho cả 3 trục → Gaussian khởi tạo hình cầu (isotropic).
         scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 3)
-        rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
-        rots[:, 0] = 1
 
+        # ── Bước 4: khởi tạo ROTATION = quaternion đơn vị (không xoay) ──
+        rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
+        rots[:, 0] = 1   # quaternion (1,0,0,0) = phép xoay identity (Gaussian không nghiêng)
+
+        # ── Bước 5: khởi tạo OPACITY = 0.1 cho mọi Gaussian ──
+        # 0.1 là giá trị thật; inverse_sigmoid đưa về raw space (vì get_opacity = sigmoid).
+        # Khởi tạo mờ (0.1) để training tự tăng opacity cho Gaussian cần thiết.
         opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
 
+        # ── Bước 6: bọc mọi thứ thành nn.Parameter (requires_grad → optimizer học được) ──
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
+        # tách DC (SH[0]) và rest (SH[1:]) thành 2 param riêng; transpose để shape (N,1,3)/(N,15,3)
         self._features_dc = nn.Parameter(features[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(features[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True))
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
-        self.confidence = torch.ones_like(opacities, device="cuda")
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")  # buffer prune, init 0
+        self.confidence = torch.ones_like(opacities, device="cuda")   # độ tin cậy (confidence rasterizer), init 1
         # ── [CRSGaussian T5.3] CRS score per Gaussian — informed hoặc neutral ──
         # Logit space: sigmoid(0) = 0.5 (neutral).
         # Khi informed_crs0 được truyền vào: dùng geometry prior thay neutral.
@@ -339,12 +395,13 @@ class GaussianModel:
 
 
 
+    # Gắn Adam optimizer + khởi tạo các buffer tích lũy gradient. Gọi 1 lần trước training loop.
     def training_setup(self, training_args):
-        self.percent_dense = training_args.percent_dense
-        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.xyz_gradient_accum_abs = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.xyz_gradient_accum_abs_max = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self.percent_dense = training_args.percent_dense   # ngưỡng % scene phân biệt clone vs split
+        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")       # accum gradient thường
+        self.xyz_gradient_accum_abs = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")   # accum gradient tuyệt đối (AbsGS)
+        self.xyz_gradient_accum_abs_max = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")  # max gradient tuyệt đối
+        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")                     # mẫu số đếm accum
 
         # ── [Phase 13] LFCF init — safe always (guarded by numel() elsewhere) ──
         # Init zeros tensors size N. Cost = negligible (~few KB total).
@@ -356,18 +413,23 @@ class GaussianModel:
         self.prev_lff_xyz_grad = torch.zeros((N, 1), device="cuda")
         self.prev_selected_pts_mask_bool = torch.zeros(N, dtype=torch.bool, device="cuda")
 
+        # Mỗi thuộc tính Gaussian là 1 param group với learning rate RIÊNG.
+        # Lý do LR khác nhau: vị trí (xyz) cần LR nhỏ scale theo scene; màu bậc cao (f_rest)
+        # học chậm hơn màu DC 20 lần để tránh overfit view-dependent.
         l = [
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
-            {'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"},
-            {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
+            {'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"},       # màu DC
+            {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},  # màu SH bậc cao, LR/20
             {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
         ]
-        if self.args.train_bg:
+        if self.args.train_bg:   # [NOT USE] train background color — production không bật
             l.append({'params': [self.bg_color], 'lr': 0.001, "name": "bg_color"})
 
+        # Adam optimizer với lr=0 mặc định (mỗi group tự set lr riêng ở trên)
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+        # Scheduler riêng cho xyz — LR giảm dần theo hàm mũ từ init→final trong quá trình train
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init * self.spatial_lr_scale,
                                                     lr_final=training_args.position_lr_final * self.spatial_lr_scale,
                                                     lr_delay_mult=training_args.position_lr_delay_mult,
@@ -375,8 +437,8 @@ class GaussianModel:
 
 
     def update_learning_rate(self, iteration):
-        ''' Learning rate scheduling per step '''
-        xyz_lr = self.xyz_scheduler_args(iteration)
+        ''' Cập nhật LR của xyz theo scheduler mỗi iteration (chỉ xyz có scheduler, còn lại cố định) '''
+        xyz_lr = self.xyz_scheduler_args(iteration)   # tính LR mới cho iter này
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
                 param_group['lr'] = xyz_lr
@@ -393,6 +455,8 @@ class GaussianModel:
     # Lý do không remove param groups: densification code (prune/densify/
     # clone) assume 6 groups cố định — remove sẽ crash.
     # ============================================================
+    # [NOT USE] freeze_sh = GLOBAL freeze (mọi Gaussian). Production dùng SELECTIVE freeze
+    # theo CRS (apply_crs_modulated_sh_freeze) — per-Gaussian, khác hẳn. Đây chỉ là DIAG tool.
     def freeze_sh(self):
         """[CRSGaussian DIAG E1] Freeze SH bằng cách set lr=0 cho f_dc, f_rest."""
         if self._sh_frozen:
@@ -413,6 +477,7 @@ class GaussianModel:
     #           DC contribution trong SH overfit.
     # Cách dùng: gọi khi iteration == freeze_dc_start_iter.
     # ============================================================
+    # [NOT USE] DIAG tool — isolate DC drift, không dùng trong production recipe.
     def freeze_dc(self):
         """[CRSGaussian DIAG A2] Freeze chỉ f_dc param group (lr=0)."""
         if self._dc_frozen:
@@ -425,9 +490,10 @@ class GaussianModel:
               f"f_rest/xyz/opacity/scaling/rotation still update.")
 
 
+    # Sinh danh sách tên cột cho file .ply (mỗi Gaussian là 1 dòng, mỗi thuộc tính là các cột).
     def construct_list_of_attributes(self):
-        l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
-        # All channels except the 3 DC
+        l = ['x', 'y', 'z', 'nx', 'ny', 'nz']   # vị trí + normal (normal luôn 0, giữ cho đúng format .ply)
+        # Các kênh màu (trừ 3 kênh DC), tên f_dc_0, f_dc_1, ...
         for i in range(self._features_dc.shape[1] * self._features_dc.shape[2]):
             l.append('f_dc_{}'.format(i))
         for i in range(self._features_rest.shape[1] * self._features_rest.shape[2]):
@@ -439,31 +505,36 @@ class GaussianModel:
             l.append('rot_{}'.format(i))
         return l
 
+    # Lưu toàn bộ Gaussian ra file .ply (định dạng chuẩn 3DGS, mở được bằng viewer).
     def save_ply(self, path):
-        mkdir_p(os.path.dirname(path))
+        mkdir_p(os.path.dirname(path))   # tạo folder nếu chưa có
 
+        # Đưa mọi thuộc tính từ GPU → CPU numpy (detach = ngắt gradient trước khi lưu)
         xyz = self._xyz.detach().cpu().numpy()
-        normals = np.zeros_like(xyz)
+        normals = np.zeros_like(xyz)     # normal = 0 (3DGS không dùng, chỉ để đủ format)
         f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         opacities = self._opacity.detach().cpu().numpy()
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
 
+        # Dựng cấu trúc numpy có tên cột rồi ghép mọi thuộc tính lại thành 1 mảng (N, tổng_cột)
         dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
-
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
         attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
-        PlyData([el]).write(path)
+        PlyData([el]).write(path)   # ghi ra đĩa
 
+    # Reset opacity mọi Gaussian về tối đa 0.05 (dùng trong lịch densify gốc 3DGS để "làm mờ lại").
     def reset_opacity(self):
         opacities_new = inverse_sigmoid(torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * 0.05))
         if len(self.optimizer.state.keys()):
+            # Phải thay tensor TRONG optimizer (không chỉ gán self._opacity) để Adam state khớp
             optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
             self._opacity = optimizable_tensors["opacity"]
 
+    # [NOT USE] reset màu về 0 — không thấy gọi trong production recipe.
     def reset_color(self):
         self.active_sh_degree = 0
         new_features_dc = torch.zeros_like(self._features_dc)
@@ -475,6 +546,8 @@ class GaussianModel:
             optimizable_tensors = self.replace_tensor_to_optimizer(new_features_rest, "f_rest")
             self._features_rest = optimizable_tensors["f_rest"]
 
+    # [NOT USE] Nạp Gaussian từ file .ply — chỉ dùng khi resume (scene/__init__.py nhánh loaded_iter).
+    # Production luôn init từ point cloud qua create_from_pcd, không qua đây.
     def load_ply(self, path):
         plydata = PlyData.read(path)
 
@@ -520,24 +593,29 @@ class GaussianModel:
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
 
-        self.active_sh_degree = self.max_sh_degree
+        self.active_sh_degree = self.max_sh_degree   # load .ply = model đã train → dùng full SH degree
 
 
+    # Thay 1 tensor thuộc tính trong optimizer (giữ đồng bộ Adam state), KHÔNG đổi số Gaussian.
+    # Dùng bởi reset_opacity/reset_color.
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             if group["name"] == name:
                 stored_state = self.optimizer.state.get(group['params'][0], None)
+                # Reset Adam momentum (exp_avg) + variance (exp_avg_sq) về 0 cho tensor mới
                 stored_state["exp_avg"] = torch.zeros_like(tensor)
                 stored_state["exp_avg_sq"] = torch.zeros_like(tensor)
 
-                del self.optimizer.state[group['params'][0]]
-                group["params"][0] = nn.Parameter(tensor.requires_grad_(True))
-                self.optimizer.state[group['params'][0]] = stored_state
+                del self.optimizer.state[group['params'][0]]                    # xóa state cũ
+                group["params"][0] = nn.Parameter(tensor.requires_grad_(True))  # gắn param mới
+                self.optimizer.state[group['params'][0]] = stored_state         # gắn lại state
 
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
 
+    # Cắt (prune) Gaussian theo mask — giữ phần True. Cắt CẢ Adam state để khớp shape mới.
+    # Helper chung, được prune_points/dist_prune gọi.
     def _prune_optimizer(self, mask):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
@@ -558,9 +636,10 @@ class GaussianModel:
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
 
+    # [NOT USE] Prune Gaussian đi quá xa point cloud gốc (chamfer > 3.0). Không thấy gọi trong production.
     def dist_prune(self):
-        dist = chamfer_dist(self.init_point, self._xyz)
-        valid_points_mask = (dist < 3.0)
+        dist = chamfer_dist(self.init_point, self._xyz)   # khoảng cách tới point cloud init
+        valid_points_mask = (dist < 3.0)                  # giữ Gaussian còn gần init
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
         self._xyz = optimizable_tensors["xyz"]
@@ -574,10 +653,11 @@ class GaussianModel:
         self.max_radii2D = self.max_radii2D[valid_points_mask]
 
 
+    # Xóa các Gaussian có mask=True (mask = "cần xóa"). Cắt đồng bộ MỌI buffer per-Gaussian.
     def prune_points(self, mask, iter):
-        if iter > self.args.prune_from_iter:
-            valid_points_mask = ~mask
-            optimizable_tensors = self._prune_optimizer(valid_points_mask)
+        if iter > self.args.prune_from_iter:        # chỉ prune sau iter ngưỡng (tránh xóa sớm khi chưa ổn định)
+            valid_points_mask = ~mask               # đảo mask: True = GIỮ LẠI
+            optimizable_tensors = self._prune_optimizer(valid_points_mask)  # cắt 6 thuộc tính + Adam state
 
             self._xyz = optimizable_tensors["xyz"]
             self._features_dc = optimizable_tensors["f_dc"]
@@ -586,6 +666,7 @@ class GaussianModel:
             self._scaling = optimizable_tensors["scaling"]
             self._rotation = optimizable_tensors["rotation"]
 
+            # Cắt các buffer densify + CRS theo cùng mask (nếu không sẽ lệch shape → crash)
             self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
             self.xyz_gradient_accum_abs = self.xyz_gradient_accum_abs[valid_points_mask]
             self.xyz_gradient_accum_abs_max = self.xyz_gradient_accum_abs_max[valid_points_mask]
@@ -613,10 +694,12 @@ class GaussianModel:
                 self.prev_selected_pts_mask_bool = self.prev_selected_pts_mask_bool[valid_points_mask]
 
 
+    # Ngược với _prune_optimizer: NỐI THÊM Gaussian mới vào optimizer (khi densify clone/split).
+    # Adam state của Gaussian mới init = 0.
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
-            if group["name"] in ['bg_color']:
+            if group["name"] in ['bg_color']:   # bg_color không phải per-Gaussian → bỏ qua
                 continue
             assert len(group["params"]) == 1
             extension_tensor = tensors_dict[group["name"]]
@@ -641,6 +724,9 @@ class GaussianModel:
 
         return optimizable_tensors
 
+    # "postfix" = bước chốt sau densify: nhận danh sách Gaussian mới (từ clone/split),
+    # nối vào model + optimizer, reset các buffer accum, và gán CRS/spawn_iter cho chúng.
+    # Mọi nhánh densify (clone, split, LFCF) đều kết thúc bằng cách gọi hàm này.
     def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling,
                               new_rotation, parent_crs_logits=None, eta=0.0,
                               new_prev_selected_bool=None):
@@ -729,6 +815,8 @@ class GaussianModel:
             )
 
 
+    # [NOT USE] Không có caller nào trong codebase — thêm Gaussian ở trung điểm các cặp
+    # điểm xa nhau. Có thể là code thử nghiệm cũ, giữ lại nhưng không chạy.
     def proximity(self, scene_extent, N = 3):
         dist, nearest_indices = distCUDA2(self.get_xyz)
         selected_pts_mask = torch.logical_and(dist > (5. * scene_extent),
@@ -749,19 +837,24 @@ class GaussianModel:
 
 
     # [CRSGaussian T5.4] +eta param cho conservative CRS inherit
+    # SPLIT = tách 1 Gaussian TO thành N Gaussian nhỏ (dùng cho vùng cần chi tiết mà Gaussian đang phủ quá rộng).
+    # Điều kiện: gradient cao VÀ kích thước lớn (> percent_dense × scene).
     def densify_and_split(self, grads, grad_threshold, grads_abs, grad_abs_threshold, scene_extent, iter, N=2,
                           cameras=None, aligned_depth_dict=None, depth_range=None,
                           eta=0.0):
         n_init_points = self.get_xyz.shape[0]
-        # Extract points that satisfy the gradient condition
+        # Chọn Gaussian có gradient vị trí ≥ ngưỡng (dấu hiệu vùng đang under-fit, cần thêm chi tiết)
         padded_grad = torch.zeros((n_init_points), device="cuda")
         padded_grad[:grads.shape[0]] = grads.squeeze()
         selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
+        # ── AbsGS (thesis khối 6) ──: thêm tiêu chí gradient TUYỆT ĐỐI, gộp bằng OR.
+        # Lý do: vùng texture mịn có gradient triệt tiêu nhau (ngược dấu) → tiêu chí gốc bỏ sót.
         if self.absdensify:
             padded_grad_abs = torch.zeros((n_init_points), device="cuda")
             padded_grad_abs[:grads_abs.shape[0]] = grads_abs.squeeze()
             selected_pts_mask_abs = torch.where(padded_grad_abs >= grad_abs_threshold, True, False)
             selected_pts_mask = torch.logical_or(selected_pts_mask, selected_pts_mask_abs)
+        # Chỉ split Gaussian ĐỦ TO (kích thước > percent_dense × scene) — Gaussian nhỏ thì clone thay vì split
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling,
                                                         dim=1).values > self.percent_dense * scene_extent)
@@ -771,11 +864,14 @@ class GaussianModel:
                                                torch.max(self.get_scaling, dim=1).values > ( scene_extent))
         selected_pts_mask = torch.logical_or(selected_pts_mask, selected_pts_mask2)
 
+        # Sinh N vị trí con: lấy mẫu ngẫu nhiên theo phân bố Gaussian gốc (std = scale của nó),
+        # xoay theo rotation gốc rồi cộng vào tâm gốc → N con nằm trong "đám mây" của Gaussian cha.
         stds = self.get_scaling[selected_pts_mask].repeat(N, 1)
         means = torch.zeros((stds.size(0), 3), device="cuda")
-        samples = torch.normal(mean=means, std=stds)
+        samples = torch.normal(mean=means, std=stds)                 # sample offset ngẫu nhiên
         rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N, 1, 1)
         new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
+        # Con nhỏ hơn cha: chia scale cho 0.8·N (tổng thể tích con ≈ cha nhưng chi tiết hơn)
         new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N, 1) / (0.8 * N))
         new_rotation = self._rotation[selected_pts_mask].repeat(N, 1)
         new_features_dc = self._features_dc[selected_pts_mask].repeat(N, 1, 1)
@@ -804,20 +900,23 @@ class GaussianModel:
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation,
                                    parent_crs_logits=_parent_crs, eta=eta)
 
+        # Sau khi tạo N con, XÓA Gaussian cha (mask=True cho cha, False cho con vừa thêm)
         prune_filter = torch.cat(
             (selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter, iter)
 
 
-    # [CRSGaussian T5.4] +eta param cho conservative CRS inherit
+    # CLONE = NHÂN ĐÔI 1 Gaussian NHỎ (copy y nguyên, giữ cả cha). Dùng cho vùng under-reconstruct
+    # mà Gaussian đang quá nhỏ (< percent_dense × scene). Khác split ở chỗ giữ cha + không thu nhỏ.
     def densify_and_clone(self, grads, grad_threshold, grads_abs, grad_abs_threshold, scene_extent,
                           cameras=None, aligned_depth_dict=None, depth_range=None,
                           eta=0.0):
-        # Extract points that satisfy the gradient condition
+        # Chọn Gaussian gradient cao (giống split), + AbsGS OR (gradient tuyệt đối)
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
         if self.absdensify:
             selected_pts_mask_abs = torch.where(torch.norm(grads_abs, dim=-1) >= grad_abs_threshold, True, False)
             selected_pts_mask = torch.logical_or(selected_pts_mask, selected_pts_mask_abs)
+        # Chỉ clone Gaussian NHỎ (≤ ngưỡng) — đây là điều kiện ngược với split
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling,
                                                         dim=1).values <= self.percent_dense * scene_extent)
@@ -849,6 +948,9 @@ class GaussianModel:
                                    new_rotation, parent_crs_logits=_parent_crs, eta=eta)
 
 
+    # ⭐ HÀM ĐIỀU PHỐI densify (thesis khối 6) — train.py gọi hàm này mỗi 100 iter.
+    # Nó quyết định: chạy LFCF (mỗi iter chia hết 200) HAY standard clone+split (AbsGS),
+    # rồi prune Gaussian opacity thấp / quá to. Là "nhạc trưởng" của toàn bộ densification.
     # [CRSGaussian T5.4] +eta param cho conservative CRS inherit → chain xuống clone/split
     # [Phase 13] +is_lfcf_iter/lfcf_opts/cameras_for_lfcf cho LFCF mode (default OFF)
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, iter,
@@ -924,12 +1026,14 @@ class GaussianModel:
             self.lff_denom.zero_()
 
         else:
-            # ── Standard path (Phase 8 FULL unchanged 100%) ──
-            grads = self.xyz_gradient_accum / self.denom
+            # ── Standard path (AbsGS, không LFCF) ──
+            grads = self.xyz_gradient_accum / self.denom     # gradient vị trí trung bình (accum / số lần)
             grads[grads.isnan()] = 0.0
 
-            grads_abs = self.xyz_gradient_accum_abs / self.denom
+            grads_abs = self.xyz_gradient_accum_abs / self.denom   # gradient TUYỆT ĐỐI trung bình (AbsGS)
             grads_abs[grads_abs.isnan()] = 0.0
+            # Ngưỡng AbsGS thích ứng: ratio = tỉ lệ Gaussian vượt ngưỡng gốc;
+            # Q = quantile (1-ratio) của grads_abs → chọn đúng cùng tỉ lệ Gaussian bằng tiêu chí tuyệt đối.
             ratio = (torch.norm(grads, dim=-1) >= max_grad).float().mean()
             Q = torch.quantile(grads_abs.reshape(-1), 1 - ratio)
 
@@ -942,11 +1046,11 @@ class GaussianModel:
                                    cameras=cameras, aligned_depth_dict=aligned_depth_dict, depth_range=depth_range,
                                    eta=eta)
 
-        # ── Legacy pruning (3DGS gốc) — giữ nguyên ──
-        prune_mask = (self.get_opacity < min_opacity).squeeze()
+        # ── Legacy pruning (3DGS gốc) — xóa Gaussian opacity quá thấp / quá to ──
+        prune_mask = (self.get_opacity < min_opacity).squeeze()   # opacity < ngưỡng → coi như vô hình, xóa
         if max_screen_size:
-            big_points_vs = self.max_radii2D > max_screen_size
-            big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
+            big_points_vs = self.max_radii2D > max_screen_size            # to trên màn hình 2D
+            big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent  # to trong không gian 3D
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
 
         # ── [CRSGaussian T4.2] CRS pruning — Option C ──
@@ -1062,12 +1166,17 @@ class GaussianModel:
         self.prune_points(prune_mask, iter=self._densify_current_iter)
 
 
+    # Gọi MỖI ITER (train.py:667/672): tích lũy gradient vị trí của Gaussian visible, để
+    # densify_and_prune (mỗi 100 iter) lấy trung bình và quyết định densify chỗ nào.
+    # update_filter = mask Gaussian visible trong render vừa rồi.
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
+        # gradient THƯỜNG (2 chiều xy màn hình) — tiêu chí densify gốc 3DGS
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter, :2], dim=-1,
                                                              keepdim=True)
+        # gradient TUYỆT ĐỐI (channel 2:) — cho AbsGS (không triệt tiêu khi ngược dấu)
         self.xyz_gradient_accum_abs[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,2:], dim=-1, keepdim=True)
         self.xyz_gradient_accum_abs_max[update_filter] = torch.max(self.xyz_gradient_accum_abs_max[update_filter], torch.norm(viewspace_point_tensor.grad[update_filter,2:], dim=-1, keepdim=True))
-        self.denom[update_filter] += 1
+        self.denom[update_filter] += 1   # đếm số lần accum để lấy trung bình
 
         # ── [Phase 13] LFCF parallel grad accumulation (guarded by numel) ──
         # Track LFCF accumulator parallel với standard. Cost: 1 extra norm + add.
@@ -1080,6 +1189,13 @@ class GaussianModel:
         
     
     
+    # ══════════════════════════════════════════════════════════════════
+    # [NOT USE] 5 helper dưới đây (clone_from_mask, split_from_mask,
+    # compute_prune_mask, prune_from_mask, reset_opacity_from_mask) KHÔNG
+    # có caller trong production (chỉ prune_from_mask xuất hiện ở 1 dòng đã
+    # comment tại train.py:890). Là API dự phòng / thử nghiệm cũ. Densify
+    # thật đi qua densify_and_prune, không qua các hàm này.
+    # ══════════════════════════════════════════════════════════════════
     def clone_from_mask(self, selected_pts_mask, repeat=1):
         for i in range(repeat):
             new_xyz = self._xyz[selected_pts_mask]

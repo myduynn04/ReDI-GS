@@ -1,3 +1,17 @@
+# ============================================================
+# [Khối COLMAP — Phase 1, OFFLINE] Sinh dữ liệu COLMAP cho LLFF sparse-view
+# File: tools/colmap_llff.py
+#
+# Chạy 1 LẦN trước khi train, KHÔNG nằm trong training loop.
+# Nhiệm vụ: từ ảnh gốc của mỗi scene, chọn 3 training view rồi chạy pipeline
+# COLMAP (feature → match → triangulate → dense stereo) để sinh ra:
+#   - camera poses (sparse/0/images.txt, cameras.txt)
+#   - point cloud triangulated (3_views/triangulated/points3D)
+#   - dense fused.ply (3_views/dense/fused.ply)  ← init cho Gaussian (MVS baseline)
+#
+# fused.ply này chính là cái mà scene/dataset_readers.py đọc lúc train.
+# (Phương pháp của bạn sau đó THAY fused.ply MVS này bằng RoMa v1 — xem p22.)
+# ============================================================
 import os
 import numpy as np
 import sys
@@ -5,6 +19,10 @@ import sqlite3
 
 IS_PYTHON3 = sys.version_info[0] >= 3
 MAX_IMAGE_ID = 2**31 - 1
+
+# ── Các câu lệnh SQL tạo bảng của COLMAP database (database.db) ──
+# COLMAP lưu keypoints/descriptors/matches vào SQLite. Các hằng dưới đây là
+# schema chuẩn của COLMAP — KHÔNG cần sửa, chỉ để tạo DB rỗng đúng format.
 
 CREATE_CAMERAS_TABLE = """CREATE TABLE IF NOT EXISTS cameras (
     camera_id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
@@ -78,6 +96,7 @@ CREATE_ALL = "; ".join([
 ])
 
 
+# Chuyển numpy array ↔ BLOB (binary) để lưu/đọc trong SQLite. Helper của COLMAP.
 def array_to_blob(array):
     if IS_PYTHON3:
         return array.tostring()
@@ -90,6 +109,7 @@ def blob_to_array(blob, dtype, shape=(-1,)):
     else:
         return np.frombuffer(blob, dtype=dtype).reshape(*shape)
 
+# Lớp bọc SQLite connection của COLMAP — cung cấp các hàm tạo bảng + update camera.
 class COLMAPDatabase(sqlite3.Connection):
     @staticmethod
     def connect(database_path):
@@ -113,12 +133,14 @@ class COLMAPDatabase(sqlite3.Connection):
             (model, width, height, array_to_blob(params), camera_id))
         return cursor.lastrowid
 
+# Làm tròn theo kiểu Python 3 (round-half-to-even) để chọn index view nhất quán.
 def round_python3(number):
     rounded = round(number)
     if abs(number - rounded) == 0.5:
         return 2.0 * round(number / 2.0)
     return rounded
 
+# Chạy 1 lệnh shell (thường là lệnh colmap ...) + in ra exit code để debug.
 def run_cmd(cmd):
     print(f"  [CMD] {cmd}")
     sys.stdout.flush()
@@ -127,15 +149,17 @@ def run_cmd(cmd):
     sys.stdout.flush()
     return ret
 
+# ⭐ Hàm chính — chạy toàn bộ pipeline COLMAP cho 1 scene, sinh ra fused.ply.
+# scene = tên scene (fern...), base_path = thư mục data, n_views = số training view (3).
 def pipeline(scene, base_path, n_views):
     print(f"\n{'='*60}")
     print(f"[SCENE] Processing: {scene}")
     print(f"{'='*60}")
     sys.stdout.flush()
 
-    llffhold = 8
-    view_path = str(n_views) + '_views'
-    scene_path = base_path + scene
+    llffhold = 8                              # cứ 8 ảnh lấy 1 làm test (convention NeRF/LLFF)
+    view_path = str(n_views) + '_views'       # tên folder output, vd "3_views"
+    scene_path = base_path + scene            # đường dẫn tới scene, vd .../nerf_llff_data/fern
 
     print(f"[CHECK] Scene path: {scene_path}")
     print(f"[CHECK] Exists: {os.path.exists(scene_path)}")
@@ -179,9 +203,12 @@ def pipeline(scene, base_path, n_views):
     print(f"[INFO] Total images found: {len(images)}")
     sys.stdout.flush()
 
+    # ── Chọn training views (cùng logic 2 bước với dataset_readers.py) ──
     img_list = sorted(images.keys(), key=lambda x: x)
+    # Bước 1: bỏ các ảnh test (idx chia hết 8) → còn train pool
     train_img_list = [c for idx, c in enumerate(img_list) if idx % llffhold != 0]
     if n_views > 0:
+        # Bước 2: từ train pool lấy đúng n_views ảnh cách đều nhau
         idx_sub = [round_python3(i) for i in np.linspace(0, len(train_img_list)-1, n_views)]
         train_img_list = [c for idx, c in enumerate(train_img_list) if idx in idx_sub]
 
@@ -197,12 +224,16 @@ def pipeline(scene, base_path, n_views):
     with open('created/points3D.txt', "w") as fid:
         pass
 
+    # STEP 5: Trích đặc trưng SIFT trên mỗi ảnh (điểm keypoint + mô tả). Đây là bước
+    # tìm "điểm dễ nhận diện" để sau này khớp giữa các ảnh.
     print(f"[STEP 5] Extracting SIFT features...")
     sys.stdout.flush()
     res = os.popen('colmap feature_extractor --database_path database.db --image_path images --SiftExtraction.max_image_size 4032 --SiftExtraction.max_num_features 32768 --SiftExtraction.estimate_affine_shape 1 --SiftExtraction.domain_size_pooling 1').read()
     print(f"[INFO] Feature extractor output: {res[:200] if res else 'empty'}")
     sys.stdout.flush()
 
+    # STEP 6: Khớp đặc trưng giữa mọi cặp ảnh (exhaustive = thử tất cả cặp). Tìm
+    # keypoint nào ở ảnh này ứng với keypoint nào ở ảnh kia.
     print(f"[STEP 6] Matching features...")
     sys.stdout.flush()
     run_cmd('colmap exhaustive_matcher --database_path database.db --FeatureMatching.use_gpu 0 --FeatureMatching.max_num_matches 4096')
@@ -221,22 +252,31 @@ def pipeline(scene, base_path, n_views):
             data = [str(1 + idx)] + [' ' + item for item in images[os.path.basename(img_name)]] + ['\n\n']
             fid.writelines(data)
 
+    # STEP 8: Tam giác hóa (triangulation) — từ các match 2D + camera poses (đã biết),
+    # tính ra vị trí 3D của mỗi điểm. Đây là SPARSE point cloud (thưa).
     print(f"[STEP 8] Triangulating points...")
     sys.stdout.flush()
     run_cmd('colmap point_triangulator --database_path database.db --image_path images --input_path created --output_path triangulated --Mapper.ba_local_max_num_iterations 40 --Mapper.ba_local_max_refinements 3 --Mapper.ba_global_max_num_iterations 100')
 
+    # STEP 9: Xuất model triangulated ra dạng TXT (để đọc bằng Python sau này).
     print(f"[STEP 9] Converting triangulated model...")
     sys.stdout.flush()
     run_cmd('colmap model_converter --input_path triangulated --output_path triangulated --output_type TXT')
 
+    # STEP 10: Khử méo ống kính (undistort) — chuẩn hóa ảnh về mô hình pinhole lý tưởng,
+    # chuẩn bị cho stereo dense.
     print(f"[STEP 10] Undistorting images...")
     sys.stdout.flush()
     run_cmd('colmap image_undistorter --image_path images --input_path triangulated --output_path dense')
 
+    # STEP 11: Patch-match stereo — ước lượng depth dày đặc cho từng pixel bằng cách so
+    # khớp patch giữa các ảnh. Đây là bước MVS (Multi-View Stereo), tạo point cloud DÀY.
     print(f"[STEP 11] Patch match stereo...")
     sys.stdout.flush()
     run_cmd('colmap patch_match_stereo --workspace_path dense')
 
+    # STEP 12: Hợp nhất (fusion) các depth map từ nhiều view thành 1 point cloud dense
+    # → fused.ply. ĐÂY là file init Gaussian (MVS baseline) mà training đọc.
     print(f"[STEP 12] Stereo fusion...")
     sys.stdout.flush()
     run_cmd('colmap stereo_fusion --workspace_path dense --output_path dense/fused.ply')
