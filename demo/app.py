@@ -76,28 +76,14 @@ def build_liverender_tab_wrapper(local_mode: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tab C — Live training viewer (Phase 4 planned placeholder)
+# Tab C — Live Training (Phase 4)
 # ---------------------------------------------------------------------------
 
 
-def build_live_training_tab(local_mode: bool) -> gr.Blocks:
-    """Layout Tab C. Placeholder Phase 4."""
-    with gr.Blocks() as tab:
-        gr.Markdown("## Tab C — Live training viewer")
-        if local_mode:
-            gr.Markdown(
-                "**Local mode**: sẽ play video MP4 pre-recorded thay vì "
-                "chạy train live (server không sẵn)."
-            )
-        else:
-            gr.Markdown(
-                "**Server mode**: sẽ chạy `train.py` subprocess và poll "
-                "iteration folders mỗi 30 giây để update test view + PSNR."
-            )
-        gr.Markdown(
-            "🚧 Phase 4 sẽ implement subprocess launcher + iteration poller."
-        )
-    return tab
+def build_livetraining_tab_wrapper(local_mode: bool) -> None:
+    """Layout Tab C dùng demo/ui_livetraining.py."""
+    from demo.ui_livetraining import build_livetraining_tab
+    build_livetraining_tab(local_mode)
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +112,7 @@ def build_app(args: argparse.Namespace) -> gr.Blocks:
             with gr.TabItem("Live Render"):
                 build_liverender_tab_wrapper(args.local_mode)
             with gr.TabItem("Live Training"):
-                build_live_training_tab(args.local_mode)
+                build_livetraining_tab_wrapper(args.local_mode)
     return app
 
 
