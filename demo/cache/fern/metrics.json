@@ -1,0 +1,46 @@
+{
+  "scene": "fern",
+  "n_gauss": 88630,
+  "training_time_s": 355.5,
+  "training_time_str": "5m 56s",
+  "recipe": "A3-TRIM 8-module, tau=0.65, seed 42",
+  "train_views": [
+    "train_1.png",
+    "train_2.png",
+    "train_3.png"
+  ],
+  "test_views": [
+    {
+      "index": 0,
+      "gt": "test_0_gt.png",
+      "render": "test_0_render.png",
+      "diff": "test_0_diff.png",
+      "image_name": "IMG_4026",
+      "width": 504,
+      "height": 378
+    },
+    {
+      "index": 1,
+      "gt": "test_1_gt.png",
+      "render": "test_1_render.png",
+      "diff": "test_1_diff.png",
+      "image_name": "IMG_4034",
+      "width": 504,
+      "height": 378
+    },
+    {
+      "index": 2,
+      "gt": "test_2_gt.png",
+      "render": "test_2_render.png",
+      "diff": "test_2_diff.png",
+      "image_name": "IMG_4042",
+      "width": 504,
+      "height": 378
+    }
+  ],
+  "orbit": "orbit.gif",
+  "resolution": [
+    504,
+    378
+  ]
+}

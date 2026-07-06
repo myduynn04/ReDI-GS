@@ -4,23 +4,40 @@
 `populate_cache.py` sinh). Không render live, chỉ serve file từ disk +
 amplify diff map trong memory theo slider user.
 
-Layout:
-- Dropdown chọn scene (mặc định fortress).
-- 3 training input images.
-- Test view grid: index | GT | Render | Diff (amplified).
-- Slider "Difference amplification" 1..10, default 1.
-- Orbit GIF autoplay loop.
-- Info: N_gauss, training time, recipe.
+Layout (Phase 2.6 — card design):
+- Header: dropdown scene (trái) + info N_gauss / training time (phải).
+- Card "Training views": 1 strip = 3 train view compose ngang.
+- Card "Held-out test views": slider amplification + 3 row, mỗi row =
+  1 ảnh compose (GT | Render | Diff amplified).
+- Card "Novel view orbit": GIF autoplay.
 
 Không có tier ranking, không hiển thị PSNR/SSIM/LPIPS number
 (theo yêu cầu user).
+
+Phase 2.6 fix (2026-07-05) — ATOMIC BLOCK UPDATE + CARD LAYOUT:
+    Vấn đề: đổi scene thì ảnh mới thay ảnh cũ NHỎ GIỌT từng ô một,
+    UI trộn lẫn scene cũ/mới trong ~0.5-1s.
+    Root cause: preload đã làm data instant, nhưng 14 output riêng lẻ →
+    Gradio serialize MỖI gr.Image thành 1 temp file + 1 HTTP fetch riêng;
+    browser hoàn tất 13 fetch tại các thời điểm khác nhau (GIF chậm
+    nhất). Slider `.change` còn bắn lại CẢ 14 output (gồm GIF) dù chỉ
+    diff thay đổi, và bắn liên tục trong lúc kéo.
+    Fix:
+      1. Compose theo KHỐI: 3 train view → 1 strip; mỗi test view →
+         1 row (GT|Render|Diff). 13 ảnh → 5 payload; mỗi khối swap
+         nguyên khối, hết cảnh so le trong khối.
+      2. Tách callback theo phạm vi ảnh hưởng: đổi scene → update 6
+         output; slider → chỉ 3 row (không đụng strip/GIF), dùng
+         `.release` để không re-render khi đang kéo.
+      3. Card layout: tách hẳn khối Training / Test / Orbit thành 3
+         card riêng + CSS inject (không cần sửa app.py).
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List, Tuple
+from typing import List
 
 import gradio as gr
 import numpy as np
@@ -35,9 +52,13 @@ SCENES = ["fern", "flower", "fortress", "horns", "leaves", "orchids",
           "room", "trex"]
 
 # Phase 2.5b: preload TẤT CẢ scene vào memory lúc startup để chuyển scene
-# instant (~10ms). Chi phí: ~45MB memory (8 × 12 PNG), ~2s startup thêm.
+# instant (~10ms). Chi phí: ~45MB memory, ~2s startup thêm.
 # Dict: scene_name → preloaded data dict.
 _PRELOAD_CACHE: dict = {}
+
+# Khe giữa các ảnh trong composed strip/row. Alpha = 0 → lộ nền theme
+# (đẹp cả light lẫn dark mode).
+_GAP_PX = 10
 
 
 # ---------------------------------------------------------------------------
@@ -56,13 +77,6 @@ def _load_metrics(scene: str, cache_root: Path) -> dict:
     return json.loads(p.read_text())
 
 
-def _load_diff_raw(scene: str, cache_root: Path, idx: int) -> Image.Image | None:
-    p = _cache_dir(scene, cache_root) / f"test_{idx}_diff.png"
-    if not p.exists():
-        return None
-    return Image.open(p).convert("L")  # grayscale
-
-
 def _amplify_diff(diff_raw: Image.Image, factor: float) -> Image.Image:
     """Nhân diff map bằng factor rồi clip. Trả về PIL grayscale."""
     arr = np.asarray(diff_raw, dtype=np.int32)
@@ -75,6 +89,59 @@ def _existing_scenes(cache_root: Path) -> List[str]:
     if not cache_root.exists():
         return []
     return [s for s in SCENES if (cache_root / s / "metrics.json").exists()]
+
+
+# ---------------------------------------------------------------------------
+# Compose — ghép nhiều ảnh thành 1 khối để frontend swap nguyên tử
+# ---------------------------------------------------------------------------
+
+
+def _as_rgba(img: Image.Image | None, size: tuple[int, int]) -> np.ndarray:
+    """PIL bất kỳ → ndarray RGBA (H,W,4). None → placeholder xám đục."""
+    if img is None:
+        w, h = size
+        arr = np.zeros((h, w, 4), dtype=np.uint8)
+        arr[..., :3] = 45
+        arr[..., 3] = 255
+        return arr
+    arr = np.asarray(img.convert("RGBA"), dtype=np.uint8)
+    if (arr.shape[1], arr.shape[0]) != size:
+        arr = np.asarray(
+            Image.fromarray(arr).resize(size, Image.LANCZOS), dtype=np.uint8)
+    return arr
+
+
+def _hstack_images(imgs: List[Image.Image | None]) -> Image.Image | None:
+    """Ghép ngang các ảnh cùng cỡ thành 1 ảnh RGBA, khe trong suốt.
+
+    Lý do compose: 1 khối = 1 payload = 1 HTTP fetch → cả khối xuất hiện
+    cùng lúc, triệt tiêu hiện tượng ảnh mới thay ảnh cũ so le từng ô.
+    Chi phí: vài np.concatenate trên ảnh preloaded ≈ sub-ms.
+    """
+    ref = next((im for im in imgs if im is not None), None)
+    if ref is None:
+        return None
+    size = ref.size                                   # (W, H)
+    gap = np.zeros((size[1], _GAP_PX, 4), dtype=np.uint8)   # alpha = 0
+    parts: List[np.ndarray] = []
+    for k, im in enumerate(imgs):
+        if k:
+            parts.append(gap)
+        parts.append(_as_rgba(im, size))
+    return Image.fromarray(np.concatenate(parts, axis=1))
+
+
+def _compose_test_rows(data: dict, amplify: float) -> List[Image.Image | None]:
+    """3 row test view, mỗi row = compose(GT | Render | Diff × amplify)."""
+    rows: List[Image.Image | None] = []
+    for gt, rend, diff in zip(data["gts"], data["renders"],
+                              data["diffs_raw"]):
+        if gt is None and rend is None and diff is None:
+            rows.append(None)
+            continue
+        d_amp = _amplify_diff(diff, amplify) if diff is not None else None
+        rows.append(_hstack_images([gt, rend, d_amp]))
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -96,8 +163,9 @@ def _open_and_load(path: Path, mode: str | None = None) -> Image.Image | None:
 def _preload_scene(scene: str, cache_root: Path) -> dict | None:
     """Nạp toàn bộ cache của 1 scene vào memory.
 
-    Trả về dict với keys: trains (3 PIL), gts (3 PIL), renders (3 PIL),
-    diffs_raw (3 PIL L-mode), orbit (str path), info_md (str).
+    Trả về dict với keys: train_strip (1 PIL compose), gts (3 PIL),
+    renders (3 PIL), diffs_raw (3 PIL L-mode), orbit (str path),
+    info_md (str).
     """
     metrics = _load_metrics(scene, cache_root)
     if not metrics:
@@ -122,16 +190,16 @@ def _preload_scene(scene: str, cache_root: Path) -> dict | None:
     orbit_p = cache / metrics.get("orbit", "orbit.gif")
     orbit_str = str(orbit_p) if orbit_p.exists() else None
 
-    # Info markdown — Phase 2.5: bỏ dòng Recipe.
     n_gauss = metrics.get("n_gauss", 0)
     training_time = metrics.get("training_time_str", "unknown")
     info_md = (
-        f"**Gaussians**: {n_gauss:,}  \n"
+        f"**Gaussians**: {n_gauss:,} · "
         f"**Training time**: {training_time}"
     )
 
     return {
-        "trains": trains,
+        # Train strip compose sẵn 1 lần lúc preload (static theo scene).
+        "train_strip": _hstack_images(trains),
         "gts": gts,
         "renders": renders,
         "diffs_raw": diffs_raw,
@@ -151,50 +219,70 @@ def _preload_all(scenes_available: List[str], cache_root: Path) -> None:
     print(f"[ui] preloaded {len(_PRELOAD_CACHE)} scenes ready")
 
 
+def _get_scene(scene: str, cache_root: Path) -> dict | None:
+    """Đọc scene từ preload dict; fallback nạp on-demand nếu miss."""
+    data = _PRELOAD_CACHE.get(scene)
+    if data is None:
+        data = _preload_scene(scene, cache_root)
+        if data is not None:
+            _PRELOAD_CACHE[scene] = data
+    return data
+
+
 # ---------------------------------------------------------------------------
-# Callback — cập nhật UI khi đổi scene hoặc slider (đọc từ preload dict)
+# Callbacks — tách theo phạm vi ảnh hưởng
 # ---------------------------------------------------------------------------
 
 
-def build_scene_callback(cache_root: Path):
-    """Factory sinh callback để Gradio gọi khi dropdown scene đổi.
+def build_scene_callbacks(cache_root: Path):
+    """Trả về (cb_scene, cb_amplify).
 
-    Phase 2.5b: callback đọc từ `_PRELOAD_CACHE` dict thay vì disk →
-    chuyển scene instant, không chớp. Diff amplify tính in-memory.
-
-    Returns: (scene: str, amplify: float) -> tuple(14 widget values)
+    cb_scene   — đổi scene:  (strip, row0, row1, row2, orbit, info_md).
+    cb_amplify — thả slider: (row0, row1, row2) — KHÔNG đụng strip/GIF,
+                 nên kéo slider không bao giờ refetch payload nặng.
     """
-    def cb(scene: str, amplify: float):
-        data = _PRELOAD_CACHE.get(scene)
+
+    def cb_scene(scene: str, amplify: float):
+        data = _get_scene(scene, cache_root)
         if data is None:
-            # Fallback: nếu preload miss (cache thêm sau startup), nạp on-demand.
-            data = _preload_scene(scene, cache_root)
-            if data is not None:
-                _PRELOAD_CACHE[scene] = data
+            return (None, None, None, None, None, "")
+        rows = _compose_test_rows(data, amplify)
+        return (data["train_strip"], rows[0], rows[1], rows[2],
+                data["orbit"], data["info_md"])
+
+    def cb_amplify(scene: str, amplify: float):
+        data = _get_scene(scene, cache_root)
         if data is None:
-            return (None,) * 14
+            return (None, None, None)
+        rows = _compose_test_rows(data, amplify)
+        return (rows[0], rows[1], rows[2])
 
-        # Diff amplify trong memory theo slider factor.
-        diffs = [
-            _amplify_diff(d, amplify) if d is not None else None
-            for d in data["diffs_raw"]
-        ]
-
-        return (
-            data["trains"][0], data["trains"][1], data["trains"][2],
-            data["gts"][0], data["renders"][0], diffs[0],
-            data["gts"][1], data["renders"][1], diffs[1],
-            data["gts"][2], data["renders"][2], diffs[2],
-            data["orbit"],
-            data["info_md"],
-        )
-
-    return cb
+    return cb_scene, cb_amplify
 
 
 # ---------------------------------------------------------------------------
 # Build Tab
 # ---------------------------------------------------------------------------
+
+# CSS inject qua gr.HTML → tự chứa trong tab, không cần sửa gr.Blocks(css=)
+# ở app.py. Dùng CSS var của Gradio theme để tương thích light/dark.
+_CSS = """
+<style>
+.demo-card {border: 1px solid var(--border-color-primary) !important;
+            border-radius: 12px !important;
+            padding: 14px 16px !important;
+            background: var(--background-fill-secondary) !important;
+            margin-bottom: 4px;}
+.demo-card .demo-img img {border-radius: 8px;}
+.demo-card h4 {margin: 0 0 6px 0;}
+.col-headers {display: flex; margin: 2px 0 8px;
+              color: var(--body-text-color-subdued);
+              font-size: 13px; font-weight: 600; text-align: center;}
+.col-headers span {flex: 1;}
+.scene-info {text-align: right;}
+.scene-info p {margin: 6px 0 0 0;}
+</style>
+"""
 
 
 def build_precompute_tab(cache_root: Path = CACHE_ROOT_DEFAULT) -> None:
@@ -207,86 +295,83 @@ def build_precompute_tab(cache_root: Path = CACHE_ROOT_DEFAULT) -> None:
         )
         return
 
-    # Phase 2.5b: preload TẤT CẢ scene vào memory lúc startup (~2s cho 8 scene).
-    # Sau đó chuyển scene chỉ đọc từ dict → instant, không chớp.
+    # Preload TẤT CẢ scene vào memory lúc startup (~2s cho 8 scene).
     _preload_all(scenes_available, cache_root)
 
     default_scene = DEFAULT_SCENE if DEFAULT_SCENE in scenes_available \
         else scenes_available[0]
 
+    cb_scene, cb_amplify = build_scene_callbacks(cache_root)
+
     # Compute initial content NGAY để bake vào `value=` lúc construct widget.
     # Gradio 4: gán widget.value = X sau khi tạo sẽ KHÔNG sync frontend.
-    callback = build_scene_callback(cache_root)
-    initial = callback(default_scene, 1.0)
-    (i_train1, i_train2, i_train3,
-     i_gt0, i_rend0, i_diff0,
-     i_gt1, i_rend1, i_diff1,
-     i_gt2, i_rend2, i_diff2,
-     i_orbit, i_info) = initial
+    (i_strip, i_row0, i_row1, i_row2, i_orbit, i_info) = cb_scene(
+        default_scene, 1.0)
+
+    gr.HTML(_CSS)
 
     with gr.Row():
-        scene_dd = gr.Dropdown(
-            choices=scenes_available,
-            value=default_scene,
-            label="Scene",
-            interactive=True,
+        with gr.Column(scale=1, min_width=220):
+            scene_dd = gr.Dropdown(
+                choices=scenes_available,
+                value=default_scene,
+                label="Scene",
+                interactive=True,
+            )
+        with gr.Column(scale=2, min_width=220):
+            info_md = gr.Markdown(i_info, elem_classes=["scene-info"])
+
+    # --- Card 1: Training input --------------------------------------
+    with gr.Group(elem_classes=["demo-card"]):
+        gr.Markdown("#### Training views — 3-view input")
+        gr.HTML('<div class="col-headers">'
+                '<span>View 1</span><span>View 2</span><span>View 3</span>'
+                '</div>')
+        train_strip = gr.Image(
+            value=i_strip, show_label=False, container=False,
+            interactive=False, elem_classes=["demo-img"],
         )
-        amplify_slider = gr.Slider(
-            minimum=1.0, maximum=10.0, value=1.0, step=0.5,
-            label="Difference amplification",
-            interactive=True,
+
+    # --- Card 2: Held-out test views ----------------------------------
+    with gr.Group(elem_classes=["demo-card"]):
+        with gr.Row():
+            with gr.Column(scale=2, min_width=200):
+                gr.Markdown("#### Held-out test views")
+            with gr.Column(scale=1, min_width=260):
+                amplify_slider = gr.Slider(
+                    minimum=1.0, maximum=10.0, value=1.0, step=0.5,
+                    label="Difference amplification",
+                    interactive=True,
+                )
+        gr.HTML('<div class="col-headers">'
+                '<span>Ground truth</span><span>Render</span>'
+                '<span>Difference (amplified)</span></div>')
+        row0 = gr.Image(value=i_row0, show_label=False, container=False,
+                        interactive=False, elem_classes=["demo-img"])
+        row1 = gr.Image(value=i_row1, show_label=False, container=False,
+                        interactive=False, elem_classes=["demo-img"])
+        row2 = gr.Image(value=i_row2, show_label=False, container=False,
+                        interactive=False, elem_classes=["demo-img"])
+
+    # --- Card 3: Novel view orbit --------------------------------------
+    with gr.Group(elem_classes=["demo-card"]):
+        gr.Markdown("#### Novel view orbit — seamless ellipse loop")
+        orbit_img = gr.Image(
+            value=i_orbit, show_label=False, container=False,
+            interactive=False, height=400, elem_classes=["demo-img"],
         )
 
-    gr.Markdown("### Training views (input)")
-    with gr.Row():
-        train1 = gr.Image(value=i_train1, label="View 1",
-                          interactive=False, height=250)
-        train2 = gr.Image(value=i_train2, label="View 2",
-                          interactive=False, height=250)
-        train3 = gr.Image(value=i_train3, label="View 3",
-                          interactive=False, height=250)
-
-    gr.Markdown("### Test view comparison")
-    with gr.Row():
-        gt0 = gr.Image(value=i_gt0, label="Test 0 — GT",
-                       interactive=False, height=250)
-        rend0 = gr.Image(value=i_rend0, label="Test 0 — Render",
-                         interactive=False, height=250)
-        diff0 = gr.Image(value=i_diff0, label="Test 0 — Difference",
-                         interactive=False, height=250)
-    with gr.Row():
-        gt1 = gr.Image(value=i_gt1, label="Test 1 — GT",
-                       interactive=False, height=250)
-        rend1 = gr.Image(value=i_rend1, label="Test 1 — Render",
-                         interactive=False, height=250)
-        diff1 = gr.Image(value=i_diff1, label="Test 1 — Difference",
-                         interactive=False, height=250)
-    with gr.Row():
-        gt2 = gr.Image(value=i_gt2, label="Test 2 — GT",
-                       interactive=False, height=250)
-        rend2 = gr.Image(value=i_rend2, label="Test 2 — Render",
-                         interactive=False, height=250)
-        diff2 = gr.Image(value=i_diff2, label="Test 2 — Difference",
-                         interactive=False, height=250)
-
-    gr.Markdown("### Novel view orbit")
-    orbit_img = gr.Image(value=i_orbit,
-                         label="Interpolated orbit through all cameras",
-                         interactive=False, height=400)
-
-    info_md = gr.Markdown(i_info)
-
-    outputs = [
-        train1, train2, train3,
-        gt0, rend0, diff0,
-        gt1, rend1, diff1,
-        gt2, rend2, diff2,
-        orbit_img,
-        info_md,
-    ]
-
-    # Trigger callback khi dropdown/slider thay đổi.
-    # KHÔNG có nút "Chạy" — auto-refresh trên change event.
-    scene_dd.change(callback, inputs=[scene_dd, amplify_slider], outputs=outputs)
-    amplify_slider.change(callback, inputs=[scene_dd, amplify_slider],
-                          outputs=outputs)
+    # --- Events ---------------------------------------------------------
+    # Đổi scene: update cả 6 output (5 payload ảnh + 1 markdown inline).
+    scene_dd.change(
+        cb_scene,
+        inputs=[scene_dd, amplify_slider],
+        outputs=[train_strip, row0, row1, row2, orbit_img, info_md],
+    )
+    # Slider: `.release` chỉ bắn khi THẢ tay (không re-render lúc kéo),
+    # và chỉ update 3 row — strip/GIF không bị refetch.
+    amplify_slider.release(
+        cb_amplify,
+        inputs=[scene_dd, amplify_slider],
+        outputs=[row0, row1, row2],
+    )

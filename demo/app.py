@@ -65,14 +65,25 @@ def build_precompute_tab_wrapper(cache_dir: Path, local_mode: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tab 2 — Live training viewer (placeholder Phase 1, đầy đủ ở Phase 3)
+# Tab B — Live Render from .ply (Phase 3, MỚI)
+# ---------------------------------------------------------------------------
+
+
+def build_liverender_tab_wrapper(local_mode: bool) -> None:
+    """Layout Tab B dùng demo/ui_liverender.py."""
+    from demo.ui_liverender import build_liverender_tab
+    build_liverender_tab(local_mode)
+
+
+# ---------------------------------------------------------------------------
+# Tab C — Live training viewer (Phase 4 planned placeholder)
 # ---------------------------------------------------------------------------
 
 
 def build_live_training_tab(local_mode: bool) -> gr.Blocks:
-    """Layout Tab 2. Ở Phase 1 chỉ hiện label placeholder."""
+    """Layout Tab C. Placeholder Phase 4."""
     with gr.Blocks() as tab:
-        gr.Markdown("## Tab 2 — Live training viewer")
+        gr.Markdown("## Tab C — Live training viewer")
         if local_mode:
             gr.Markdown(
                 "**Local mode**: sẽ play video MP4 pre-recorded thay vì "
@@ -84,8 +95,7 @@ def build_live_training_tab(local_mode: bool) -> gr.Blocks:
                 "iteration folders mỗi 30 giây để update test view + PSNR."
             )
         gr.Markdown(
-            "🚧 Phase 1 scaffold. Subprocess launcher và iteration poller "
-            "sẽ được implement ở Phase 3."
+            "🚧 Phase 4 sẽ implement subprocess launcher + iteration poller."
         )
     return tab
 
@@ -113,6 +123,8 @@ def build_app(args: argparse.Namespace) -> gr.Blocks:
         with gr.Tabs():
             with gr.TabItem("Pre-computed"):
                 build_precompute_tab_wrapper(cache_dir, args.local_mode)
+            with gr.TabItem("Live Render"):
+                build_liverender_tab_wrapper(args.local_mode)
             with gr.TabItem("Live Training"):
                 build_live_training_tab(args.local_mode)
     return app
