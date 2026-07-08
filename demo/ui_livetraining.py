@@ -1,19 +1,52 @@
 """Tab C (Live Training) cho Gradio demo.
 
 User click "Start Training" → subprocess train.py chạy từ 0 iter tới 10000,
-Tab C poll checkpoint folders mỗi 5s và render latest .ply lên UI.
+Tab C poll checkpoint folders và render latest .ply lên UI.
 
 Design (Phase 4):
 - Recipe: A3-TRIM 8-module + tau=0.65 (Phase 28 tau65 cell) + seed 42.
-- Poll interval: 5s (via gr.Timer).
 - Save/test iterations: 1000, 2000, ..., 10000 (10 checkpoints).
-- Live render: latest checkpoint (thay cũ mỗi poll).
-- End state: timelapse GIF từ 10 checkpoint renders + final metrics.
+- Live render: latest checkpoint (thay cũ mỗi khi có checkpoint mới).
+- End state: timelapse GIF từ 10 checkpoint renders + orbit GIF.
 - Auto-cleanup: xóa output/live_demos/{scene}_{ts} sau khi complete
   hoặc user click "Cleanup".
 - Chỉ 1 training tại 1 thời điểm (global session state).
 
 Server-mode required. Local mode ẩn tab.
+
+Phase 4d fix (2026-07-06) — HẾT "LOAD MÃI + GIẬT GIẬT" SAU COMPLETE:
+    Triệu chứng: training xong (elapsed đã freeze) nhưng tab browser vẫn
+    quay loading mỗi giây, 5 output chớp chớp; PSNR progression luôn
+    "(chưa có checkpoint)".
+    Root cause chuỗi:
+      1. `outputs_finalized` CHỈ được set khi `checkpoint_renders` khác
+         rỗng → nếu render checkpoint fail (exception trong
+         _ensure_test_cam_gt/render KHÔNG được catch, hoặc load ply fail
+         im lặng) thì finalize không bao giờ xảy ra → gr.Timer tiếp tục
+         bắn FULL update 5 output mỗi 1s vĩnh viễn → favicon loading +
+         component chớp.
+      2. PSNR rỗng vì (a) chuỗi trên, và (b) regex parse log dạng bảng
+         pipe `1000 | test | 22.5 |` không khớp format chuẩn của train.py
+         gốc 3DGS/CoR-GS: `[ITER 1000] Evaluating test: L1 x PSNR y`.
+      3. Kể cả happy path vẫn giật: timer active từ lúc load trang (poll
+         cả khi Idle), event tick mặc định show_progress="full" phủ
+         loading overlay lên cả 5 output mỗi giây, và latest_render (PIL)
+         bị re-serialize + refetch mỗi tick dù không đổi.
+    Fix:
+      1. Timer lifecycle: tick tự TẮT timer (gr.Timer(active=False)) khi
+         idle/finalized/failed; Start bật lại. Page refresh giữa chừng
+         vẫn resume được (timer khởi tạo active, tick đầu tự tắt nếu
+         không có việc).
+      2. `show_progress="hidden"` cho tick → không còn overlay chớp.
+      3. Granular skip: render/timelapse/orbit chỉ update khi NỘI DUNG
+         mới; mỗi tick chỉ status + PSNR text thay đổi.
+      4. Finalize TÁCH KHỎI render thành công: hết grace window (5 poll
+         sau complete, chờ ply cuối) là finalize + tắt timer, kể cả khi
+         0 checkpoint render được. Render checkpoint được try/except
+         toàn bộ + in traceback, retry tối đa 3 lần rồi blacklist.
+      5. PSNR tính TRỰC TIẾP từ render vs GT tại test view 0 (đúng nhãn
+         UI, không phụ thuộc format log). Parse log chỉ còn là fallback
+         đa pattern lúc kết thúc.
 """
 
 from __future__ import annotations
@@ -27,6 +60,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -62,28 +96,20 @@ OUTPUT_ROOT = REPO_ROOT / "output" / "live_demos"
 LOG_ROOT = REPO_ROOT / "logs" / "live_demos"
 
 # Poll interval (seconds).
-# Phase 4c: giảm 5s → 1s cho progress bar UI smooth. Callback cb_poll rất
-# nhẹ khi không có checkpoint mới (chỉ format status text), safe 5×/s.
-# Rendering checkpoint chỉ xảy ra mỗi ~25s (khi có checkpoint mới) — không
-# bị load thêm.
+# Phase 4c: 1s cho progress bar smooth. Phase 4d: tick nhẹ (chỉ text) vì
+# ảnh/GIF đã granular-skip; timer TỰ TẮT khi không còn việc.
 POLL_INTERVAL_S = 1
 
 # Iterations save/test — 10 checkpoints, 1000..10000.
 CHECKPOINT_ITERS = [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000,
                     9000, 10000]
 
-# Reference wall-clock từ HANDOFF doc — hiển thị cho user.
-REFERENCE_TIMES = {
-    "fortress": "4m 43s (25.55 dB)",
-    "room": "3m 55s (23.15 dB)",
-    "trex": "5m 05s (23.70 dB)",
-    "horns": "5m 23s (21.05 dB)",
-    "orchids": "5m 30s (17.48 dB)",
-    "fern": "5m 55s (23.88 dB)",
-    "flower": "7m 06s (21.55 dB)",
-    "leaves": "5m 45s (19.35 dB)",
-}
+# Số poll grace sau khi process exit — chờ ply cuối ghi xong rồi mới
+# finalize (ply 10000 thường xuất hiện ngay trước/sau khi exit).
+GRACE_POLLS_AFTER_COMPLETE = 5
 
+# Retry tối đa cho 1 checkpoint render fail trước khi blacklist.
+MAX_RENDER_ATTEMPTS = 3
 
 # ---------------------------------------------------------------------------
 # Global training session state (chỉ 1 tại 1 thời điểm)
@@ -91,6 +117,11 @@ REFERENCE_TIMES = {
 
 
 _ACTIVE_SESSION: Optional["TrainingSession"] = None
+
+
+def _skip():
+    """gr.skip() nếu có (Gradio ≥4.36), fallback gr.update() (no-op)."""
+    return gr.skip() if hasattr(gr, "skip") else gr.update()
 
 
 # ---------------------------------------------------------------------------
@@ -236,8 +267,11 @@ class TrainingSession:
         self.failed = False
         self.exit_code: Optional[int] = None
         # Cờ báo đã sent tất cả output cuối cùng (timelapse + orbit GIF)
-        # sau khi complete → poll tiếp theo skip để không flicker.
+        # sau khi complete → poll tiếp theo skip + tắt timer.
         self.outputs_finalized: bool = False
+        # Phase 4d: đếm số poll sau khi process exit (grace window chờ
+        # ply cuối cùng ghi xong trước khi finalize).
+        self.polls_after_complete: int = 0
 
         # Fine-grained iteration counter — parse từ tqdm output train.py
         # (mỗi ~10 iter). Progress bar dùng cái này để cập nhật smooth.
@@ -246,6 +280,10 @@ class TrainingSession:
 
         # Checkpoint state
         self.rendered_iters: set = set()
+        # Phase 4d: retry đếm theo iter; hết MAX_RENDER_ATTEMPTS →
+        # blacklist (coi như "đã xử lý" để không retry vĩnh viễn).
+        self.render_attempts: dict = {}
+        self.render_failed: set = set()
         self.checkpoint_renders: List[Tuple[int, Image.Image]] = []
         # (iter, composed_row_PIL)
         self.psnr_history: List[Tuple[int, float]] = []  # (iter, psnr)
@@ -258,7 +296,7 @@ class TrainingSession:
         """Launch train.py subprocess non-blocking.
 
         stdout đi qua PIPE, background thread đọc line-by-line rồi TEE tới
-        cả log file (để parse PSNR) và terminal (để user monitor live).
+        cả log file (để debug) và terminal (để user monitor live).
         """
         OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
         LOG_ROOT.mkdir(parents=True, exist_ok=True)
@@ -313,7 +351,7 @@ class TrainingSession:
 
         try:
             for line in self.process.stdout:
-                # Write to log file (persistent, for PSNR parsing).
+                # Write to log file (persistent, for debugging).
                 if self.log_file:
                     try:
                         self.log_file.write(line)
@@ -363,11 +401,16 @@ class TrainingSession:
             print(f"[train] cleaned up {self.output_dir}")
 
     def _ensure_test_cam_gt(self) -> None:
-        """Load test camera + GT lần đầu khi có checkpoint."""
+        """Load test camera + GT lần đầu khi có checkpoint.
+
+        Phase 4d: truyền TƯỜNG MINH n_views=3, resolution=8 khớp protocol
+        train (`-r 8 --n_views 3`) — trước đây dùng default của
+        load_llff_scene, nếu default là full-res thì render chậm/lệch GT.
+        """
         if self.test_cam is not None:
             return
         source_path = REPO_ROOT / "data" / "nerf_llff_data" / self.scene
-        scene_obj = load_llff_scene(str(source_path))
+        scene_obj = load_llff_scene(str(source_path), n_views=3, resolution=8)
         test_cams = list(scene_obj.getTestCameras())
         if not test_cams:
             raise RuntimeError(f"No test cameras for {self.scene}")
@@ -376,42 +419,59 @@ class TrainingSession:
         gt_np = camera_gt_image(self.test_cam)   # HxWx3 uint8
         self.gt_pil = Image.fromarray(gt_np)
 
-    def _render_checkpoint(self, ply_path: Path) -> Optional[Image.Image]:
-        """Load .ply + render tại test cam + compose GT|Render|Diff row."""
+    def _render_checkpoint(
+            self, ply_path: Path
+    ) -> Optional[Image.Image]:
+        """Load .ply → render test view 0 → composed row.
+
+        Phase 4e: KHÔNG return PSNR — PSNR đúng phải là mean toàn test
+        set (compute bởi train.py và log `[ITER X] Evaluating test:
+        PSNR Y`). Render 1 view chỉ để preview visual + timelapse GIF.
+        Populate psnr_history CHỈ ở finalize via `rescan_psnr_from_log`.
+        """
+        gaussians = None
         try:
             gaussians = load_gaussians_from_ply(str(ply_path))
-        except Exception as e:
-            print(f"[train] failed to load {ply_path}: {e}")
+            self._ensure_test_cam_gt()
+
+            rend = render_view(gaussians, self.test_cam)
+            gt_np = np.asarray(self.gt_pil, dtype=np.uint8)
+
+            diff = np.abs(rend.astype(np.int32) - gt_np.astype(np.int32)) \
+                .mean(axis=2)
+            diff = np.clip(diff * 3, 0, 255).astype(np.uint8)
+
+            # Compose ngang (giống Tab B).
+            from demo.ui_liverender import _hstack_images
+            row = _hstack_images([
+                self.gt_pil,
+                Image.fromarray(rend),
+                Image.fromarray(diff),
+            ])
+            return row
+        except Exception:
+            print(f"[train] render checkpoint {ply_path} FAILED:")
+            traceback.print_exc()
             return None
+        finally:
+            # Free VRAM ngay sau render (kể cả khi fail giữa chừng).
+            if gaussians is not None:
+                del gaussians
+            try:
+                import torch
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
 
-        self._ensure_test_cam_gt()
+    def _parse_metrics_from_log(self, current_iter: int
+                                ) -> Optional[dict]:
+        """Parse PSNR / SSIM / LPIPS ở iter cụ thể từ log file.
 
-        rend = render_view(gaussians, self.test_cam)
-        gt_np = np.asarray(self.gt_pil, dtype=np.uint8)
+        Log format 3DGS/CoR-GS:
+          `[ITER 10000] Evaluating test: L1 0.039 PSNR 22.67 SSIM 0.88 LPIPS 0.13`
 
-        diff = np.abs(rend.astype(np.int32) - gt_np.astype(np.int32)) \
-            .mean(axis=2)
-        diff = np.clip(diff * 3, 0, 255).astype(np.uint8)
-
-        # Compose ngang (giống Tab B).
-        from demo.ui_liverender import _hstack_images
-        row = _hstack_images([
-            self.gt_pil,
-            Image.fromarray(rend),
-            Image.fromarray(diff),
-        ])
-
-        # Free VRAM ngay sau render.
-        del gaussians
-        import torch
-        torch.cuda.empty_cache()
-
-        return row
-
-    def _parse_psnr_from_log(self, current_iter: int) -> Optional[float]:
-        """Parse PSNR ở iter cụ thể từ log file.
-
-        Pattern: '  1000 | test | 22.5 | 0.8 | 0.15 | 5000 | 30.0'
+        Trả về dict {psnr, ssim, lpips} nếu parse được PSNR (SSIM/LPIPS
+        có thể None nếu format khác).
         """
         if not self.log_path.exists():
             return None
@@ -419,16 +479,62 @@ class TrainingSession:
             content = self.log_path.read_text(errors="ignore")
         except Exception:
             return None
-        pattern = rf"\s*{current_iter}\s*\|\s*test\s*\|\s*([\d.]+)\s*\|"
-        matches = re.findall(pattern, content)
-        if matches:
-            return float(matches[-1])
-        return None
+        it = current_iter
+        # Line pattern: [ITER 10000] Evaluating test: ... PSNR X SSIM Y LPIPS Z
+        line_pattern = (rf"\[ITER\s+{it}\]\s*Evaluating\s+test\s*:"
+                        rf"([^\n]+)")
+        m = re.search(line_pattern, content)
+        if not m:
+            return None
+        line = m.group(1)
+
+        def _grab(name: str) -> Optional[float]:
+            mm = re.search(rf"\b{name}\s*[:=]?\s*([\d.]+)", line)
+            if mm:
+                try:
+                    return float(mm.group(1))
+                except ValueError:
+                    return None
+            return None
+
+        psnr = _grab("PSNR")
+        if psnr is None:
+            return None
+        return {
+            "psnr": psnr,
+            "ssim": _grab("SSIM"),
+            "lpips": _grab("LPIPS"),
+        }
+
+    def rescan_psnr_from_log(self) -> None:
+        """Parse metrics từ log train.py cho tất cả CHECKPOINT_ITERS.
+
+        Phase 4e: PSNR/SSIM/LPIPS = mean toàn test set (compute bởi
+        train.py). Store vào `psnr_history` dạng (iter, dict) —
+        dict chứa keys psnr, ssim, lpips.
+        """
+        have = {it for it, _ in self.psnr_history}
+        added = 0
+        for it in CHECKPOINT_ITERS:
+            if it in have:
+                continue
+            metrics = self._parse_metrics_from_log(it)
+            if metrics is not None:
+                self.psnr_history.append((it, metrics))
+                added += 1
+        if added:
+            self.psnr_history.sort(key=lambda t: t[0])
+            print(f"[train] parse log: {added} metric entries "
+                  f"(PSNR/SSIM/LPIPS mean test set)")
+
+    def accounted_iters(self) -> set:
+        """Các checkpoint đã xử lý xong (render OK hoặc blacklist)."""
+        return self.rendered_iters | self.render_failed
 
     def poll(self) -> dict:
         """Check status + render new checkpoints. Return dict status."""
         if self.process is None:
-            return {"status": "idle"}
+            return {"status": "idle", "new_renders": []}
 
         # Check process alive
         exit_code = self.process.poll()
@@ -438,6 +544,8 @@ class TrainingSession:
             self.exit_code = exit_code
             self.failed = (exit_code != 0)
             print(f"[train] {self.scene} exited code={exit_code}")
+        if self.completed:
+            self.polls_after_complete += 1
 
         # Scan for new checkpoints
         cp_dir = self.output_dir / "point_cloud"
@@ -450,23 +558,33 @@ class TrainingSession:
                     it = int(d.name.split("_")[1])
                 except ValueError:
                     continue
-                if it in self.rendered_iters:
+                if it in self.rendered_iters or it in self.render_failed:
                     continue
                 ply = d / "point_cloud.ply"
                 if not ply.exists() or ply.stat().st_size == 0:
                     continue
-                # Small delay để chắc chắn ply write xong
-                if time.time() - ply.stat().st_mtime < 2.0:
+                # Small delay để chắc chắn ply write xong. Sau khi process
+                # exit thì không còn ai ghi nữa → đọc ngay (tránh miss ply
+                # cuối trong grace window).
+                if not self.completed \
+                        and time.time() - ply.stat().st_mtime < 2.0:
                     continue
 
                 row = self._render_checkpoint(ply)
                 if row is not None:
                     self.checkpoint_renders.append((it, row))
                     self.rendered_iters.add(it)
-                    psnr = self._parse_psnr_from_log(it)
-                    if psnr is not None:
-                        self.psnr_history.append((it, psnr))
                     new_renders.append(it)
+                    # PSNR sẽ được parse từ log lúc finalize (mean toàn
+                    # test set, KHÔNG phải single view). Ở đây chỉ log
+                    # tiến trình render.
+                    print(f"[train] ckpt {it}: rendered preview")
+                else:
+                    n = self.render_attempts.get(it, 0) + 1
+                    self.render_attempts[it] = n
+                    if n >= MAX_RENDER_ATTEMPTS:
+                        self.render_failed.add(it)
+                        print(f"[train] ckpt {it}: blacklist sau {n} lần fail")
 
         latest_iter = max(self.rendered_iters) if self.rendered_iters else 0
         elapsed = time.time() - self.started_at if self.started_at else 0
@@ -666,31 +784,60 @@ def _format_status(session: Optional[TrainingSession]) -> str:
 
 
 def _format_psnr_history(session: Optional[TrainingSession]) -> str:
-    if session is None or not session.psnr_history:
-        return "*(chưa có checkpoint)*"
-    lines = ["**PSNR progression on test view 0:**"]
-    for it, psnr in session.psnr_history:
-        lines.append(f"- Iter {it:>5d}: {psnr:.2f} dB")
+    """Chỉ hiển thị metrics tại iter 10000 (final) — PSNR/SSIM/LPIPS."""
+    if session is None:
+        return "*(chưa có training active)*"
+    if not session.psnr_history:
+        if session.outputs_finalized:
+            return "*(không parse được metrics từ log)*"
+        if session.completed:
+            return "*(đang tính metrics sau complete...)*"
+        return ("*(PSNR/SSIM/LPIPS mean toàn test set sẽ hiển thị sau "
+                "khi training complete)*")
+
+    # Lấy entry iter 10000 (checkpoint cuối cùng).
+    final_iter = CHECKPOINT_ITERS[-1]
+    final_metrics = None
+    for it, m in session.psnr_history:
+        if it == final_iter:
+            final_metrics = m
+            break
+
+    if final_metrics is None:
+        return f"*(chưa parse được metrics tại iter {final_iter})*"
+
+    psnr = final_metrics.get("psnr")
+    ssim = final_metrics.get("ssim")
+    lpips = final_metrics.get("lpips")
+
+    lines = [f"**Final metrics on test set at iter {final_iter} "
+             f"(mean across all test views):**"]
+    if psnr is not None:
+        lines.append(f"- **PSNR**: {psnr:.2f} dB")
+    if ssim is not None:
+        lines.append(f"- **SSIM**: {ssim:.4f}")
+    if lpips is not None:
+        lines.append(f"- **LPIPS**: {lpips:.4f}")
     return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
 # Callbacks
 # ---------------------------------------------------------------------------
+# Mọi callback trả 6 outputs:
+#   (status_html, psnr_md, render_img, timelapse_gif, orbit_gif, timer)
+# Timer là output cuối để bật/tắt polling từ chính callback.
 
 
 def cb_start_training(scene: str) -> Tuple:
-    """Start training subprocess.
-
-    Returns (status_html, psnr_md, render_img, timelapse_gif, orbit_gif).
-    """
+    """Start training subprocess + BẬT timer poll."""
     global _ACTIVE_SESSION
 
     if _ACTIVE_SESSION is not None and not _ACTIVE_SESSION.completed \
             and not _ACTIVE_SESSION.failed:
         return (f"❌ Training đang chạy cho `{_ACTIVE_SESSION.scene}`. "
                 f"Click **Stop** trước.",
-                "", None, None, None)
+                _skip(), _skip(), _skip(), _skip(), _skip())
 
     # Cleanup old session if any.
     if _ACTIVE_SESSION is not None:
@@ -700,18 +847,20 @@ def cb_start_training(scene: str) -> Tuple:
     try:
         session.start()
     except Exception as e:
-        return f"❌ Failed to start: {e}", "", None, None, None
+        return (f"❌ Failed to start: {e}", "", None, None, None,
+                gr.Timer(active=False))
 
     _ACTIVE_SESSION = session
     return (_format_status(session), "*(chưa có checkpoint)*",
-            None, None, None)
+            None, None, None, gr.Timer(active=True))
 
 
 def cb_stop_training() -> Tuple:
-    """Stop subprocess (SIGTERM)."""
+    """Stop subprocess (SIGTERM) + tắt timer."""
     global _ACTIVE_SESSION
     if _ACTIVE_SESSION is None:
-        return "⚪ No training to stop", "", None, None, None
+        return ("⚪ No training to stop", "", None, None, None,
+                gr.Timer(active=False))
     _ACTIVE_SESSION.stop()
     _ACTIVE_SESSION.completed = True
     if _ACTIVE_SESSION.completed_at is None:
@@ -720,83 +869,103 @@ def cb_stop_training() -> Tuple:
     return (_format_status(_ACTIVE_SESSION),
             _format_psnr_history(_ACTIVE_SESSION),
             _ACTIVE_SESSION.latest_render(),
-            None, None)
+            None, None, gr.Timer(active=False))
 
 
 def cb_poll() -> Tuple:
-    """Poll session state; called every 1s bởi gr.Timer.
+    """Poll session state; gọi bởi gr.Timer.
 
-    Returns:
-        (status_html, psnr_history_md, latest_render,
-         timelapse_gif_path, orbit_gif_path)
-
-    Sau khi complete + build xong 2 GIF cuối cùng → set flag
-    `outputs_finalized=True`. Các poll tiếp theo return `gr.skip()` cho
-    5 output → Gradio không re-render → không flicker.
+    Phase 4d — nguyên tắc:
+    - Idle / finalized → TẮT timer (gr.Timer(active=False)); mọi output
+      khác skip. Không còn request lặp vô hạn → hết favicon loading.
+    - Đang chạy → chỉ status + PSNR text update mỗi tick; render_img chỉ
+      update khi CÓ checkpoint mới; GIF chỉ update đúng 1 lần lúc
+      finalize. Không re-serialize ảnh mỗi giây → hết giật.
+    - Finalize TÁCH KHỎI render thành công: sau grace window
+      (GRACE_POLLS_AFTER_COMPLETE poll từ lúc process exit, chờ ply cuối)
+      hoặc khi đã xử lý đủ 10 checkpoint → finalize + tắt timer, KỂ CẢ
+      khi 0 checkpoint render được (trước đây kẹt vĩnh viễn ở đây).
     """
     session = _ACTIVE_SESSION
     if session is None:
-        return ("⚪ **Idle** — no training active",
-                "*(chưa có checkpoint)*", None, None, None)
+        # Idle: tắt luôn timer (tick đầu sau page load sẽ rơi vào đây).
+        return (_skip(), _skip(), _skip(), _skip(), _skip(),
+                gr.Timer(active=False))
 
-    # SKIP: đã complete + đã sent tất cả outputs cuối. Không cần poll nữa.
     if session.outputs_finalized:
-        return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+        return (_skip(), _skip(), _skip(), _skip(), _skip(),
+                gr.Timer(active=False))
 
-    session.poll()
+    info = session.poll()
     status = _format_status(session)
     history = _format_psnr_history(session)
-    render = session.latest_render()
 
-    # Nếu vừa complete: build timelapse GIF + orbit GIF (chạy 1 lần).
-    timelapse_path = None
-    orbit_path_str = None
-    if session.completed and not session.failed \
-            and session.checkpoint_renders:
-        # 1. Timelapse (progression tại test view 0)
-        tl_path = (LOG_ROOT / f"{session.scene}_{session.timestamp}"
-                   f"_timelapse.gif")
-        if not tl_path.exists():
+    # Render chỉ update khi có checkpoint MỚI trong tick này.
+    render_out = session.latest_render() if info["new_renders"] else _skip()
+    timelapse_out = _skip()
+    orbit_out = _skip()
+    timer_out = _skip()
+
+    if session.completed or session.failed:
+        all_accounted = all(it in session.accounted_iters()
+                            for it in CHECKPOINT_ITERS)
+        grace_over = (session.polls_after_complete
+                      >= GRACE_POLLS_AFTER_COMPLETE)
+        if session.failed or all_accounted or grace_over:
+            # --- FINALIZE (chạy đúng 1 lần) ---
+            if not session.failed and session.checkpoint_renders:
+                # 1. Timelapse (progression tại test view 0)
+                tl_path = (LOG_ROOT / f"{session.scene}_{session.timestamp}"
+                           f"_timelapse.gif")
+                if not tl_path.exists():
+                    try:
+                        session.build_timelapse_gif(tl_path, fps=2)
+                    except Exception as e:
+                        print(f"[train] timelapse build failed: {e}")
+                if tl_path.exists():
+                    timelapse_out = str(tl_path)
+
+                # 2. Orbit GIF (ellipse trajectory tại final checkpoint)
+                orbit_path = (LOG_ROOT
+                              / f"{session.scene}_{session.timestamp}"
+                              f"_orbit.gif")
+                if not orbit_path.exists():
+                    try:
+                        session.build_orbit_gif(orbit_path,
+                                                n_frames=60, fps=30)
+                    except Exception as e:
+                        print(f"[train] orbit build failed: {e}")
+                if orbit_path.exists():
+                    orbit_out = str(orbit_path)
+
+                # Render cuối cùng (phòng khi ply 10000 vừa render tick này).
+                render_out = session.latest_render()
+
+            # PSNR fallback từ log cho iter còn thiếu.
             try:
-                session.build_timelapse_gif(tl_path, fps=2)
+                session.rescan_psnr_from_log()
+                history = _format_psnr_history(session)
             except Exception as e:
-                print(f"[train] timelapse build failed: {e}")
-        if tl_path.exists():
-            timelapse_path = str(tl_path)
+                print(f"[train] psnr rescan failed: {e}")
 
-        # 2. Orbit GIF (ellipse trajectory tại final checkpoint)
-        orbit_path = (LOG_ROOT / f"{session.scene}_{session.timestamp}"
-                      f"_orbit.gif")
-        if not orbit_path.exists():
-            try:
-                session.build_orbit_gif(orbit_path, n_frames=60, fps=30)
-            except Exception as e:
-                print(f"[train] orbit build failed: {e}")
-        if orbit_path.exists():
-            orbit_path_str = str(orbit_path)
+            session.outputs_finalized = True
+            timer_out = gr.Timer(active=False)
+            print(f"[train] outputs finalized for {session.scene} — "
+                  f"timer off, no more UI polls")
 
-        # Nếu cả 2 GIF đã build xong → đánh dấu finalized để poll tiếp
-        # theo skip. Nếu build fail (path == None) → vẫn skip vì retry
-        # cũng không giúp gì.
-        session.outputs_finalized = True
-        print(f"[train] outputs finalized for {session.scene} — "
-              f"further polls will skip UI updates")
-
-    # Failed: cũng finalize để không spam UI update.
-    if session.failed:
-        session.outputs_finalized = True
-
-    return status, history, render, timelapse_path, orbit_path_str
+    return status, history, render_out, timelapse_out, orbit_out, timer_out
 
 
 def cb_cleanup() -> Tuple:
     """User request cleanup output/live_demos/{scene}_{ts}/."""
     global _ACTIVE_SESSION
     if _ACTIVE_SESSION is None:
-        return "⚪ No session to cleanup", "", None, None, None
+        return ("⚪ No session to cleanup", "", None, None, None,
+                gr.Timer(active=False))
     _ACTIVE_SESSION.cleanup()
     _ACTIVE_SESSION = None
-    return "🧹 **Cleaned up** — session removed", "", None, None, None
+    return ("🧹 **Cleaned up** — session removed", "", None, None, None,
+            gr.Timer(active=False))
 
 
 # ---------------------------------------------------------------------------
@@ -874,14 +1043,6 @@ _CSS = """
 """
 
 
-def _format_reference_times() -> str:
-    lines = ["**⏱️ Reference wall-clock (Phase 28 tau65, PSNR final):**"]
-    for scene in SCENES:
-        t = REFERENCE_TIMES.get(scene, "?")
-        lines.append(f"- `{scene}` — {t}")
-    return "  \n".join(lines)
-
-
 def build_livetraining_tab(local_mode: bool = False) -> None:
     """Build layout Tab C."""
     if local_mode:
@@ -912,7 +1073,7 @@ def build_livetraining_tab(local_mode: bool = False) -> None:
         with gr.Column(scale=2, min_width=220):
             gr.Markdown(
                 "**Recipe**: A3-TRIM 8-module · tau=0.65 · seed 42  \n"
-                "**Iterations**: 10,000 · **Poll interval**: 5s  \n"
+                "**Iterations**: 10,000 · **Poll interval**: 1s  \n"
                 "**Checkpoints**: 10 (every 1000 iter)",
                 elem_classes=["train-recipe"],
             )
@@ -921,16 +1082,10 @@ def build_livetraining_tab(local_mode: bool = False) -> None:
         gr.Markdown("#### 🚀 Live Training")
         gr.Markdown(
             "Click **Start Training** để chạy train.py từ 0 iter → 10000 "
-            "trực tiếp trên server. Tab tự poll checkpoint mỗi 5s và "
-            "render test view 0 tại checkpoint mới nhất. Khi xong sẽ có "
-            "timelapse GIF từ 10 checkpoints. **Auto-cleanup** output "
-            "khi complete.",
+            "trực tiếp trên server. Tab tự poll checkpoint và render test "
+            "view 0 tại checkpoint mới nhất. Khi xong sẽ có timelapse GIF "
+            "từ 10 checkpoints. **Auto-cleanup** output khi complete.",
             elem_classes=["train-note"],
-        )
-
-        gr.Markdown(
-            _format_reference_times(),
-            elem_classes=["train-recipe"],
         )
 
         with gr.Row():
@@ -954,9 +1109,9 @@ def build_livetraining_tab(local_mode: bool = False) -> None:
         )
 
     with gr.Group(elem_classes=["train-card"]):
-        gr.Markdown("#### 📈 PSNR progression")
+        gr.Markdown("#### 📈 Final test metrics (iter 10000, mean over all test views)")
         psnr_md = gr.Markdown(
-            "*(chưa có checkpoint)*",
+            "*(PSNR / SSIM / LPIPS sẽ hiển thị sau khi training complete)*",
             elem_classes=["train-status"],
         )
 
@@ -988,27 +1143,19 @@ def build_livetraining_tab(local_mode: bool = False) -> None:
         )
 
     # ── Events ────────────────────────────────────────────────────────
-    btn_start.click(
-        cb_start_training,
-        inputs=[scene_dd],
-        outputs=[status_html, psnr_md, render_img,
-                 timelapse_gif, orbit_gif],
-    )
-    btn_stop.click(
-        cb_stop_training,
-        outputs=[status_html, psnr_md, render_img,
-                 timelapse_gif, orbit_gif],
-    )
-    btn_cleanup.click(
-        cb_cleanup,
-        outputs=[status_html, psnr_md, render_img,
-                 timelapse_gif, orbit_gif],
-    )
+    # Timer khởi tạo ACTIVE: nếu user refresh trang giữa lúc training,
+    # tick đầu tiên sẽ resume polling; còn nếu không có việc (idle /
+    # finalized) tick đầu tự TẮT timer luôn → không poll vô hạn.
+    timer = gr.Timer(POLL_INTERVAL_S, active=True)
 
-    # Auto-poll every 5s via gr.Timer (Gradio 4.13+).
-    timer = gr.Timer(POLL_INTERVAL_S)
-    timer.tick(
-        cb_poll,
-        outputs=[status_html, psnr_md, render_img,
-                 timelapse_gif, orbit_gif],
-    )
+    outputs_all = [status_html, psnr_md, render_img,
+                   timelapse_gif, orbit_gif, timer]
+
+    btn_start.click(cb_start_training, inputs=[scene_dd],
+                    outputs=outputs_all)
+    btn_stop.click(cb_stop_training, outputs=outputs_all)
+    btn_cleanup.click(cb_cleanup, outputs=outputs_all)
+
+    # show_progress="hidden": tick KHÔNG phủ loading overlay lên 5 output
+    # mỗi giây — nguồn "giật giật" chính khi UI đứng yên.
+    timer.tick(cb_poll, outputs=outputs_all, show_progress="hidden")

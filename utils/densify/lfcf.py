@@ -184,56 +184,58 @@ def compute_lfcf_decisions(
     device = scaling.device
     N = xyz.shape[0]
 
-    # ── Step 1: Selection mask (per EFA-GS:594) ──
+    # ── Step 1: Chọn Gaussian gradient cao (giống tiêu chí gốc: ‖grad‖ ≥ ngưỡng) ──
     selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
 
-    # ── Step 2: Partition into new/intersect (per EFA-GS:596-601) ──
-    # prev_selected_pts_mask_bool đã là bool sẵn — KHÔNG convert
+    # ── Step 2: [THESIS Eq 3.15 — "selected in two consecutive cycles"] ──
+    # Phân biệt Gaussian được chọn LẦN ĐẦU vs LIÊN TỤC 2 kỳ.
+    # LFCF cần lịch sử gradient → phải được chọn 2 kỳ liên tiếp mới so được g_cur vs g_prev.
     prev_mask = prev_selected_pts_mask_bool
-    # Defensive: shape mismatch nếu N changed since last LFCF iter (densify/prune in between)
+    # Defensive: N đổi giữa 2 kỳ LFCF (densify/prune) → reset prev mask
     if prev_mask.shape[0] != N:
-        # Reset prev mask khi shape không khớp (new iter từ fresh state)
         prev_mask = torch.zeros(N, dtype=torch.bool, device=device)
 
-    intersect_mask = prev_mask & selected_pts_mask
-    enlarged_mask = (~prev_mask) & selected_pts_mask
+    intersect_mask = prev_mask & selected_pts_mask       # chọn LIÊN TỤC 2 kỳ → có lịch sử để so
+    enlarged_mask = (~prev_mask) & selected_pts_mask      # chọn LẦN ĐẦU → chưa biết signal/noise → ENLARGE
     splitted_mask = torch.zeros_like(enlarged_mask, dtype=torch.bool)
 
-    # ── Step 3: Tolerance compare cho intersection (per EFA-GS:604-607) ──
-    # decent = grad ĐANG GIẢM (modeling real signal → split)
-    # not decent = grad stuck/oscillate (noise → enlarge thay split)
+    # ── Step 3: [THESIS Eq 3.15 — quyết định split vs enlarge theo lịch sử gradient] ──
+    # action = SPLIT nếu (chọn 2 kỳ liên tiếp) VÀ (g_cur ≤ g_prev − ε_tol);  ENLARGE nếu ngược lại.
+    # - g_cur ≤ g_prev − tol (gradient ĐANG GIẢM) = Gaussian hội tụ về tín hiệu thật → SPLIT (thêm chi tiết)
+    # - g_cur không giảm (dao động/kẹt) = nhiễu/aliasing → chỉ ENLARGE (phủ vùng, không thêm chi tiết)
     if intersect_mask.any():
         whether_decent = (
             torch.norm(grads[intersect_mask], dim=-1)
-            <= torch.norm(prev_lff_xyz_grad[intersect_mask] - tolerance, dim=-1)
+            <= torch.norm(prev_lff_xyz_grad[intersect_mask] - tolerance, dim=-1)  # g_cur ≤ g_prev − ε_tol
         )
-        enlarged_mask[intersect_mask] = ~whether_decent
-        splitted_mask[intersect_mask] = whether_decent
+        enlarged_mask[intersect_mask] = ~whether_decent   # không giảm → enlarge
+        splitted_mask[intersect_mask] = whether_decent     # giảm → split
 
-    # ── Step 4: Depth-aware scaling multiplier (per EFA-GS:612-619) ──
-    interval = compute_3D_interval(xyz, cameras)
-    interval_coef = normalize_interval(interval, 'log', 'minmax').to(device)
-    # Deeper (coef high) → multiplier closer to min (less enlarge)
-    # Closer (coef low) → multiplier closer to max (more enlarge)
+    # ── Step 4: [THESIS Eq 3.16 — hệ số enlarge phụ thuộc độ sâu] ──
+    # m_k = δ_k·m_min + (1−δ_k)·m_max, với δ_k = độ sâu chiếu chuẩn hóa (gần 1 = xa camera).
+    interval = compute_3D_interval(xyz, cameras)                       # độ sâu chiếu per-Gaussian
+    interval_coef = normalize_interval(interval, 'log', 'minmax').to(device)  # δ_k ∈ [0,1]
+    # δ cao (xa) → hệ số về m_min (enlarge ÍT, thiên về split);  δ thấp (gần) → về m_max (enlarge NHIỀU)
     scaling_multiplier_coef = (
-        interval_coef * scaling_multiplier_min
-        + (1 - interval_coef) * scaling_multiplier_max
+        interval_coef * scaling_multiplier_min          # δ_k · m_min
+        + (1 - interval_coef) * scaling_multiplier_max  # (1−δ_k) · m_max
     )
+    # Nhân với training_percent_powered = decay theo iter (cuối training enlarge nhẹ dần)
     log_scaling_multiplier = torch.log(scaling_multiplier_coef) * training_percent_powered
 
-    # ── Step 5: Compute enlarge changes with diffscale (per EFA-GS:624-631) ──
+    # ── Step 5: [THESIS "volume-preserving transformation"] — diffscale isotropify khi enlarge ──
+    # 3 trục sắp TĂNG dần [s_min, s_mid, s_max], nhân lần lượt m^(+1), m^(−1/3), m^(−2/3).
+    # Tích số mũ = 1 − 1/3 − 2/3 = 0 → m^0 = 1 → THỂ TÍCH KHÔNG ĐỔI, chỉ đổi hình dạng.
+    # Mục đích: kéo Gaussian dài-nhọn (needle) về tròn hơn (isotropic) → giảm streaking artifact.
     enlarged_scaling_changes = torch.zeros_like(scaling[enlarged_mask], dtype=torch.float32, device=device)
     if diffscale and enlarged_mask.any():
-        # Sort ASC: [s_min, s_mid, s_max]
-        # coef: s_min → 1.0 (enlarge), s_mid → -1/3 (shrink), s_max → -2/3 (shrink mạnh)
-        # → Volume preserved (1 - 1/3 - 2/3 = 0)
-        coef_of_enlarge = torch.ones_like(enlarged_scaling_changes)
-        enlarged_sorted_indices = torch.sort(scaling[enlarged_mask], dim=1, descending=False)[1]
-        coef_of_enlarge.scatter_(1, enlarged_sorted_indices[:, 1].unsqueeze(1), -1.0 / 3.0)
-        coef_of_enlarge.scatter_(1, enlarged_sorted_indices[:, 2].unsqueeze(1), -2.0 / 3.0)
+        coef_of_enlarge = torch.ones_like(enlarged_scaling_changes)   # mặc định trục nhỏ nhất = +1 (enlarge)
+        enlarged_sorted_indices = torch.sort(scaling[enlarged_mask], dim=1, descending=False)[1]  # [s_min,s_mid,s_max]
+        coef_of_enlarge.scatter_(1, enlarged_sorted_indices[:, 1].unsqueeze(1), -1.0 / 3.0)  # s_mid → m^(−1/3)
+        coef_of_enlarge.scatter_(1, enlarged_sorted_indices[:, 2].unsqueeze(1), -2.0 / 3.0)  # s_max → m^(−2/3) (co mạnh nhất)
         enlarged_scaling_changes += log_scaling_multiplier[enlarged_mask] * coef_of_enlarge
     elif enlarged_mask.any():
-        # No diffscale: isotropic enlarge on all 3 axes (volume grows by mult^3)
+        # Không diffscale: enlarge đều 3 trục (thể tích tăng m^3) — bản đơn giản
         enlarged_scaling_changes += log_scaling_multiplier[enlarged_mask]
 
     # ── Step 6: Compute split shrink changes (per EFA-GS:640-647) ──
