@@ -318,7 +318,7 @@ class GaussianModel:
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
-
+    
     def create_from_pcd(self, pcd: BasicPointCloud, spatial_lr_scale: float,
                          informed_crs0=None):
         """Khởi tạo Gaussians từ COLMAP point cloud.

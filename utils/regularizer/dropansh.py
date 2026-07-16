@@ -50,29 +50,35 @@ def anchor_dropout_mask(
     Returns:
         keep_mask: (N,) bool tensor. True = keep, False = drop (anchor hoặc k-NN).
     """
+    # ══════════════════════════════════════════════════════════════════
+    # [THESIS §Reg (i) DropAnSH — Anchor-based cluster dropout]
+    # Chọn ngẫu nhiên vài % Gaussian làm ANCHOR, bỏ mỗi anchor + k láng giềng
+    # = xóa CẢ CỤM 3D khỏi render lần này. Trả về keep_mask (True=giữ).
+    # Mục đích: chống "neighbor compensation" — bỏ cụm ép model học toàn cục.
+    # ══════════════════════════════════════════════════════════════════
     N = gaussians.get_xyz.shape[0]
     device = gaussians.get_xyz.device
 
-    # [CRSGaussian Phase 2 ablation] pa_max=0.0 → tắt anchor dropout hoàn toàn.
-    # Lý do: Phase 2 ablation D1-S (chỉ SH degree dropout, không anchor) cần
-    # pa=0 clean. Code gốc dùng max(1, int(pa*N)) → pa=0 vẫn drop 1 anchor + k-NN.
+    # pa_max=0.0 → tắt anchor dropout hoàn toàn (dùng cho ablation "chỉ SH, không anchor")
     if pa_max <= 0.0:
         return torch.ones(N, device=device, dtype=torch.bool)
 
-    # Linear ramp pa → num_anchors
+    # [THESIS Eq dropansh-anchor: pₐ(t) = pₐ^max · min(1, t/T)] — tỉ lệ anchor TĂNG DẦN theo iter.
+    # Đầu train drop ít (chưa ổn định), cuối train drop tối đa pa_max (production 0.02 = 2%).
     pa = pa_max * min(1.0, iteration / max(total_iter, 1))
-    num_anchors = max(1, int(pa * N))
+    num_anchors = max(1, int(pa * N))       # n_anchor = max(1, ⌊pₐ·N⌋)
     num_anchors = min(num_anchors, N)
 
-    # Chọn anchor indices
-    # Priority: crs_guided > density_method > uniform random
-    # (crs_guided là Phase 3 flag; density_method là Phase 2d Stage A)
+    # ── Chọn anchor indices ──
+    # Ưu tiên: crs_guided > density_method > uniform random.
+    # ⚠️ [NOT USE] crs_guided (Phase 3) + density voxel/covariance/crs (Phase 2d/3):
+    #    tất cả REJECTED, KHÔNG dùng trong production. Production đi nhánh cuối (uniform).
     if crs_guided and hasattr(gaussians, '_crs_score'):
-        # Weighted sampling: prob ∝ (1 - CRS). CRS thấp → dễ bị chọn anchor.
+        # [NOT USE] Phase 3 — anchor weighted theo (1-CRS). REJECTED.
         crs = gaussians.get_crs.squeeze(-1)        # (N,)
         weights = (1.0 - crs).clamp(min=0.01)      # đảm bảo > 0 cho multinomial
         anchor_idx = torch.multinomial(weights, num_anchors, replacement=False)
-    elif density_method in ("voxel", "covariance"):
+    elif density_method in ("voxel", "covariance"):  # [NOT USE] Phase 2d density-aware — REJECTED
         # [CRSGaussian Phase 2d Stage A] Density-weighted anchor sampling (V1)
         # Compute OR reuse cached density. Cache hợp lệ khi cùng N.
         cached = getattr(gaussians, "_cached_density", None)
@@ -98,7 +104,7 @@ def anchor_dropout_mask(
                       f"max={d.max():.3f}")
         weights = (cached + 1e-6).to(device)
         anchor_idx = torch.multinomial(weights, num_anchors, replacement=False)
-    elif density_method == "crs":
+    elif density_method == "crs":  # [NOT USE] Phase 3α — CRS-guided anchor. REJECTED.
         # [CRSGaussian Phase 3α] Pure CRS-guided anchor selection.
         # CRS thấp (D_i sai, R_i sai) = floater candidate → prime anchor target.
         # CRS cao = surface đúng → protected (xác suất chọn anchor thấp).
@@ -112,7 +118,7 @@ def anchor_dropout_mask(
                   f"median={crs.median():.3f} q75={crs.quantile(0.75):.3f} "
                   f"max={crs.max():.3f}")
         anchor_idx = torch.multinomial(weights, num_anchors, replacement=False)
-    elif density_method == "crs_voxel":
+    elif density_method == "crs_voxel":  # [NOT USE] Phase 3β — CRS×density. REJECTED.
         # [CRSGaussian Phase 3β] CRS × voxel density combined.
         # Dense AND low-CRS = floater cluster → prime target.
         # Dense + high-CRS = surface coherent → protected.
@@ -130,14 +136,15 @@ def anchor_dropout_mask(
                   f"weight_med={weights.median():.4f}")
         anchor_idx = torch.multinomial(weights, num_anchors, replacement=False)
     else:
-        # Uniform random (default, behavior cũ)
+        # ⭐ PRODUCTION — chọn anchor NGẪU NHIÊN đều (uniform). Đây là nhánh bài dùng.
         anchor_idx = torch.randperm(N, device=device)[:num_anchors]
 
     positions = gaussians.get_xyz
-    anchor_pos = positions[anchor_idx]  # (num_anchors, 3)
+    anchor_pos = positions[anchor_idx]  # (num_anchors, 3) — vị trí các anchor
 
-    # k-NN từ anchor positions. Batch nếu memory footprint lớn.
-    effective_k = min(k + 1, N)
+    # ── Tìm k láng giềng gần nhất của mỗi anchor → gom thành CỤM để bỏ ──
+    # k=10 production. Batch cdist nếu N × num_anchors quá lớn (tránh OOM).
+    effective_k = min(k + 1, N)   # +1 vì chính anchor cũng nằm trong k-NN của nó
     if num_anchors * N > batch_threshold:
         # Batched cdist để tránh OOM khi N × num_anchors lớn
         batch_size = max(1, batch_threshold // N)
@@ -151,11 +158,11 @@ def anchor_dropout_mask(
         dists = torch.cdist(anchor_pos, positions)                     # (A, N)
         _, nn_idx = torch.topk(dists, k=effective_k, largest=False)   # (A, k+1)
 
-    # Union of all neighbors (anchor + k-NN) = drop set
+    # Gộp tất cả (anchor + k-NN của mọi anchor) = tập cần BỎ (cả cụm)
     drop_set = nn_idx.flatten().unique()
     keep_mask = torch.ones(N, device=device, dtype=torch.bool)
-    keep_mask[drop_set] = False
-    return keep_mask
+    keep_mask[drop_set] = False   # False = bị drop (không tham gia render lần này)
+    return keep_mask              # renderer dùng mask này để loại cụm khỏi forward
 
 
 def sh_degree_dropout(
@@ -185,46 +192,55 @@ def sh_degree_dropout(
         snapshot_info: None (không dropout), hoặc
             (drop_mask: (N,) bool, num_keep_rest: int, saved: tensor)
     """
-    # Skip nhanh nếu caller tắt
+    # ══════════════════════════════════════════════════════════════════
+    # [THESIS §Reg (i) DropAnSH — SH dropout coarse-to-fine]
+    # Với xác suất p_sh mỗi Gaussian, ZERO tạm SH bậc > lmax lúc render.
+    # lmax TĂNG dần theo iter → ép model học màu nền (DC) trước, chi tiết sau.
+    # Mục đích: chống overfit tần-số-cao (SH bậc cao nhớ vẹt 3 view train).
+    # ══════════════════════════════════════════════════════════════════
+    # Skip nhanh nếu caller tắt hoặc đã qua giai đoạn dropout
     if p_sh <= 0.0:
         return None
-    if iteration >= schedule[2]:
+    if iteration >= schedule[2]:   # sau iter 6000 → không dropout nữa (đã học đủ)
         return None
 
-    if iteration < schedule[0]:
+    # [THESIS Eq dropansh-sh] Lịch trình bậc SH tối đa được giữ (coarse→fine)
+    if iteration < schedule[0]:    # < 2000: chỉ DC (zero HẾT bậc cao)
         lmax = 0
-    elif iteration < schedule[1]:
+    elif iteration < schedule[1]:  # < 4000: giữ tới bậc 1
         lmax = 1
-    else:
+    else:                          # < 6000: giữ tới bậc 2
         lmax = 2
 
     N = gaussians.get_xyz.shape[0]
     device = gaussians.get_xyz.device
 
-    # Per-Gaussian drop probability
+    # Xác suất drop mỗi Gaussian
     if crs_modulated and hasattr(gaussians, '_crs_score'):
+        # [NOT USE] Phase 3 — p_per điều biến theo CRS. Production KHÔNG dùng.
         crs = gaussians.get_crs.squeeze(-1)
         p_per = (p_sh * (1.0 - crs)).clamp(0.0, 1.0)
     else:
+        # ⭐ PRODUCTION — xác suất ĐỀU p_sh (0.2) cho mọi Gaussian
         p_per = torch.full((N,), p_sh, device=device)
 
-    drop_mask = torch.rand(N, device=device) < p_per
+    drop_mask = torch.rand(N, device=device) < p_per   # Gaussian nào trúng bị drop SH bậc cao
     if not drop_mask.any():
         return None
 
-    # Số rest coefficients ứng với degree lmax: (lmax+1)^2 - 1
-    # lmax=0 → 0, lmax=1 → 3, lmax=2 → 8
+    # Số hệ số SH-rest được GIỮ ứng với bậc lmax: (lmax+1)² − 1
+    # lmax=0 → giữ 0 (zero hết rest), lmax=1 → giữ 3, lmax=2 → giữ 8
     num_keep_rest = max(0, (lmax + 1) ** 2 - 1)
     rest_shape = gaussians._features_rest.shape[1]
 
     if num_keep_rest >= rest_shape:
-        # Model's max_sh_degree ≤ lmax → không có rest để zero
+        # Bậc SH của model ≤ lmax → không có bậc cao nào để zero
         return None
 
-    # Snapshot + zero in-place
-    saved = gaussians._features_rest.data[drop_mask, num_keep_rest:, :].clone()
-    gaussians._features_rest.data[drop_mask, num_keep_rest:, :] = 0.0
-    return (drop_mask, num_keep_rest, saved)
+    # LƯU lại giá trị trước khi zero (để restore sau render) rồi ZERO in-place
+    saved = gaussians._features_rest.data[drop_mask, num_keep_rest:, :].clone()   # snapshot
+    gaussians._features_rest.data[drop_mask, num_keep_rest:, :] = 0.0             # tắt tạm SH bậc cao
+    return (drop_mask, num_keep_rest, saved)   # trả snapshot để restore_sh_dropout() phục hồi
 
 
 def restore_sh_dropout(gaussians, snapshot_info):

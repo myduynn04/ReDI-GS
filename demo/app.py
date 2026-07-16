@@ -15,6 +15,8 @@ Chạy local backup (cache-only, không cần GPU):
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -23,6 +25,72 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+
+
+# ---------------------------------------------------------------------------
+# Auto-pick free GPU trước khi import torch/gradio.
+# Server shared → GPU 0 thường bị chiếm bởi user khác. Tự chọn GPU rảnh
+# nhất (min mem used + util). User có thể override qua env var
+# CUDA_VISIBLE_DEVICES=X trước khi chạy.
+# ---------------------------------------------------------------------------
+
+
+def _auto_pick_gpu() -> None:
+    """Query nvidia-smi, set CUDA_VISIBLE_DEVICES tới GPU rảnh nhất.
+
+    Skip nếu user đã export sẵn CUDA_VISIBLE_DEVICES.
+    """
+    if os.environ.get("CUDA_VISIBLE_DEVICES"):
+        print(f"[gpu-pick] CUDA_VISIBLE_DEVICES đã set = "
+              f"{os.environ['CUDA_VISIBLE_DEVICES']} (respect user)")
+        return
+    try:
+        result = subprocess.run(
+            ["nvidia-smi",
+             "--query-gpu=index,memory.used,utilization.gpu",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            print("[gpu-pick] nvidia-smi failed, GPU 0 default")
+            return
+
+        gpus = []
+        for line in result.stdout.strip().split("\n"):
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 3:
+                try:
+                    idx = int(parts[0])
+                    mem_used = int(parts[1])   # MiB
+                    util = int(parts[2])       # %
+                    # Score: prioritize low memory used, weight util heavier
+                    # (util = active compute, mem = just allocated).
+                    score = mem_used + util * 100
+                    gpus.append((idx, score, mem_used, util))
+                except ValueError:
+                    continue
+
+        if not gpus:
+            print("[gpu-pick] no GPU found, default")
+            return
+
+        gpus.sort(key=lambda g: g[1])   # ascending by score
+        chosen_idx = gpus[0][0]
+
+        print("[gpu-pick] GPU status (auto-pick least busy):")
+        for idx, _, mem, util in gpus:
+            marker = "  ← SELECTED" if idx == chosen_idx else ""
+            print(f"  GPU {idx}: mem {mem:>6} MiB · util {util:>3}%{marker}")
+
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(chosen_idx)
+    except FileNotFoundError:
+        print("[gpu-pick] nvidia-smi không tìm thấy, GPU 0 default")
+    except Exception as e:
+        print(f"[gpu-pick] error: {e}, GPU 0 default")
+
+
+_auto_pick_gpu()
+
 
 import gradio as gr
 
@@ -70,7 +138,23 @@ def build_precompute_tab_wrapper(cache_dir: Path, local_mode: bool) -> None:
 
 
 def build_liverender_tab_wrapper(local_mode: bool) -> None:
-    """Layout Tab B dùng demo/ui_liverender.py."""
+    """Layout Tab B dùng demo/ui_liverender.py.
+
+    Local mode: KHÔNG import demo.ui_liverender (module đó cần torch cho
+    CUDA rasterizer). Chỉ hiện markdown giải thích.
+    """
+    if local_mode:
+        gr.Markdown(
+            "### ⚠️ Live Render — server GPU required\n\n"
+            "This tab is unavailable in local backup mode. Only the "
+            "**Pre-computed** tab works offline (reads cached PNG/GIF).\n\n"
+            "To use live rendering, run the demo on the server:\n"
+            "```bash\n"
+            "conda activate gradio_demo\n"
+            "bash demo/run_server.sh\n"
+            "```"
+        )
+        return
     from demo.ui_liverender import build_liverender_tab
     build_liverender_tab(local_mode)
 
@@ -81,7 +165,23 @@ def build_liverender_tab_wrapper(local_mode: bool) -> None:
 
 
 def build_livetraining_tab_wrapper(local_mode: bool) -> None:
-    """Layout Tab C dùng demo/ui_livetraining.py."""
+    """Layout Tab C dùng demo/ui_livetraining.py.
+
+    Local mode: KHÔNG import demo.ui_livetraining (cần torch cho render
+    checkpoint + subprocess train.py). Chỉ hiện markdown giải thích.
+    """
+    if local_mode:
+        gr.Markdown(
+            "### ⚠️ Live Training — server GPU required\n\n"
+            "This tab is unavailable in local backup mode. Only the "
+            "**Pre-computed** tab works offline.\n\n"
+            "To run live training, use the server:\n"
+            "```bash\n"
+            "conda activate gradio_demo\n"
+            "bash demo/run_server.sh\n"
+            "```"
+        )
+        return
     from demo.ui_livetraining import build_livetraining_tab
     build_livetraining_tab(local_mode)
 

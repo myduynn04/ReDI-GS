@@ -305,7 +305,11 @@ class TrainingSession:
         cmd = _build_train_command(self.scene, self.output_dir,
                                    gpu=self.gpu)
         env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = str(self.gpu)
+        # Kế thừa CUDA_VISIBLE_DEVICES từ Gradio process nếu user đã export
+        # (vd: `export CUDA_VISIBLE_DEVICES=1 && bash demo/run_server.sh`).
+        # Nếu chưa export → default self.gpu (0).
+        if "CUDA_VISIBLE_DEVICES" not in env:
+            env["CUDA_VISIBLE_DEVICES"] = str(self.gpu)
 
         self.log_file = open(self.log_path, "w", buffering=1)
         self.log_file.write(f"# Live Training session\n")

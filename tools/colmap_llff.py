@@ -223,7 +223,8 @@ def pipeline(scene, base_path, n_views):
     os.system('cp ../sparse/0/cameras.txt created/.')
     with open('created/points3D.txt', "w") as fid:
         pass
-
+        
+    # Đoạn này là để tạo sparse point cloud đáng tin cậy
     # STEP 5: Trích đặc trưng SIFT trên mỗi ảnh (điểm keypoint + mô tả). Đây là bước
     # tìm "điểm dễ nhận diện" để sau này khớp giữa các ảnh.
     print(f"[STEP 5] Extracting SIFT features...")
@@ -263,6 +264,8 @@ def pipeline(scene, base_path, n_views):
     sys.stdout.flush()
     run_cmd('colmap model_converter --input_path triangulated --output_path triangulated --output_type TXT')
 
+    
+    # Đoạn này là để tạo MVS [NOT USE]
     # STEP 10: Khử méo ống kính (undistort) — chuẩn hóa ảnh về mô hình pinhole lý tưởng,
     # chuẩn bị cho stereo dense.
     print(f"[STEP 10] Undistorting images...")

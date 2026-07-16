@@ -131,6 +131,7 @@ def select_training_views(extr_by_name: dict, llffhold: int, n_views: int):
 
 
 def triangulate_pair(K_A, R_A, t_A, K_B, R_B, t_B, kp_A, kp_B):
+    # Đoạn DLT để chuyển từ 2d -> 3d
     P_A = K_A @ np.hstack([R_A, t_A.reshape(3, 1)])
     P_B = K_B @ np.hstack([R_B, t_B.reshape(3, 1)])
     pts4D = cv2.triangulatePoints(P_A, P_B, kp_A.T, kp_B.T)
@@ -255,6 +256,7 @@ def main():
         H_b, W_b = imgs_np[ib].shape[:2]
 
         # v1 match returns (warp, certainty) — KHÁC v2 (preds dict)
+        # Đoạn dùng certainty map từ roma 
         warp, certainty = model.match(str(path_a), str(path_b), device=device)
         # v1 sample returns (matches, certainty) — 2-tuple KHÁC v2 (4-tuple)
         matches, sampled_certainty = model.sample(warp, certainty, num=N_SAMPLE)
@@ -267,7 +269,7 @@ def main():
         R_a, t_a = qvec2rotmat(im_a.qvec), im_a.tvec
         R_b, t_b = qvec2rotmat(im_b.qvec), im_b.tvec
         xyz, mask, err_a, err_b = triangulate_pair(K_a, R_a, t_a, K_b, R_b, t_b, kp_a, kp_b)
-
+        # ⭐ LẤY MÀU — đọc ảnh A tại pixel kp_a
         rgb = sample_rgb_bilinear(imgs_np[ia], kp_a)
 
         kept = int(mask.sum())
