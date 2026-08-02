@@ -71,14 +71,14 @@ def anchor_dropout_mask(
 
     # ── Chọn anchor indices ──
     # Ưu tiên: crs_guided > density_method > uniform random.
-    # ⚠️ [NOT USE] crs_guided (Phase 3) + density voxel/covariance/crs (Phase 2d/3):
-    #    tất cả REJECTED, KHÔNG dùng trong production. Production đi nhánh cuối (uniform).
+    # ⚠️ [NOT USE] crs_guided + density voxel/covariance/crs: KHÔNG dùng trong
+    #    production. Production luôn đi nhánh cuối (uniform).
     if crs_guided and hasattr(gaussians, '_crs_score'):
-        # [NOT USE] Phase 3 — anchor weighted theo (1-CRS). REJECTED.
+        # [NOT USE] Anchor weighted theo (1-CRS).
         crs = gaussians.get_crs.squeeze(-1)        # (N,)
         weights = (1.0 - crs).clamp(min=0.01)      # đảm bảo > 0 cho multinomial
         anchor_idx = torch.multinomial(weights, num_anchors, replacement=False)
-    elif density_method in ("voxel", "covariance"):  # [NOT USE] Phase 2d density-aware — REJECTED
+    elif density_method in ("voxel", "covariance"):  # [NOT USE] density-aware
         # [CRSGaussian Phase 2d Stage A] Density-weighted anchor sampling (V1)
         # Compute OR reuse cached density. Cache hợp lệ khi cùng N.
         cached = getattr(gaussians, "_cached_density", None)
@@ -104,7 +104,7 @@ def anchor_dropout_mask(
                       f"max={d.max():.3f}")
         weights = (cached + 1e-6).to(device)
         anchor_idx = torch.multinomial(weights, num_anchors, replacement=False)
-    elif density_method == "crs":  # [NOT USE] Phase 3α — CRS-guided anchor. REJECTED.
+    elif density_method == "crs":  # [NOT USE] CRS-guided anchor
         # [CRSGaussian Phase 3α] Pure CRS-guided anchor selection.
         # CRS thấp (D_i sai, R_i sai) = floater candidate → prime anchor target.
         # CRS cao = surface đúng → protected (xác suất chọn anchor thấp).
@@ -118,7 +118,7 @@ def anchor_dropout_mask(
                   f"median={crs.median():.3f} q75={crs.quantile(0.75):.3f} "
                   f"max={crs.max():.3f}")
         anchor_idx = torch.multinomial(weights, num_anchors, replacement=False)
-    elif density_method == "crs_voxel":  # [NOT USE] Phase 3β — CRS×density. REJECTED.
+    elif density_method == "crs_voxel":  # [NOT USE] CRS × density
         # [CRSGaussian Phase 3β] CRS × voxel density combined.
         # Dense AND low-CRS = floater cluster → prime target.
         # Dense + high-CRS = surface coherent → protected.

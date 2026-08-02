@@ -22,28 +22,8 @@ from utils.pose_utils import generate_random_poses_llff, generate_random_poses_3
 from scene.cameras import PseudoCamera
 
 class Scene:
-    """
-    Scene là object quản lý dữ liệu đầu vào — nó làm 4 việc chính khi khởi tạo:
-    1. Nhận dạng và load data:
-        if args.source_path.find('llff') != -1:
-            scene_info = sceneLoadTypeCallbacks["Colmap"](...)
-        Đọc COLMAP output (sparse point cloud + camera poses) từ data/nerf_llff_data/fern/.
-
-    2. Lưu file metadata ra output folder:
-        input.ply — copy point cloud ban đầu
-        cameras.json — thông tin tất cả cameras
-    
-    3. Load training/test cameras và pseudo cameras:
-        self.train_cameras[1.0] = cameraList_from_camInfos(...)
-        self.test_cameras[1.0]  = cameraList_from_camInfos(...)
-        self.pseudo_cameras[1.0] = pseudo_cams   # CoRGS legacy, vẫn tạo dù không dùng
-    
-    4. Đổ dữ liệu vào gaussians:
-        self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
-
-    """
-    # Type hint: Scene giữ một reference đến GaussianModel.
-    # Đây không phải khai báo biến thực sự — chỉ là gợi ý kiểu dữ liệu cho IDE.
+    """Load COLMAP/Blender scene, dung camera list va do point cloud init
+    vao GaussianModel. Metadata (input.ply, cameras.json) ghi ra model_path."""
     gaussians : GaussianModel
 
     def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
@@ -53,8 +33,6 @@ class Scene:
         self.loaded_iter = None         # loaded_iter = None nghĩa là đang train mới từ đầu, không resume từ checkpoint
         # Nhận reference đến GaussianModel được tạo từ bên ngoài (train.py).
         # KHÔNG tạo GaussianModel mới ở đây — Scene và train.py dùng chung 1 object.
-        # Sau này khi Scene gọi self.gaussians.create_from_pcd(), nó sẽ đổ dữ liệu
-        # vào đúng object gaussians mà train.py đang giữ.
         self.gaussians = gaussians
         # [NOT USE] Xử lý trường hợp resume từ checkpoint.
         # Production luôn train mới (load_iteration=None) nên block này không chạy.
@@ -65,7 +43,6 @@ class Scene:
                 self.loaded_iter = load_iteration
             print("Loading trained model at iteration {}".format(self.loaded_iter))
 
-        # Khởi tạo các dict rỗng để chứa cameras.
         # Key của dict là resolution_scale (thường chỉ có 1.0 = full resolution).
         self.train_cameras = {}   # 3 cameras dùng để train (LLFF 3-view)
         self.test_cameras = {}    # các cameras còn lại dùng để eval PSNR
@@ -92,7 +69,6 @@ class Scene:
             assert False, "Could not recognize scene type!"
 
         # ── Lưu metadata ra output folder (chỉ khi train mới, không phải resume) ──
-        # Metadata nghĩa là "dữ liệu mô tả dữ liệu" (data about data). Nó không phải dữ liệu chính, mà là thông tin giúp giải thích dữ liệu chính.
         if not self.loaded_iter:
             # Copy file fused.ply (point cloud init) vào output/input.ply
             # Mục đích: lưu lại init để sau này biết run đó dùng init nào (MVS hay RoMa v1)
@@ -100,19 +76,6 @@ class Scene:
                 dest_file.write(src_file.read())
                 
             # Gom tất cả cameras (train + test) vào một list để xuất ra JSON, cụ thể ở cameras.json
-            # Tính chất của camera được lưu ở utils/camera_utils.py, gồm 
-            """
-            Quy định ở utils/camera_utils.py:67. Mỗi camera trong JSON có 7 trường:
-
-            Trường	        Ý nghĩa
-            id	            index thứ tự trong list (test cameras trước, train cameras sau)
-            img_name	    tên ảnh gốc (vd: IMG_4026)
-            width, height	kích thước ảnh pixel (4032×3024 = ảnh iPhone full res)
-            position	    vị trí camera trong không gian 3D — vector [x, y, z]
-            rotation	    ma trận xoay 3×3 — hướng nhìn của camera
-            fx, fy	        tiêu cự (focal length) tính theo pixel — đây là thông số nội tại của camera
-
-            """
             json_cams = []
             camlist = []
             
@@ -138,13 +101,6 @@ class Scene:
             random.shuffle(scene_info.test_cameras)
 
 
-        """
-        Lấy bán kính (radius) của scene đã được tính trước và lưu vào self.cameras_extent.
-        self.cameras_extent = scene_info.nerf_normalization["radius"]
-        radius biểu thị kích thước của toàn bộ scene trong hệ tọa độ 3D (được tính từ các camera).
-        In giá trị đó ra màn hình để kiểm tra.
-        print(self.cameras_extent, 'cameras_extent')
-        """
         self.cameras_extent = scene_info.nerf_normalization["radius"]
         print(self.cameras_extent, 'cameras_extent')
 

@@ -33,7 +33,7 @@ from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
 
 # CameraInfo = dữ liệu THÔ của 1 camera đọc từ COLMAP (chưa load ảnh lên GPU).
-# NamedTuple = struct bất biến (immutable). Sau này camera_utils biến nó thành Camera object.
+# camera_utils sau đó biến nó thành Camera object (có tensor trên GPU).
 class CameraInfo(NamedTuple):
     uid: int             # id camera
     R: np.array          # ma trận xoay (rotation) 3x3
@@ -338,8 +338,8 @@ def readColmapSceneInfo(path, images, eval, n_views=0, llffhold=8, rand_pcd=Fals
         pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
         storePly(ply_path, xyz, SH2RGB(shs) * 255)
     else:
-        # ⭐ PATH PRODUCTION: dùng fused.ply (dense). Với bài bạn, file này đã bị p22 thay
-        # bằng RoMa v1. dataset_readers KHÔNG quan tâm nội dung — chỉ đọc đường dẫn cố định.
+        # ⭐ PATH PRODUCTION: đọc fused.ply (dense). Đường dẫn cố định — file này
+        # có thể là COLMAP MVS hoặc dense init RoMa v1 tuỳ scripts/place_init đã đặt gì.
         ply_path = os.path.join(path, str(n_views) + "_views/dense/fused.ply")
         bin_path = os.path.join(path, str(n_views) + "_views/triangulated/points3D.bin")
         txt_path = os.path.join(path, str(n_views) + "_views/triangulated/points3D.txt")
