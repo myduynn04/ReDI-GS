@@ -291,5 +291,15 @@ def pipeline(scene, base_path, n_views):
 if __name__ == '__main__':
     # [CRSGaussian] Guard để `from colmap_llff import pipeline` không trigger
     # loop này — tránh race condition + xóa 3_views có sẵn.
-    for scene in ['fern', 'flower', 'fortress', 'horns', 'leaves', 'orchids', 'room', 'trex']:
-        pipeline(scene, base_path='/home/aidev/workspace/representation-3d/duyen/CoR-GS/data/nerf_llff_data/', n_views=3)
+    #
+    # Cấu hình qua biến môi trường, không cần sửa file:
+    #   DATA_ROOT  thư mục chứa các scene   (mặc định data/nerf_llff_data)
+    #   N_VIEWS    số view train            (3 | 6 | 9)
+    #   SCENES     danh sách scene, cách nhau bằng khoảng trắng
+    base_path = os.environ.get('DATA_ROOT', 'data/nerf_llff_data')
+    n_views = int(os.environ.get('N_VIEWS', '3'))
+    scenes = os.environ.get(
+        'SCENES', 'fern flower fortress horns leaves orchids room trex').split()
+    print(f"[colmap_llff] DATA_ROOT={base_path}  N_VIEWS={n_views}  SCENES={scenes}")
+    for scene in scenes:
+        pipeline(scene, base_path=base_path, n_views=n_views)

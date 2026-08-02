@@ -53,14 +53,16 @@ The full architecture, equations, and ablation results are presented in the thes
 ## Directory convention
 
 The instructions below assume the following sibling layout. All command lines are run from
-inside the ``ReDI-GS/`` directory unless stated otherwise.
+inside the repository root unless stated otherwise.
 
 ```
 <workspace>/
-├── ReDI-GS/                  this repository
-├── Depth-Anything-V2/        cloned from https://github.com/DepthAnything/Depth-Anything-V2
-└── RoMa/                     cloned from https://github.com/Parskatt/RoMa  (optional, see notes)
+├── CRSGaussian/              this repository
+└── Depth-Anything-V2/        cloned from https://github.com/DepthAnything/Depth-Anything-V2
 ```
+
+RoMa v1 does **not** need to be cloned — it is installed from PyPI by
+``environment_roma.yml`` and imported as ``from romatch import roma_outdoor``.
 
 ## Installation
 
@@ -81,8 +83,9 @@ pip install submodules/diff-gaussian-rasterization-confidence
 pip install submodules/simple-knn
 ```
 
-Key dependencies (resolved by the env file): Python 3.8, PyTorch with CUDA support,
-`torchmetrics`, `open3d==0.19`, `opencv-python`, `plyfile`, `kmeans1d`, and `matplotlib`.
+Key dependencies resolved by the env file: Python 3.8, PyTorch 2.1.0 + cu121,
+`torchmetrics`, `open3d`, `opencv-python`, `plyfile`, `kmeans1d`, `matplotlib`,
+`scikit-image`.
 
 ### 2. Dense-matcher environment (`roma_v1`)
 
@@ -94,13 +97,13 @@ conda env create --file environment_roma.yml
 conda activate roma_v1
 ```
 
-This pulls `romatch==0.1.2` (the RoMa v1 PyPI package) so no manual clone of the RoMa
-repository is needed; the matcher is imported as ``from romatch import roma_outdoor``.
+The first run downloads the RoMa and DINOv2 weights, so the machine needs internet access
+once.
 
 ### 3. Monocular depth prior — DepthAnything V2
 
-Clone the DepthAnything V2 repository as a sibling of ``ReDI-GS/`` (so the training code
-finds it at ``../Depth-Anything-V2``):
+Clone DepthAnything V2 as a sibling of this repository (the training code looks for it at
+``../Depth-Anything-V2``):
 
 ```bash
 cd ..
@@ -108,28 +111,27 @@ git clone https://github.com/DepthAnything/Depth-Anything-V2.git
 cd Depth-Anything-V2
 mkdir -p checkpoints
 
-# Download the ViT-L checkpoint from the official release page:
-# https://huggingface.co/depth-anything/Depth-Anything-V2-Large
+# Download the ViT-L checkpoint from
+#   https://huggingface.co/depth-anything/Depth-Anything-V2-Large
 # and place it at:
 #   ../Depth-Anything-V2/checkpoints/depth_anything_v2_vitl.pth
 ```
 
-The ReDI-GS training script looks up the checkpoint at
-``<dav2_path>/checkpoints/depth_anything_v2_<encoder>.pth`` (default
-``dav2_path=../Depth-Anything-V2``, ``encoder=vitl``).
+The path and encoder are configurable through ``--dav2_path`` and ``--dav2_encoder``;
+the code loads ``<dav2_path>/checkpoints/depth_anything_v2_<encoder>.pth``.
 
 ### 4. COLMAP
 
-A COLMAP binary on the ``PATH`` is required for the per-N-view subset generation. Any
-recent COLMAP (3.7+) with the CLI subcommands ``feature_extractor``,
-``exhaustive_matcher``, ``point_triangulator``, ``image_undistorter``,
-``patch_match_stereo`` and ``stereo_fusion`` is fine.
+A COLMAP binary on the ``PATH`` is required to build the per-N-view subsets. Any recent
+COLMAP (3.7+) providing ``feature_extractor``, ``exhaustive_matcher``,
+``point_triangulator``, ``image_undistorter``, ``patch_match_stereo`` and
+``stereo_fusion`` works.
 
 ## Dataset — LLFF
 
-Download the LLFF dataset from the
+Download LLFF from the
 [NeRF authors](https://drive.google.com/drive/folders/128yBriW1IG_3NJ5Rp7APSTZsJqdJdfc1)
-and place it under ``data/`` so each scene has the COLMAP outputs that ship with the
+and place it under ``data/`` so that each scene keeps the COLMAP output shipped with the
 release:
 
 ```
@@ -143,74 +145,68 @@ data/
     │   │   ├── images.bin
     │   │   └── points3D.bin
     │   └── poses_bounds.npy
-    ├── flower/
-    ├── fortress/
-    ├── horns/
-    ├── leaves/
-    ├── orchids/
-    ├── room/
-    └── trex/
+    ├── flower/ fortress/ horns/ leaves/ orchids/ room/ trex/
 ```
 
-The official LLFF release already ships ``sparse/0/`` (full-views COLMAP), but the
-sparse-view experiments additionally need a *per-N-view* COLMAP triangulation and MVS
-under ``<scene>/3_views/`` (or ``6_views``, ``9_views``). The next step builds these.
-
-### Generating the per-N-view COLMAP subsets
-
-Open ``tools/colmap_llff.py`` and edit the ``base_path`` at the bottom (the
-``if __name__ == '__main__'`` block) to your absolute path to ``data/nerf_llff_data/``,
-then:
+The official release ships ``sparse/0/`` computed over *all* views, but the sparse-view
+experiments additionally need a per-N-view COLMAP triangulation and MVS under
+``<scene>/3_views/``. Build them with:
 
 ```bash
 conda activate redigs
 python tools/colmap_llff.py
 ```
 
-This iterates the 8 LLFF scenes with ``n_views=3`` and produces, for each scene,
+The script is configured by environment variables, so no file editing is needed:
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `DATA_ROOT` | `data/nerf_llff_data` | Directory holding the scenes |
+| `N_VIEWS` | `3` | Number of training views (`3`, `6`, or `9`) |
+| `SCENES` | all 8 LLFF scenes | Whitespace-separated scene list |
+
+For example, ``N_VIEWS=6 python tools/colmap_llff.py`` builds the 6-view subsets. Each run
+produces, per scene:
 
 ```
 <scene>/3_views/
-├── images/             3 selected training images (a deterministic subset)
-├── database.db         COLMAP database for the 3-view subset
-├── created/            intermediate files used by point_triangulator
-├── triangulated/       sparse output: cameras.bin, images.bin, points3D.bin
+├── images/             The N selected training images (a deterministic subset)
+├── database.db         COLMAP database for the subset
+├── created/            Intermediate files used by point_triangulator
+├── triangulated/       Sparse output: cameras.bin, images.bin, points3D.bin
 └── dense/
-    └── fused.ply       COLMAP MVS dense point cloud over the 3 selected views
+    └── fused.ply       COLMAP MVS dense point cloud over the selected views
 ```
 
-For the 6- and 9-view experiments, change ``n_views=3`` to ``n_views=6`` or
-``n_views=9`` inside the same ``__main__`` block before each run.
+This step is the slowest part of the setup (patch-match stereo over 8 scenes).
 
 ## Reproducing the main result (LLFF 3-view)
 
-After the four-step installation above and the COLMAP subset generation, the main
-result is reproduced in three stages.
+Three stages, in this order. Stage 2 depends on the output of Stage 1, and training reads
+whatever ``fused.ply`` currently contains — so the order matters.
 
 ### Stage 1 — Dense initialization with RoMa v1
 
-For every scene, this step matches every pair of the 3 training images with RoMa v1,
-triangulates the correspondences with the COLMAP poses, filters by chirality and
-reprojection error (``<= 2 px``), and writes the cloud to
+For every scene this matches all pairs of the 3 training images with RoMa v1,
+triangulates the correspondences using the COLMAP poses, filters by chirality and
+reprojection error (``<= 2 px``), and writes
 ``data/nerf_llff_data/<scene>/3_views/dense/fused.ply.romav1``.
 
 ```bash
 conda activate roma_v1
 
-# Option A — all 8 scenes split across 2 GPUs. Total wall-clock ~1 minute.
+# Option A -- all 8 scenes split across 2 GPUs (~1 minute total)
 bash scripts/preprocess_all.sh
 
-# Option B — one scene at a time on a single GPU
-SCENE=fern   python scripts/preprocess.py
-SCENE=flower python scripts/preprocess.py
-# ... and so on for fortress, horns, leaves, orchids, room, trex
+# Option B -- one scene at a time on a single GPU
+SCENE=fern python scripts/preprocess.py
 ```
 
 ### Stage 2 — Place the dense init and train
 
-The training code expects ``fused.ply`` itself to contain the dense initialization, so
-the placement script first backs up the original COLMAP MVS file (as
-``fused.ply.colmap_mvs_backup``) and then copies the RoMa v1 file in:
+Training reads the initial point cloud from ``fused.ply`` itself, so the placement script
+**overwrites** that file. The first run backs the original COLMAP MVS cloud up to
+``fused.ply.colmap_mvs_backup``; later runs keep that backup untouched.
 
 ```bash
 conda activate redigs
@@ -218,16 +214,16 @@ conda activate redigs
 # Swap fused.ply <- fused.ply.romav1 for all 8 scenes
 python scripts/place_init.py
 
-# Train under the production recipe (3 seeds × 8 scenes = 24 runs, ~5 hours on 2 GPUs)
+# Train the production recipe (3 seeds x 8 scenes = 24 runs, ~5 h on 2 GPUs)
 bash scripts/run.sh
 ```
 
-``run.sh`` splits the 8 scenes across two GPUs and internally calls
-``scripts/trainer.sh`` with ``CONFIG=trim_full`` for every (scene, seed) pair. The
-recipe applies the depth prior + D-cycle + SH stability + SH-CRS freeze + DropAnSH +
-opacity decay + LFCF + AbsGS.
+``run.sh`` first verifies that ``fused.ply`` really is the RoMa v1 cloud, then splits the
+8 scenes across two GPUs and calls ``scripts/trainer.sh`` with ``CONFIG=trim_full`` for
+every (scene, seed) pair. That config enables the depth prior, D-cycle, SH stability,
+SH-CRS freezing, DropAnSH, opacity decay, LFCF and AbsGS.
 
-To restore the original COLMAP MVS init at any time:
+To restore the original COLMAP MVS initialization at any time:
 
 ```bash
 RESTORE=1 python scripts/place_init.py
@@ -239,13 +235,14 @@ RESTORE=1 python scripts/place_init.py
 python scripts/analyze.py
 ```
 
-The script aggregates PSNR, SSIM, LPIPS, and the Gaussian count over the 24 logs in
-``logs/run/`` and reports the per-scene means together with the overall N=24 mean.
+The script aggregates PSNR, SSIM, LPIPS and the Gaussian count over the 24 logs in
+``logs/run/`` and reports the per-scene means together with the overall N=24 mean. Point it
+at a different directory with ``LOG_DIR=... python scripts/analyze.py``.
 
 ## Quick smoke test
 
-Before launching the full 5-hour training, the following one-scene, 100-iteration run
-confirms that every dependency resolves and that the data is wired correctly:
+Before launching the full 5-hour training, this one-scene, 100-iteration run confirms that
+every dependency resolves and the data is wired correctly:
 
 ```bash
 conda activate redigs
@@ -258,27 +255,36 @@ python train.py \
     --use_depth_prior --dav2_path ../Depth-Anything-V2
 ```
 
-The run should complete in roughly one minute on a modern GPU. If it terminates with
-a ``PSNR`` line in the log, the installation is healthy.
+It should finish in about a minute on a modern GPU. If the log ends with a ``PSNR`` line,
+the installation is healthy. Note this smoke test uses only the depth prior — it checks
+the plumbing, not the full recipe.
 
 ## Reproducing the ablation study
 
-The same ``trainer.sh`` that ``run.sh`` calls internally can be used to train any
-single configuration of the per-component leave-one-out (LOO) ablation by selecting
+``trainer.sh`` trains any single cell of the per-component leave-one-out ablation; select
 the cell through the ``CONFIG`` environment variable:
 
 ```bash
-# Train one ablation cell (trim_full = full recipe reference)
-GPU=0 CONFIG=trim_no_dcycle SCENES_OVERRIDE="fern flower fortress horns" \
+GPU=0 CONFIG=trim_no_dcycle \
+    SCENES_OVERRIDE="fern flower fortress horns" \
     SEEDS_OVERRIDE="42" \
     LOG_DIR=logs/ablation/trim_no_dcycle \
     OUT_DIR=output/ablation/trim_no_dcycle \
     bash scripts/trainer.sh
 ```
 
-Available ``CONFIG`` values are ``trim_full``, ``trim_no_dcycle``, ``trim_no_shcrs``,
-``trim_no_depthcrs``, ``trim_no_drop``, ``trim_no_opacity``, ``trim_no_efa``, and
-``base``. Point ``analyze.py`` at the matching ``LOG_DIR`` to aggregate the metrics:
+| `CONFIG` | Recipe |
+|----------|--------|
+| `trim_full` | Full production recipe (reference) |
+| `trim_no_efa` | minus LFCF and AbsGS |
+| `trim_no_drop` | minus DropAnSH |
+| `trim_no_opacity` | minus opacity decay |
+| `trim_no_dcycle` | minus the D-cycle CRS component |
+| `trim_no_shcrs` | minus SH-modulated freezing and SH reliability |
+| `trim_no_depthcrs` | minus depth supervision and the whole CRS |
+| `base` | Vanilla 3DGS, no ReDI-GS additions |
+
+Aggregate a cell by pointing ``analyze.py`` at its log directory:
 
 ```bash
 LOG_DIR=logs/ablation/trim_no_dcycle python scripts/analyze.py
@@ -293,59 +299,72 @@ metrics.py                        PSNR / SSIM / LPIPS computation
 arguments/__init__.py             Hyperparameter definitions and CLI flags
 scene/
 ├── __init__.py                   Scene loading and camera setup
+├── dataset_readers.py            COLMAP reader exposing reprojection errors
 ├── gaussian_model.py             Gaussian model with _crs_score, AbsGS,
 │                                 opacity decay, LFCF integration
-├── dataset_readers.py            COLMAP reader exposing reprojection errors
-└── cameras.py                    Camera utilities
+├── cameras.py                    Camera utilities
+└── colmap_loader.py              COLMAP binary/text parsers
 gaussian_renderer/__init__.py     Differentiable renderer with DropAnSH
 utils/
 ├── crs/
 │   ├── crs_module.py             update_crs, cross-view R, fusion, EMA
 │   ├── d_cycle.py                D-cycle (round-trip 3D) signal
 │   ├── sh_stability.py           S signal (EMA variance of SH high-degree)
-│   └── sh_freeze.py              Selective appearance freezing
-├── densify/
-│   └── lfcf.py                   LFCF action decision + volume-preserving scale
-├── regularizer/
-│   └── dropansh.py               DropAnSH anchor + SH coarse-to-fine dropout
+│   ├── sh_freeze.py              Selective appearance freezing
+│   └── crs_diagnostics.py        Optional CRS logging / heat maps
+├── densify/lfcf.py               LFCF action decision + volume-preserving scale
+├── regularizer/dropansh.py       DropAnSH anchor + SH coarse-to-fine dropout
 └── depth/
     ├── depth_model.py            DepthAnything V2 ViT-L wrapper
     └── depth_alignment.py        Weighted-least-squares scale alignment
-lpipsPyTorch/                     LPIPS metric implementation used by train/metrics
+lpipsPyTorch/                     LPIPS metric used by train.py and metrics.py
 scripts/
 ├── preprocess.py                 Dense init via RoMa v1 for a single scene
-├── preprocess_all.sh             Wrapper running preprocess.py on all 8 scenes
-├── place_init.py                 Swap fused.ply with the RoMa v1 dense init
+├── preprocess_all.sh             Runs preprocess.py over all 8 scenes on 2 GPUs
+├── place_init.py                 Swaps fused.ply with the RoMa v1 dense init
 ├── run.sh                        Main training driver (24 runs across 2 GPUs)
-├── trainer.sh                    Inner trainer called by run.sh (also used for ablation)
-└── analyze.py                    Aggregate per-run logs into PSNR/SSIM/LPIPS tables
-tools/
-└── colmap_llff.py                Per-N-view COLMAP pipeline for LLFF
+├── trainer.sh                    Inner trainer, also used for the ablation
+└── analyze.py                    Aggregates per-run logs into metric tables
+tools/colmap_llff.py              Per-N-view COLMAP pipeline for LLFF
 submodules/
 ├── diff-gaussian-rasterization-confidence/  Differentiable tile rasterizer
 └── simple-knn/                              k-NN utility for DropAnSH anchors
 ```
 
+The repository also carries the research history used while developing the method —
+`scripts/p*.py` and `scripts/p*.sh` (per-phase experiments), `external/` (Nerfstudio
+plug-in), `demo/` (Gradio demo), `tests/`, and the DTU / Blender / 360 code paths. None of
+it is needed to reproduce the results above, and some of it targets flags that no longer
+exist.
+
 ## Key hyperparameters
 
-The production recipe is parameterized by the flags below; the values match the thesis
-table of important hyperparameters.
+These are the values `scripts/trainer.sh` passes for `CONFIG=trim_full`.
 
 ```
 Iterations                    10,000
 Densification window          iter 500 -- 5,000, interval 100
 Positional gradient threshold 5e-4
+Resolution                    -r 8
 CRS warm-up                   1,000 iter
 CRS update interval           every 100 iter
+CRS EMA decay                 0.3
 D-cycle reprojection sigma    5.0 px
-SH-CRS freeze threshold tau   0.5
+SH-CRS freeze threshold tau   0.65
 CRS triplet weight w_s        0.33
-EMA decay beta                0.3
+SH stability EMA beta         0.95
 DropAnSH (p_a, p_sh)          (0.02, 0.20)
 Opacity decay factor          0.999
 LFCF init scale (max / min)   1.5 / 1.0
+LFCF interval                 every 2 densification steps
 AbsGS                         enabled
 ```
+
+> **Note on the freeze threshold.** The N=24 figure reported below was measured with
+> `--crs_freeze_tau 0.5`. A later single-seed sweep favoured `0.65`, which is the value
+> shipped in `trainer.sh`; the observed gain (+0.045 dB) is within the ±0.10 dB
+> run-to-run noise floor of the rasterizer and has not yet been re-measured at N=24. Pass
+> `--crs_freeze_tau 0.5` to reproduce the published number exactly.
 
 ## Results
 
@@ -362,8 +381,12 @@ Quantitative comparison on LLFF with 3 training views (mean over N=24 paired run
 | Binocular3DGS     | 21.44 | 0.751 | 0.168 |
 | **ReDI-GS (ours)**| **21.92** | **0.769** | **0.158** |
 
-ReDI-GS also leads at 6 and 9 views; see the thesis Results chapter for the full
-tables and the per-component contribution analysis.
+Single-scene PSNR on this benchmark carries roughly ±1.3 dB of run-to-run variance from
+non-deterministic atomic adds in the rasterizer, so every comparison above is a paired
+mean over 3 seeds × 8 scenes rather than a single run.
+
+ReDI-GS also leads at 6 and 9 views; see the thesis Results chapter for the full tables
+and the per-component contribution analysis.
 
 ## Acknowledgement
 
