@@ -201,9 +201,6 @@ class Scene:
             self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
             self.init_point_cloud = scene_info.point_cloud # Lưu lại point cloud ban đầu để có thể phân tích sau này
 
-        point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
-        self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
-
     def save(self, iteration):
         # Lưu Gaussian model ra file .ply tại iter được chỉ định.
         # Được gọi khi iteration nằm trong saving_iterations (mặc định iter 10000).

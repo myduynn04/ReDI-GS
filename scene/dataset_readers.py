@@ -1,0 +1,756 @@
+#
+# Copyright (C) 2023, Inria
+# GRAPHDECO research group, https://team.inria.fr/graphdeco
+# All rights reserved.
+#
+# This software is free for non-commercial, research and evaluation use 
+# under the terms of the LICENSE.md file.
+#
+# For inquiries contact  george.drettakis@inria.fr
+#
+import glob
+import os
+import sys
+
+import matplotlib.pyplot as plt
+from PIL import Image
+import imageio
+from typing import NamedTuple
+from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, rotmat2qvec, \
+    read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text
+from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
+from utils.general_utils import chamfer_dist
+import numpy as np
+import json
+import cv2
+import math
+import torch
+import open3d as o3d
+from tqdm import tqdm
+from pathlib import Path
+from plyfile import PlyData, PlyElement
+from utils.sh_utils import SH2RGB
+from scene.gaussian_model import BasicPointCloud
+
+# CameraInfo = dữ liệu THÔ của 1 camera đọc từ COLMAP (chưa load ảnh lên GPU).
+# NamedTuple = struct bất biến (immutable). Sau này camera_utils biến nó thành Camera object.
+class CameraInfo(NamedTuple):
+    uid: int             # id camera
+    R: np.array          # ma trận xoay (rotation) 3x3
+    T: np.array          # vector tịnh tiến (translation)
+    FovY: np.array       # góc nhìn dọc (field of view Y)
+    FovX: np.array       # góc nhìn ngang
+    image: np.array      # ảnh PIL (chưa resize)
+    image_path: str      # đường dẫn ảnh
+    image_name: str      # tên ảnh (không đuôi)
+    width: int           # chiều rộng ảnh gốc
+    height: int          # chiều cao ảnh gốc
+    mask: np.array       # mask (None với LLFF)
+    bounds: np.array     # [near, far] depth từ poses_bounds.npy
+    focalx: float        # tiêu cự x
+    focaly: float        # tiêu cự y
+
+# SceneInfo = gói TẤT CẢ dữ liệu 1 scene sau khi load. Đây là thứ readColmapSceneInfo trả về.
+class SceneInfo(NamedTuple):
+    point_cloud: BasicPointCloud   # point cloud init (từ fused.ply)
+    train_cameras: list            # list CameraInfo train (3 cái)
+    test_cameras: list             # list CameraInfo test
+    nerf_normalization: dict       # {translate, radius} — chuẩn hóa scene
+    ply_path: str                  # đường dẫn file .ply đã dùng
+
+
+# [NOT USE trong production] Lấy K giá trị lớn nhất theo trục — chỉ dùng ở nhánh rand_pcd
+# (random point cloud), không phải path fused.ply của bài.
+def topk_(matrix, K, axis=1):
+    if axis == 0:
+        row_index = np.arange(matrix.shape[1 - axis])
+        topk_index = np.argpartition(-matrix, K, axis=axis)[0:K, :]
+        topk_data = matrix[topk_index, row_index]
+        topk_index_sort = np.argsort(-topk_data,axis=axis)
+        topk_data_sort = topk_data[topk_index_sort,row_index]
+        topk_index_sort = topk_index[0:K,:][topk_index_sort,row_index]
+    else:
+        column_index = np.arange(matrix.shape[1 - axis])[:, None]
+        topk_index = np.argpartition(-matrix, K, axis=axis)[:, 0:K]
+        topk_data = matrix[column_index, topk_index]
+        topk_index_sort = np.argsort(-topk_data, axis=axis)
+        topk_data_sort = topk_data[column_index, topk_index_sort]
+        topk_index_sort = topk_index[:,0:K][column_index,topk_index_sort]
+    return topk_data_sort
+    
+
+# Tính "kích thước" của scene từ vị trí các camera → dùng để scale learning rate xyz
+# và ngưỡng prune. radius lớn = scene rộng. Đây là cameras_extent mà Scene lưu lại.
+def getNerfppNorm(cam_info):
+    # Tìm tâm cụm camera + khoảng cách xa nhất từ tâm (bán kính bao)
+    def get_center_and_diag(cam_centers):
+        cam_centers = np.hstack(cam_centers)
+        avg_cam_center = np.mean(cam_centers, axis=1, keepdims=True)   # tâm = trung bình vị trí camera
+        center = avg_cam_center
+        dist = np.linalg.norm(cam_centers - center, axis=0, keepdims=True)  # khoảng cách mỗi cam tới tâm
+        diagonal = np.max(dist)                                        # xa nhất
+        return center.flatten(), diagonal
+
+    cam_centers = []
+
+    # Lấy vị trí thật (camera-to-world) của từng camera
+    for cam in cam_info:
+        W2C = getWorld2View2(cam.R, cam.T)   # ma trận world→camera
+        C2W = np.linalg.inv(W2C)             # đảo ngược → camera→world
+        cam_centers.append(C2W[:3, 3:4])     # cột tịnh tiến = vị trí camera
+
+    center, diagonal = get_center_and_diag(cam_centers)
+    radius = diagonal * 1.1                  # nới thêm 10% cho an toàn
+
+    translate = -center                      # vector dịch scene về gốc tọa độ
+
+    return {"translate": translate, "radius": radius}
+
+# [NOT USE] Hàm HỎNG + không có caller nào. Có `break` sau ảnh đầu (dòng 137) rồi tham chiếu
+# biến chưa định nghĩa (poses, bds) và dùng cú pháp torch (dim=1) trong np.concatenate.
+# Là bản nháp cũ dang dở. Bản thật đang dùng là readColmapCameras (bên dưới).
+def readColmapCameras2(cam_extrinsics, cam_intrinsics, images_folder):
+    cam_infos = []
+    for idx, key in enumerate(cam_extrinsics):
+        sys.stdout.write('\r')
+        # the exact output you're looking for:
+        sys.stdout.write("Reading camera {}/{}".format(idx+1, len(cam_extrinsics)))
+        sys.stdout.flush()
+
+        extr = cam_extrinsics[key]
+        intr = cam_intrinsics[extr.camera_id]
+        height = intr.height
+        width = intr.width
+
+        uid = intr.id
+        R = np.transpose(qvec2rotmat(extr.qvec))
+        T = np.array(extr.tvec)
+
+        if intr.model=="SIMPLE_PINHOLE":
+            focal_length_x = intr.params[0]
+            FovY = focal2fov(focal_length_x, height)
+            FovX = focal2fov(focal_length_x, width)
+        elif intr.model=="PINHOLE":
+            focal_length_x = intr.params[0]
+            focal_length_y = intr.params[1]
+            FovY = focal2fov(focal_length_y, height)
+            FovX = focal2fov(focal_length_x, width)
+        else:
+            assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
+
+        image_path = os.path.join(images_folder, os.path.basename(extr.name))
+        image_name = os.path.basename(image_path).split(".")[0]
+        image = Image.open(image_path)
+
+        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+                              image_path=image_path, image_name=image_name, width=width, height=height)
+        cam_infos.append(cam_info)
+
+        break
+
+    def normalize(x):
+        return x / np.linalg.norm(x)
+
+    def viewmatrix(z, up, pos):
+        vec2 = normalize(z)
+        vec1_avg = up
+        vec0 = normalize(np.cross(vec1_avg, vec2))
+        vec1 = normalize(np.cross(vec2, vec0))
+        m = np.stack([vec0, vec1, vec2, pos], 1)
+        return m
+
+
+    c2w = np.concatenate([R, T], dim=1)
+    print(c2w.shape)
+    ## Get spiral
+    # Get average pose
+    up = normalize(poses[:, :3, 1].sum(0))
+
+    # Find a reasonable "focus depth" for this dataset
+    close_depth, inf_depth = bds.min() * .9, bds.max() * 5.
+    dt = .75
+    mean_dz = 1. / (((1. - dt) / close_depth + dt / inf_depth))
+    focal = mean_dz
+
+    # Get radii for spiral path
+    shrink_factor = .8
+    zdelta = close_depth * .2
+    tt = poses[:, :3, 3]  # ptstocam(poses[:3,3,:].T, c2w).T
+    rads = np.percentile(np.abs(tt), 90, 0)
+    c2w_path = c2w
+    Num_views = 120
+    rots = 2
+
+    render_poses = []
+    rads = np.array(list(rads) + [1.])
+    hwf = c2w[:, 4:5]
+    for theta in np.linspace(0., 2. * np.pi * rots, Num_views + 1)[:-1]:
+        c = np.dot(c2w[:3, :4], np.array([np.cos(theta), -np.sin(theta), -np.sin(theta * 0.5), 1.]) * rads)
+        z = normalize(c - np.dot(c2w[:3, :4], np.array([0, 0, -focal, 1.])))
+        render_poses.append(np.concatenate([viewmatrix(z, up, c), hwf], 1))
+
+
+    sys.stdout.write('\n')
+    return cam_infos
+
+
+# ⭐ Parser camera THẬT (LLFF). Duyệt từng camera COLMAP → dựng CameraInfo.
+# cam_extrinsics = poses (R,T) mỗi ảnh; cam_intrinsics = tiêu cự/kích thước mỗi camera.
+def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, path, rgb_mapping):
+    cam_infos = []
+    for idx, key in enumerate(sorted(cam_extrinsics.keys())):
+        sys.stdout.write('\r')
+        sys.stdout.write("Reading camera {}/{}".format(idx+1, len(cam_extrinsics)))
+        sys.stdout.flush()
+
+        extr = cam_extrinsics[key]              # extrinsic (pose) của ảnh này
+        intr = cam_intrinsics[extr.camera_id]   # intrinsic (tiêu cự) của camera tương ứng
+        height = intr.height
+        width = intr.width
+
+        uid = intr.id
+        R = np.transpose(qvec2rotmat(extr.qvec))   # quaternion → ma trận xoay (transpose theo convention 3DGS)
+        T = np.array(extr.tvec)                     # vector tịnh tiến
+        bounds = np.load(os.path.join(path, 'poses_bounds.npy'))[idx, -2:]  # [near, far] của ảnh này
+
+        # Đọc tiêu cự tùy mô hình camera COLMAP → quy đổi sang FoV (góc nhìn)
+        if intr.model=="SIMPLE_PINHOLE" or intr.model=="SIMPLE_RADIAL":
+            focal_length_x = intr.params[0]         # 1 tiêu cự chung cho cả x,y
+            focal_length_y = intr.params[0]
+            FovY = focal2fov(focal_length_x, height)
+            FovX = focal2fov(focal_length_y, width)
+        elif intr.model=="PINHOLE":
+            focal_length_x = intr.params[0]         # tiêu cự x,y riêng
+            focal_length_y = intr.params[1]
+            FovY = focal2fov(focal_length_y, height)
+            FovX = focal2fov(focal_length_x, width)
+        else:
+            # Chỉ hỗ trợ ảnh đã undistort (pinhole) — model khác thì dừng
+            assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
+
+        image_path = os.path.join(images_folder, os.path.basename(extr.name))
+        image_name = os.path.basename(image_path).split(".")[0]
+        rgb_path = rgb_mapping[idx]              # đường dẫn ảnh RGB thật (map theo thứ tự)
+        rgb_name = os.path.basename(rgb_path).split(".")[0]
+        image = Image.open(rgb_path)            # mở ảnh (PIL, chưa resize)
+
+        # Gói mọi thứ thành CameraInfo (chưa lên GPU)
+        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image, image_path=image_path,
+                image_name=image_name, width=width, height=height, mask=None, bounds=bounds, focalx=focal_length_x, focaly=focal_length_y)
+        cam_infos.append(cam_info)
+
+    sys.stdout.write('\n')
+    return cam_infos
+
+
+# [NOT USE] Không có caller nào trong repo. FPS sample điểm phân bố đều — có thể là tiện ích
+# cũ giữ lại. Không thuộc pipeline LLFF hiện tại.
+def farthest_point_sampling(points, k):
+    """
+    Sample k points from input pointcloud data points using Farthest Point Sampling.
+
+    Parameters:
+    points: numpy.ndarray
+        The input pointcloud data, a numpy array of shape (N, D) where N is the
+        number of points and D is the dimensionality of each point.
+    k: int
+        The number of points to sample.
+
+    Returns:
+    sampled_points: numpy.ndarray
+        The sampled pointcloud data, a numpy array of shape (k, D).
+    """
+    N, D = points.shape
+    farthest_pts = np.zeros((k, D))
+    distances = np.full(N, np.inf)
+    farthest = np.random.randint(0, N)
+    for i in range(k):
+        farthest_pts[i] = points[farthest]
+        centroid = points[farthest]
+        dist = np.sum((points - centroid) ** 2, axis=1)
+        distances = np.minimum(distances, dist)
+        farthest = np.argmax(distances)
+    return farthest_pts
+
+
+# Đọc file .ply (fused.ply) → BasicPointCloud (vị trí + màu + normal).
+# Đây là bước nạp point cloud init mà create_from_pcd sẽ dùng.
+def fetchPly(path):
+    plydata = PlyData.read(path)
+    vertices = plydata['vertex']
+    positions = np.vstack([vertices['x'], vertices['y'], vertices['z']]).T          # (N,3) vị trí
+    colors = np.vstack([vertices['red'], vertices['green'], vertices['blue']]).T / 255.0  # (N,3) màu [0,1]
+    normals = np.vstack([vertices['nx'], vertices['ny'], vertices['nz']]).T          # (N,3) normal (thường 0)
+    return BasicPointCloud(points=positions, colors=colors, normals=normals)
+
+
+# Ghi point cloud (xyz + rgb) ra file .ply. Dùng khi cần convert .bin → .ply lần đầu.
+def storePly(path, xyz, rgb):
+    # Define the dtype for the structured array
+    dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
+            ('nx', 'f4'), ('ny', 'f4'), ('nz', 'f4'),
+            ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
+
+    normals = np.zeros_like(xyz)
+
+    elements = np.empty(xyz.shape[0], dtype=dtype)
+    attributes = np.concatenate((xyz, normals, rgb), axis=1)
+    elements[:] = list(map(tuple, attributes))
+
+    # Create the PlyData object and write to file
+    vertex_element = PlyElement.describe(elements, 'vertex')
+    ply_data = PlyData([vertex_element])
+    ply_data.write(path)
+
+
+# ⭐ HÀM CHÍNH của khối COLMAP (LLFF). Được gọi qua sceneLoadTypeCallbacks["Colmap"]
+# từ Scene.__init__. Nhiệm vụ: chọn đường dẫn point cloud, load poses + point cloud,
+# chia train/test, chuẩn hóa scene → trả về SceneInfo.
+def readColmapSceneInfo(path, images, eval, n_views=0, llffhold=8, rand_pcd=False):
+    # ── Chọn nguồn point cloud theo config ──
+    if n_views <= 0:
+        # [NOT USE] full-view: dùng sparse points3D gốc
+        ply_path = os.path.join(path, "sparse/0/points3D.ply")
+        bin_path = os.path.join(path, "sparse/0/points3D.bin")
+        txt_path = os.path.join(path, "sparse/0/points3D.txt")
+    elif rand_pcd:
+        # [NOT USE] khởi tạo point cloud NGẪU NHIÊN (baseline không dùng geometry) — bài không dùng
+        print('Init random point cloud.')
+        ply_path = os.path.join(path, "sparse/0/points3D_random.ply")
+        bin_path = os.path.join(path, "sparse/0/points3D_random.bin")
+        txt_path = os.path.join(path, "sparse/0/points3D_random.txt")
+
+        try:
+            xyz, rgb, _ = read_points3D_binary(bin_path)
+        except:
+            xyz, rgb, _ = read_points3D_text(txt_path)
+        # print(xyz.max(0), xyz.min(0))
+
+
+        
+        pcd_shape = (topk_(xyz, 1, 0)[-1] + topk_(-xyz, 1, 0)[-1])
+        num_pts = int(pcd_shape.max() * 50)
+        xyz = np.random.random((num_pts, 3)) * pcd_shape * 1.3 - topk_(-xyz, 20, 0)[-1]
+        print(pcd_shape)
+        print(f"Generating random point cloud ({num_pts})...")
+
+        shs = np.random.random((num_pts, 3)) / 255.0
+        pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
+        storePly(ply_path, xyz, SH2RGB(shs) * 255)
+    else:
+        # ⭐ PATH PRODUCTION: dùng fused.ply (dense). Với bài bạn, file này đã bị p22 thay
+        # bằng RoMa v1. dataset_readers KHÔNG quan tâm nội dung — chỉ đọc đường dẫn cố định.
+        ply_path = os.path.join(path, str(n_views) + "_views/dense/fused.ply")
+        bin_path = os.path.join(path, str(n_views) + "_views/triangulated/points3D.bin")
+        txt_path = os.path.join(path, str(n_views) + "_views/triangulated/points3D.txt")
+
+    # ── Đọc camera poses (thử binary trước, không được thì text) ──
+    try:
+        cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
+        cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
+        cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)   # poses (R,T)
+        cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)   # tiêu cự
+    except:
+        cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.txt")
+        cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.txt")
+        cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
+        cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
+
+
+    # Nếu chưa có .ply, convert từ .bin/.txt (chỉ lần đầu mở scene)
+    if not os.path.exists(ply_path):
+        print("Converting point3d.bin to .ply, will happen only the first time you open the scene.")
+        try:
+            xyz, rgb, _ = read_points3D_binary(bin_path)
+            storePly(ply_path, xyz, rgb)
+        except:
+            try:
+                xyz, rgb, _ = read_points3D_text(txt_path)
+                storePly(ply_path, xyz, rgb)
+            except:
+                print("No point cloud found, using empty ply")
+    # Load point cloud init từ .ply
+    try:
+        pcd = fetchPly(ply_path)
+    except:
+        pcd = None
+
+
+    reading_dir = "images" if images == None else images
+    # Danh sách file ảnh RGB (map theo thứ tự với camera)
+    rgb_mapping = [f for f in sorted(glob.glob(os.path.join(path, reading_dir, '*')))
+                   if f.endswith('JPG') or f.endswith('jpg') or f.endswith('png')]
+    cam_extrinsics = {cam_extrinsics[k].name: cam_extrinsics[k] for k in cam_extrinsics}
+    # Dựng CameraInfo cho MỌI camera, rồi sort theo tên ảnh cho ổn định
+    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics,
+                             images_folder=os.path.join(path, reading_dir),  path=path, rgb_mapping=rgb_mapping)
+    cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
+
+    # ── Chia train/test (Bước 1): cứ 8 ảnh lấy 1 làm test ──
+    if eval:
+        train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
+        test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 0]
+    else:
+        train_cam_infos = cam_infos
+        test_cam_infos = []
+
+    # ── (Bước 2): từ train pool lấy đúng n_views=3 ảnh cách đều nhau ──
+    if n_views > 0:
+        idx_sub = np.linspace(0, len(train_cam_infos)-1, n_views)
+        idx_sub = [round(i) for i in idx_sub]
+        train_cam_infos = [c for idx, c in enumerate(train_cam_infos) if idx in idx_sub]
+        assert len(train_cam_infos) == n_views   # đảm bảo đúng 3
+
+    # Tính radius scene từ 3 camera train (dùng scale LR + prune)
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+
+    # Gói tất cả → SceneInfo trả về cho Scene.__init__
+    scene_info = SceneInfo(point_cloud=pcd,
+                           train_cameras=train_cam_infos,
+                           test_cameras=test_cam_infos,
+                           nerf_normalization=nerf_normalization,
+                           ply_path=ply_path)
+    return scene_info
+
+
+
+# [NOT USE cho LLFF] Loader cho dataset DTU. Cùng ý tưởng readColmapSceneInfo nhưng
+# split train/test theo index cố định của DTU. Bài chỉ chạy LLFF nên không vào đây.
+def readDTUSceneInfo(path, images, eval, n_views=0, llffhold=8, rand_pcd=False):
+    if rand_pcd:
+        print('Init random point cloud.')
+        ply_path = os.path.join(path, "sparse/0/points3D_random.ply")
+        bin_path = os.path.join(path, "sparse/0/points3D.bin")
+        txt_path = os.path.join(path, "sparse/0/points3D.txt")
+
+        try:
+            xyz, rgb, _ = read_points3D_binary(bin_path)
+        except:
+            xyz, rgb, _ = read_points3D_text(txt_path)
+        print(xyz.max(0), xyz.min(0))
+        pcd_shape = (topk_(xyz, 100, 0)[-1] + topk_(-xyz, 100, 0)[-1])
+        num_pts = 10_00
+        xyz = np.random.random((num_pts, 3)) * pcd_shape * 1.3 - topk_(-xyz, 100, 0)[-1] # - 0.15 * pcd_shape
+        print(pcd_shape)
+        print(f"Generating random point cloud ({num_pts})...")
+        shs = np.random.random((num_pts, 3)) / 255.0
+        storePly(ply_path, xyz, SH2RGB(shs) * 255)
+    else:
+        ply_path = os.path.join(path, str(n_views) + "_views/dense/fused.ply")
+        bin_path = os.path.join(path, str(n_views) + "_views/triangulated/points3D.bin")
+        txt_path = os.path.join(path, str(n_views) + "_views/triangulated/points3D.txt")
+
+    try:
+        cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
+        cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
+        cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
+        cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
+    except:
+        cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.txt")
+        cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.txt")
+        cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
+        cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
+
+
+    pcd = fetchPly(ply_path)
+
+    reading_dir = "images" if images == None else images
+    rgb_mapping = [f for f in sorted(glob.glob(os.path.join(path, reading_dir, '*')))
+                   if f.endswith('JPG') or f.endswith('jpg') or f.endswith('png')]
+    cam_extrinsics = {cam_extrinsics[k].name: cam_extrinsics[k] for k in cam_extrinsics}
+    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics,
+                             images_folder=os.path.join(path, reading_dir),  path=path, rgb_mapping=rgb_mapping)
+    cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
+
+    if eval:
+        train_idx = [25, 22, 28, 40, 44, 48, 0, 8, 13]
+        exclude_idx = [3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 36, 37, 38, 39]
+        test_idx = [i for i in np.arange(49) if i not in train_idx + exclude_idx]
+        if n_views > 0:
+            train_idx = train_idx[:n_views]
+        train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx in train_idx]
+        test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx in test_idx]
+    else:
+        train_cam_infos = cam_infos
+        test_cam_infos = []
+
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+    scene_info = SceneInfo(point_cloud=pcd,
+                           train_cameras=train_cam_infos,
+                           test_cameras=test_cam_infos,
+                           nerf_normalization=nerf_normalization,
+                           ply_path=ply_path)
+    return scene_info
+
+
+# [NOT USE cho LLFF] Đọc camera từ file transforms_*.json (format Blender/NeRF synthetic).
+def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png"):
+    cam_infos = []
+
+    with open(os.path.join(path, transformsfile)) as json_file:
+        contents = json.load(json_file)
+        fovx = contents["camera_angle_x"]
+
+        skip = 8 if transformsfile == 'transforms_test.json' else 1
+        frames = contents["frames"][::skip]
+        for idx, frame in tqdm(enumerate(frames)):
+            cam_name = os.path.join(path, frame["file_path"] + extension)
+
+            # NeRF 'transform_matrix' is a camera-to-world transform
+            c2w = np.array(frame["transform_matrix"])
+            # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
+            c2w[:3, 1:3] *= -1
+
+            # get the world-to-camera transform and set R, T
+            w2c = np.linalg.inv(c2w)
+            R = np.transpose(w2c[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
+            T = w2c[:3, 3]
+
+            image_path = cam_name
+            image_name = Path(cam_name).stem
+            image = Image.open(image_path)
+
+            im_data = np.array(image.convert("RGBA"))
+
+            bg = np.array([1,1,1]) if white_background else np.array([0, 0, 0])
+
+            norm_data = im_data / 255.0
+            arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
+            image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB")
+
+            fovy = focal2fov(fov2focal(fovx, image.size[0]), image.size[1])
+            FovY = fovy
+            FovX = fovx
+
+            focal_length_x = fov2focal(fovx, image.size[0])
+            focal_length_y = fov2focal(fovy, image.size[1])
+
+            height = image.size[1]
+            width = image.size[0]
+
+            mask = norm_data[:, :, 3:4]
+            if skip == 1:
+                depth_image = None
+            else:
+                depth_image = None
+
+            image = Image.fromarray(np.array(arr * 255.0, dtype=np.byte), "RGB")
+            depth_image = None if depth_image is None else depth_image
+            mask = None if mask is None else mask
+
+            cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image, image_path=image_path,
+                                        image_name=image_name, width=width, height=height, mask=mask,
+                                        bounds=None, focalx=focal_length_x, focaly=focal_length_y))
+
+    return cam_infos
+
+
+
+# [NOT USE cho LLFF] Loader cho dataset synthetic Blender (transforms_train/test.json).
+def readNerfSyntheticInfo(path, white_background, eval, n_views=0, extension=".png", rand_pcd=False):
+    print("Reading Training Transforms")
+    train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension)
+    print("Reading Test Transforms")
+    test_cam_infos = readCamerasFromTransforms(path, "transforms_test.json", white_background, extension)
+
+    if not eval:
+        train_cam_infos.extend(test_cam_infos)
+        test_cam_infos = []
+
+    pseudo_cam_infos = train_cam_infos #train_cam_infos
+    if n_views > 0:
+        train_cam_infos = [c for idx, c in enumerate(train_cam_infos) if idx in [2, 16, 26, 55, 73, 76, 86, 93]]
+        print(f"len(train_cam_infos) is {len(train_cam_infos)}")
+        assert len(train_cam_infos) == n_views
+
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+
+    ply_path = os.path.join(path, str(n_views) + "_views/dense/fused.ply")
+    
+    if rand_pcd:
+        ply_path = os.path.join(path, "points3d.ply")
+        print('Init random point cloud.')
+        if rand_pcd and not os.path.exists(ply_path):
+            # Since this data set has no colmap data, we start with random points
+            num_pts = 10_000
+            print(f"Generating random point cloud ({num_pts})...")
+            
+            # We create random points inside the bounds of the synthetic Blender scenes
+            xyz = np.random.random((num_pts, 3)) * 2.6 - 1.3
+            shs = np.random.random((num_pts, 3)) / 255.0
+            pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
+
+            storePly(ply_path, xyz, SH2RGB(shs) * 255)
+        elif rand_pcd and os.path.exists(ply_path):
+            print(f"Load point cloud from {ply_path}")
+    else:
+        print(f"use stereo fusion")
+        ply_path = os.path.join(path, str(n_views) + "_views/dense/fused.ply")
+    
+    try:
+        pcd = fetchPly(ply_path)
+    except:
+        pcd = None
+
+    scene_info = SceneInfo(point_cloud=pcd,
+                           train_cameras=train_cam_infos,
+                           test_cameras=test_cam_infos,
+                           nerf_normalization=nerf_normalization,
+                           ply_path=ply_path)
+    return scene_info
+
+
+# [NOT USE cho LLFF] Biến thể CameraInfo cho DTU spiral (thêm field). Không dùng cho bài.
+class CameraInfo_DN(NamedTuple):
+    uid: str
+    R: np.array
+    T: np.array
+    FovY: np.array
+    FovX: np.array
+    image: np.array
+    image_path: str
+    image_name: str
+    width: int
+    height: int
+    depth_mono: np.array
+
+# [NOT USE cho LLFF training] Sinh camera cho render spiral (video quỹ đạo), chỉ dùng
+# trong nhánh DTU spiral. Không tham gia train/test của bài.
+def generateLLFFCameras(poses, bounds=None, train_cam_infos=None):
+    image = train_cam_infos[0].image
+    image_path = train_cam_infos[0].image_path
+    image_name = train_cam_infos[0].image_name
+
+    cam_infos = []
+    Rs, tvecs, height, width, focal_length_x = pose_utils.convert_poses(poses) 
+    for idx, _ in enumerate(Rs):
+        sys.stdout.write('\r')
+        # the exact output you're looking for:
+        sys.stdout.write("Reading camera {}/{}".format(idx+1, len(Rs)))
+        sys.stdout.flush()
+
+        uid = idx
+        R = np.transpose(Rs[idx])
+        T = tvecs[idx]
+
+        FovY = focal2fov(focal_length_x, height)
+        FovX = focal2fov(focal_length_x, width)
+
+        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image, image_path=None,
+                image_name=None, width=width, height=height, mask=None, bounds=bounds, focalx=focal_length_x, focaly=focal_length_x)
+        cam_infos.append(cam_info)
+    sys.stdout.write('\n')
+    return cam_infos
+
+
+from utils import pose_utils
+
+
+# [NOT USE cho LLFF] Biến thể SceneInfo cho DTU spiral. Không dùng cho bài.
+class SceneInfo_DN(NamedTuple):
+    point_cloud: BasicPointCloud
+    train_cameras: list
+    test_cameras: list
+    eval_cameras: list
+    nerf_normalization: dict
+    ply_path: str
+
+
+# [NOT USE cho LLFF] Tạo danh sách pose spiral cho DTU (render video). Không dùng cho bài.
+def CreateDTUSpiralList(basedir, train_cam_infos):
+
+    # Load poses and bounds.
+    print(f"basedir is {basedir}")
+    poses_arr = np.load(os.path.join(basedir, 'poses_bounds.npy'))
+    poses_o = poses_arr[:, :-2].reshape([-1, 3, 5])
+    bounds = poses_arr[:, -2:]
+    
+    # Pull out focal length before processing poses.
+    # Correct rotation matrix ordering (and drop 5th column of poses).
+    fix_rotation = np.array([
+        [0, -1, 0, 0],
+        [1, 0, 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1],
+    ],
+                            dtype=np.float32)
+    inv_rotation = np.linalg.inv(fix_rotation)
+    poses = poses_o[:, :3, :4] @ fix_rotation
+
+    render_poses = pose_utils.recenter_poses_dtu(poses)
+
+    s = np.max(np.abs(render_poses[:, :3, -1]))
+    render_poses[:, :3, -1] /= s
+
+    # Separate out 360 versus forward facing scenes.
+    render_poses = pose_utils.generate_spiral_path_dtu_(
+          render_poses, n_frames=180)
+    
+    render_poses[:, :3, -1] *= s
+    render_poses = pose_utils.backcenter_poses(render_poses, poses)
+
+    render_poses = render_poses @ inv_rotation
+    render_poses = np.concatenate([render_poses, np.tile(poses_o[:1, :3, 4:], (render_poses.shape[0], 1, 1))], -1)
+
+    render_cam_infos = generateLLFFCameras(render_poses.transpose([1,2,0]), bounds, train_cam_infos)
+    return render_cam_infos
+
+
+# [NOT USE cho LLFF] Sinh quỹ đạo spiral cho DTU (render video demo). Không dùng cho bài.
+def CreateDTUSpiral(basedir):
+
+    # Load poses and bounds.
+    poses_arr = np.load(os.path.join(basedir, 'poses_bounds.npy'))
+    poses_o = poses_arr[:, :-2].reshape([-1, 3, 5])
+    bounds = poses_arr[:, -2:]
+    
+    # Pull out focal length before processing poses.
+    # Correct rotation matrix ordering (and drop 5th column of poses).
+    fix_rotation = np.array([
+        [0, -1, 0, 0],
+        [1, 0, 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1],
+    ],
+                            dtype=np.float32)
+    inv_rotation = np.linalg.inv(fix_rotation)
+    poses = poses_o[:, :3, :4] @ fix_rotation
+
+
+    render_poses = pose_utils.recenter_poses_dtu(poses)
+
+    s = np.max(np.abs(render_poses[:, :3, -1]))
+    render_poses[:, :3, -1] /= s
+
+    # Separate out 360 versus forward facing scenes.
+    render_poses = pose_utils.generate_spiral_path_dtu_(
+          render_poses, n_frames=180)
+    
+    render_poses[:, :3, -1] *= s
+    render_poses = pose_utils.backcenter_poses(render_poses, poses)
+
+    render_poses = render_poses @ inv_rotation
+    render_poses = np.concatenate([render_poses, np.tile(poses_o[:1, :3, 4:], (render_poses.shape[0], 1, 1))], -1)
+
+    render_cam_infos = generateLLFFCameras(render_poses.transpose([1,2,0]), bounds)
+
+    nerf_normalization = getNerfppNorm(render_cam_infos)
+
+    scene_info = SceneInfo_DN(point_cloud=None,
+                           train_cameras=None,
+                           test_cameras=render_cam_infos,
+                           eval_cameras=None,
+                           nerf_normalization=nerf_normalization,
+                           ply_path=None)
+    return scene_info
+
+# ── Bảng điều phối loader theo loại dataset ──
+# Scene.__init__ gọi sceneLoadTypeCallbacks["Colmap"](...) để load LLFF.
+# Đây là lý do grep "readColmapSceneInfo(" không thấy caller trực tiếp — nó được
+# gọi GIÁN TIẾP qua dict này (string "Colmap" → hàm).
+sceneLoadTypeCallbacks = {
+    "Colmap": readColmapSceneInfo,        # ⭐ LLFF (bài dùng cái này)
+    "Blender" : readNerfSyntheticInfo,    # [NOT USE cho LLFF] dataset synthetic Blender
+    "DTU": readDTUSceneInfo,              # [NOT USE cho LLFF] dataset DTU
+    "SpiralDTU" : CreateDTUSpiral,        # [NOT USE cho LLFF] render spiral DTU
+}

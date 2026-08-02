@@ -13,9 +13,11 @@ tensorboard_3d
 screenshots
 
 
-data*
-data/
-data_backup/*
+# Neo vào thư mục gốc — KHÔNG dùng "data*" vì pattern đó nuốt luôn
+# scene/dataset_readers.py (file source cần được track).
+/data*
+/data/
+/data_backup/*
 
 log/
 logs/
@@ -26,4 +28,14 @@ thesis/*
 
 docs/
 thesis.zip
-train.py.pre_p29_20260626
+
+# Backup file trước mỗi đợt cleanup — giữ trên đĩa, không đưa vào git.
+*.pre_*
+
+# Cache demo Gradio (~103 MB ảnh/GIF) — sinh lại bằng demo/populate_cache.py.
+demo/cache/*
+!demo/cache/.gitkeep
+
+# Output diagnostic dùng một lần.
+debug_depth/
+colmap_fern_new.txt
