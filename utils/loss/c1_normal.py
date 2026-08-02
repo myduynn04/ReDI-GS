@@ -19,17 +19,6 @@
 #     convention ⟹ L1 hợp lệ KHÔNG cần world/wvt/orient (né sạch ác mộng
 #     convention đã phá p16 Gate). Loss = L1 (step<15k của dn-splatter
 #     AdaptiveNormal cũng L1 thuần; pilot 10k → luôn L1).
-#
-# ── PRE-REGISTERED PREDICTION (logged TRƯỚC khi chạy pilot) ──
-#   dn-splatter detach depth ở surface_normal CHÍNH XÁC vì ∇(finite-diff
-#   cross-product của rendered depth) cực nhiễu — đúng nhiễu vừa phá
-#   n_dep của p16 Gate. C1a back-prop qua đúng operator đó trên 3DGS
-#   sparse rendered-depth (floaty nhất) → DỰ ĐOÁN: gradient-normal nhiễu
-#   → nhiều khả năng degrade / no-gain, tập trung scene floaty-depth
-#   (horns, foliage). Nếu pilot ra horns-catastrophe / saturate signature
-#   → mechanism XÁC NHẬN, KHÔNG bất ngờ, KHÔNG re-engineer. Guard
-#   horns + tiêu chí pre-registered (decisions_log Phase-17) bắt thực
-#   nghiệm. smooth=False (mirror dn-splatter) — KHÔNG lén thêm mitigation.
 # ============================================================
 
 import torch

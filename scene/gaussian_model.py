@@ -880,9 +880,8 @@ class GaussianModel:
 
         # ── [CRSGaussian T4.1] Position constraint — DISABLED ──
         # Tắt sau thực nghiệm: DAV2 depth prior noise → reject Gaussians
-        # hợp lệ → PSNR giảm 3 dB. Xem decisions_log 2026-04.
+        # hợp lệ → chất lượng giảm rõ rệt.
         # Depth loss + CRS pruning đủ kiểm soát floater.
-        # Code giữ lại để enable nếu cần (e.g. depth prior chính xác hơn).
         # if aligned_depth_dict is not None and cameras is not None and depth_range is not None:
         #     epsilon_depth = 0.05 * depth_range
         #     keep = _depth_constraint_mask(new_xyz, cameras, aligned_depth_dict, epsilon_depth)
@@ -929,7 +928,7 @@ class GaussianModel:
         new_rotation = self._rotation[selected_pts_mask]
 
         # ── [CRSGaussian T4.1] Position constraint — DISABLED ──
-        # Xem decisions_log 2026-04. DAV2 noise → reject hợp lệ → -3 dB.
+        # DAV2 noise → reject cả Gaussian hợp lệ.
         # if aligned_depth_dict is not None and cameras is not None and depth_range is not None:
         #     epsilon_depth = 0.05 * depth_range
         #     keep = _depth_constraint_mask(new_xyz, cameras, aligned_depth_dict, epsilon_depth)

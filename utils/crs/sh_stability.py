@@ -25,7 +25,6 @@ def update_sh_stability(gaussians, beta: float = 0.95):
         gaussians: GaussianModel với _features_rest [N, K_rest, 3].
         beta: EMA decay factor. Default 0.95 (chậm, smooth qua nhiều iter).
               Cao hơn → smoother nhưng phản ứng chậm hơn.
-              Ablate: {0.9, 0.95, 0.99}.
 
     Side effects:
         gaussians._sh_ema_mean: tensor cùng shape _features_rest, EMA mean.
@@ -64,7 +63,7 @@ def compute_S_stability(gaussians, scale: float = 1.0):
     Args:
         gaussians: GaussianModel.
         scale: multiplier trước sigmoid. Higher = sharper bimodal split.
-            Default 1.0. Ablate {0.5, 1.0, 2.0} nếu S range hẹp.
+            Default 1.0.
 
     Returns:
         S: (N, 1) tensor float32 GPU, range [0, 1].

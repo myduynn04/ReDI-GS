@@ -33,7 +33,6 @@ def apply_crs_modulated_sh_freeze(
         iter: current iteration. Skip nếu iter ≤ freeze_start.
         freeze_start: iter bắt đầu apply (default 1000 ≈ T_warmup CRS).
         tau_freeze: CRS threshold (< tau → freeze). Default 0.5.
-            Ablate: {0.3, 0.5, 0.7}.
     """
     # Skip iter sớm — CRS chưa stable, freeze theo CRS noise → hại.
     if iter <= freeze_start:

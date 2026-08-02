@@ -77,30 +77,14 @@ def seed_everything(seed):
 
 def training(dataset, opt, pipe, args):
     # implenmetation of more than 2 3d gaussian radiance fields currently is not supported in this code
-    assert args.gaussiansN >= 1 and args.gaussiansN <=2 
-    """
-    Update tên ngắn hơn để dễ dùng
-        testing_iterations    = args.test_iterations        # [500, 2000, ..., 10000]
-        saving_iterations     = args.save_iterations        # [10000]
-        checkpoint_iterations = args.checkpoint_iterations  # [10000]
-        checkpoint            = args.start_checkpoint       # None (không resume)
-        debug_from            = args.debug_from             # -1 (không debug)
-
-    """
+    assert args.gaussiansN >= 1 and args.gaussiansN <=2
     testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from = args.test_iterations, \
             args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from
-    
+
     first_iter = 0
-    tb_writer = prepare_output_and_logger(dataset)  #Thực tế không dùng
-    """
-    Khởi tạo object GaussianModel là object trung tâm của toàn bộ quá trình train — nó chứa:
-    Tham số học được (được optimize bằng Adam): xyz, SH coefficients, opacity, scale, rotation
-    Trạng thái phụ trợ (không optimize trực tiếp): CRS score, gradient accumulator cho densification, spawn iter
-    Các method để thao tác: densify_and_prune(), opacity_decay(), save_ply(), v.v.
-    Mọi thứ xảy ra trong vòng lặp train đều đọc hoặc ghi vào object này — render lấy tham số từ đây, loss backward cập nhật gradient vào đây, densification thêm/xóa Gaussian trong đây, CRS update score trong đây.
-    """
-    gaussians = GaussianModel(args) 
-    scene = Scene(args, gaussians, shuffle=False)  # Object xử lý dữ liệu đầu vào. Shuffle dùng để xáo ngẫu nhiên thứ tự cameras trước khi load nhưng bài mình không dùng
+    tb_writer = prepare_output_and_logger(dataset)
+    gaussians = GaussianModel(args)
+    scene = Scene(args, gaussians, shuffle=False)
     print(f"scene.bounds is {scene.bounds}")
     
     gaussians.training_setup(opt)
@@ -187,9 +171,6 @@ def training(dataset, opt, pipe, args):
               f"max_cov={n_views_total - 1}, "
               f"covisible_pixel_frac={cov_frac:.3f}")
 
-    # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed informed_crs_init gating block
-    # (was ~35 lines). Phase 20+24 N=24 cross-backbone verified WASH. _crs_score giữ neutral
-    # 0 (sigmoid=0.5) — was the default behavior khi informed_crs_init=False.
 
     # ── [CRSGaussian] Collect eval results cho summary table cuối training ──
     eval_history = []
@@ -393,37 +374,11 @@ def training(dataset, opt, pipe, args):
                 else:
                     LossDict[f"loss_gs{i}"] = loss_photometric(image_i, gt_image, opt=opt)
 
-        ## [CLEAN] 
-        # if not args.onlyrgb:
-        #     if iteration % args.sample_pseudo_interval == 0 and iteration <= args.end_sample_pseudo:
-        #         loss_scale = min((iteration - args.start_sample_pseudo) / 500., 1)
-        #         if not pseudo_stack_co:
-        #             pseudo_stack_co = scene.getPseudoCameras().copy()
-        #         pseudo_cam_co = pseudo_stack_co.pop(randint(0, len(pseudo_stack_co) - 1))
-
-        #         for i in range(args.gaussiansN):
-        #                 # [CRSGaussian Track B] Pseudo view: disable_dropout=True
-        #                 # (clean separation — pseudo_photo/depth loss dùng full-size render).
-        #                 RenderDict[f"render_pkg_pseudo_co_gs{i}"] = render(pseudo_cam_co, GsDict[f'gs{i}'], pipe, bg,
-        #                                                                   disable_dropout=True)
-        #                 RenderDict[f"image_pseudo_co_gs{i}"] = RenderDict[f"render_pkg_pseudo_co_gs{i}"]["render"]
-        #                 RenderDict[f"depth_pseudo_co_gs{i}"] = RenderDict[f"render_pkg_pseudo_co_gs{i}"]["depth"]
-        #         if iteration >= args.start_sample_pseudo:
-        #             ####################################################################
-        #             # co-reg
-        #             if args.coreg:
-        #                 # co photometric
-        #                 for i in range(args.gaussiansN):
-        #                     for j in range(args.gaussiansN):
-        #                         if i != j:
-        #                             LossDict[f"loss_gs{i}"] += loss_photometric(RenderDict[f"image_pseudo_co_gs{i}"], RenderDict[f"image_pseudo_co_gs{j}"].clone().detach(), opt=opt) / (args.gaussiansN - 1)
-        #TODO: Cài đặt hàm loss liên quan đến kéo thông tin vào gần những point tốt
 
         # ── [CRSGaussian T3.3] Fixed Pearson depth loss ──
         # Gated bởi --use_depth_prior: không ảnh hưởng baseline khi tắt.
         # Depth loss = correction: kéo Gaussians về đúng depth.
         # CRS = elimination: prune floater (Phase 4). Hai cơ chế tách biệt.
-        # lambda_base=0.05, ablate {0.01, 0.05, 0.10}
         if dataset.use_depth_prior and viewpoint_cam.uid in aligned_depth_dict:
             rendered_depth = RenderDict["depth_gs0"]              # (1,H,W) GPU
             depth_prior = aligned_depth_dict[viewpoint_cam.uid]   # (H,W) GPU
@@ -521,10 +476,6 @@ def training(dataset, opt, pipe, args):
             if iteration > first_iter and (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
-                ## [CLEAN]
-                # if args.gaussiansN == 2:
-                #     pcd_path = os.path.join(scene.model_path, "point_cloud_gs2/iteration_{}".format(iteration))
-                #     GsDict["gs1"].save_ply(os.path.join(pcd_path, "point_cloud.ply"))
 
             if iteration > first_iter and (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
@@ -557,8 +508,6 @@ def training(dataset, opt, pipe, args):
                     render_func=render,
                     pipe=pipe,
                     bg=background,
-                    # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed use_r_visible
-                    # + r_visible_occlusion_tolerance + r_visible_min_views params.
                     # ── [CRSGaussian Phase 8b] S_stability ──
                     use_sh_reliability=opt.use_sh_reliability,
                     sh_stability_warmup=opt.sh_stability_warmup,
@@ -684,9 +633,6 @@ def training(dataset, opt, pipe, args):
                     _pc_cams = allCameras if (dataset.use_depth_prior and opt.use_pos_constraint) else None
                     _pc_depth = aligned_depth_dict if (dataset.use_depth_prior and opt.use_pos_constraint) else None
                     _pc_range = depth_range if (dataset.use_depth_prior and opt.use_pos_constraint) else None
-                    # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed _crs_dict (use_crs_pruning gating)
-                    # and _eta (crs_densify_inherit gating). gaussian_model.densify_and_prune signature
-                    # defaults handle the absence (crs_prune_dict=None, eta=0.0).
 
                     # ── [CRSGaussian Phase 13] LFCF opts builder ──
                     # is_lfcf_iter = True khi (iter % (interval_times × densify_interval) == 0).
@@ -739,8 +685,6 @@ def training(dataset, opt, pipe, args):
                             T_warmup=opt.T_warmup,
                             tau_crs=opt.tau_crs,
                             tau_isolated=opt.tau_isolated,
-                            # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed
-                            # crs_prune_dict=_crs_dict + eta=_eta kwargs (defaults None/0.0).
                             # ── [Phase 13] LFCF kwargs (default OFF) ──
                             is_lfcf_iter=is_lfcf_iter_now,
                             lfcf_opts=lfcf_opts,
@@ -869,27 +813,6 @@ def training(dataset, opt, pipe, args):
                     print(f"reset opacity of gaussians-{i} at iteration {iteration}")
                     GsDict[f"gs{i}"].reset_opacity()
              
-            ## [CLEAN]       
-            # if args.coprune and iteration > opt.densify_from_iter and iteration % 500 == 0:
-            #     for i in range(args.gaussiansN):
-            #         for j in range(args.gaussiansN):
-            #             if i != j:
-            #                 source_cloud = o3d.geometry.PointCloud()
-            #                 source_cloud.points = o3d.utility.Vector3dVector(GsDict[f"gs{i}"].get_xyz.clone().cpu().numpy())
-            #                 target_cloud = o3d.geometry.PointCloud()
-            #                 target_cloud.points = o3d.utility.Vector3dVector(GsDict[f"gs{j}"].get_xyz.clone().cpu().numpy())
-            #                 trans_matrix = np.identity(4)
-            #                 threshold = args.coprune_threshold
-            #                 evaluation = o3d.pipelines.registration.evaluate_registration(source_cloud, target_cloud, threshold, trans_matrix)
-            #                 correspondence = np.array(evaluation.correspondence_set)
-            #                 mask_consistent = torch.zeros((GsDict[f"gs{i}"].get_xyz.shape[0], 1)).cuda()
-            #                 mask_consistent[correspondence[:, 0], :] = 1
-            #                 GsDict[f"indice_consistent_gs{i}to{j}"] = correspondence
-            #                 GsDict[f"mask_inconsistent_gs{i}"] = ~(mask_consistent.bool())
-            #     for i in range(args.gaussiansN):
-            #         GsDict[f"gs{i}"].prune_from_mask(GsDict[f"mask_inconsistent_gs{i}"].squeeze(), iter=iteration)
-                    
-                #TODO thêm cập nhật cfs_score
 
     # ── [CRSGaussian] Timing + stats summary ──
     train_elapsed = time.time() - train_start_time
@@ -1080,22 +1003,15 @@ if __name__ == "__main__":
     parser.add_argument('--debug_from', type=int, default=-1) #Bắt đầu bật chế độ debug từ vòng lặp số mấy. -1 = không debug.
     parser.add_argument('--detect_anomaly', action='store_true', default=False) # Bật chế độ dò lỗi tính toán (chạy chậm hơn). Mặc định tắt.
 
-    # parser.add_argument("--configs", type=str, default = "")
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[500, 2000, 3000, 5000, 7000, 10000, 15000, 30000])  # Số vòng lặp được chấm điểm 
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[10000, 30000])   # vòng lặp lưu kết quả .ply
     parser.add_argument("--quiet", action="store_true") #Dùng để tăt toàn bộ  mọi print() trong code , tắt log in ra màn hình terminal 
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[10_000]) # Tại vòng nào thì lưu checkpoint (để train tiếp sau này được).
     parser.add_argument("--start_checkpoint", type=str, default = None)
-    # parser.add_argument("--checkpoint2", type=str, default = None) # Không bật, Đã xóa Gốc lưu checkpoint cho model thứ 2 của Corgs
     parser.add_argument("--train_bg", action="store_true")  # Có train luôn cả phần nền (background) hay không. mặc định tắt khi 3 views
 
     parser.add_argument('--gaussiansN', type=int, default=1) #Không bật, số Gaussian field song song, base của CoRGS, của mình chạy theo 3dgs gốc thì là 1 field
 
-    # parser.add_argument("--onlyrgb", action='store_true', default=False) # Đã xóa, cần thêm lại trên code gốc Dùng để tắt cái nhánh pseudo-camera của corgs, Hiện tại set False nhưng tương lai set False sẽ tiết kiệm trainning time. Về mặt kết quả là không ảnh hưởng
-
-    # parser.add_argument("--coreg", action='store_true', default=False) #Không bật, đã xóa , Co-regularization giữa 2 Gaussian field.
-    # parser.add_argument("--coprune", action='store_true', default=False) #Không bật, đã xóa, Co-pruning giữa 2 field.
-    # parser.add_argument('--coprune_threshold', type=int, default=5) #Không bật, đã xóa, threshold cho cái trên
 
     parser.add_argument("--save_log_images", action="store_true") #Mỗi 100 iter, render một camera ngẫu nhiên và lưu ảnh debug dạng lưới 3×2
 
@@ -1126,16 +1042,6 @@ if __name__ == "__main__":
     File .ply này chứa toàn bộ tham số của các Gaussian tại iter đó: vị trí xyz, SH coefficients (màu sắc), opacity, scale, rotation. Đây là "mô hình đã train xong" dùng để render ảnh sau này.
     """
 
-    # if args.configs: # Load thêm hyper para từ YAML bằng mmcv 
-    #     """
-    #     Tức là quy trình của nó là default values -> CLI flags (nếu có) -> args (cái tổ hợp các flag ở trên) -> YAML override -> args cuối cùng để train
-    #     Vì nếu không truyền gì, arg sẽ chạy giá trị mặc định. để lệ
-    #     """
-    #     import mmcv
-    #     from utils.params_utils import merge_hparams
-    #     config = mmcv.Config.fromfile(args.configs)
-    #     args = merge_hparams(args, config)
-    #     print(f"merge configs from {args.configs}")
 
     print(args.test_iterations)
     print("Optimizing " + args.model_path)
@@ -1144,8 +1050,6 @@ if __name__ == "__main__":
     
 
     # Initialize system state (RNG)
-    ##[CLEAN]
-    # safe_state(args.quiet) # làm hai việc: 1. Thêm việc in log có thời gian 
     safe_state(args.quiet, seed=args.seed)
 
 

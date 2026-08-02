@@ -165,9 +165,6 @@ def compute_reprojection_consistency(
     cũng có SH color ổn định → không phân biệt được floater.
     GT color phản ánh scene thật tại pixel projected.
 
-    [CRSGaussian Phase 24 cleanup 2026-05-29] Removed use_r_visible mode
-    (Phase 8a visibility-aware aggregation). Phase 20+24 N=24 cross-backbone
-    verified WASH (Δ=+0.013 [−0.048, +0.081]). Frontmost-check code path removed.
 
     Args:
         xyz: (N, 3) Gaussian positions trên GPU.
@@ -229,8 +226,6 @@ def compute_reprojection_consistency(
         if valid.sum() == 0:
             continue
 
-        # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed [Phase 8a] frontmost
-        # (occlusion) check block. Phase 20+24 N=24 cross-backbone verified WASH.
 
         px = pixel_x[valid].long().clamp(0, W - 1)
         py = pixel_y[valid].long().clamp(0, H - 1)
@@ -294,7 +289,6 @@ def compute_reprojection_consistency(
 #   RC = opacity × max(screen-space radii cross views) × view coverage
 # Lưu ý proxy: KHÔNG capture true α·T accumulation (cần CUDA fork).
 # Phase A MVP dùng proxy này để test core hypothesis (L2 EMA + L3 α-couple).
-# Phase B (nếu MVP show signal): thay bằng true α·T từ rasterizer.
 # Được gọi từ: train.py qua compute_crs_rnrc() khi use_rnrc=True
 # ============================================================
 
@@ -435,9 +429,6 @@ def update_crs(
     render_func=None,
     pipe=None,
     bg=None,
-    # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed use_r_visible +
-    # r_visible_occlusion_tolerance + r_visible_min_views params (Phase 8a R_visible).
-    # Phase 20+24 N=24 cross-backbone verified WASH (Δ=+0.013 [−0.048, +0.081]).
     # ── [CRSGaussian Phase 8b] S_stability support ──
     use_sh_reliability: bool = False,
     sh_stability_warmup: int = 1000,
@@ -468,13 +459,10 @@ def update_crs(
         depth_range: float — normalization cho D_i.
         w1: weight cho D_i. Default 0.5.
         w2: weight cho R_i. Default 0.5.
-            Ablate: {0.5/0.5, 0.7/0.3, 0.3/0.7, 0.6/0.4, 0.4/0.6, 0.8/0.2, 0.2/0.8}
         scale: scale factor trước sigmoid. Default 5.0.
             Mở rộng CRS range: logit ∈ [-scale/2, scale/2].
-            Ablate: {3.0, 5.0, 8.0}
         ema: EMA decay. Default 0.9.
             Cao hơn → smooth hơn, phản ứng chậm hơn.
-            Ablate: {0.8, 0.9, 0.95}
         use_d_cycle: [Tier 2-min] Replace D_DAV2 với D_cycle (cycle-depth
             consistency, no DAV2 dependency). Default False (backward compat).
         iter: current training iteration. Cần cho d_cycle_warmup gating
@@ -496,8 +484,6 @@ def update_crs(
     need_r_compute = not disable_r_signal
 
     # ── [CRSGaussian Phase 8] Pre-render depth maps (D_cycle only sau Phase 24 cleanup) ──
-    # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed R_visible branch — chỉ
-    # D_cycle còn cần shared_depth_maps. R compute không cần rendered depths nữa.
     shared_depth_maps = None
     need_depth_render = (
         use_d_cycle and iter >= d_cycle_warmup
@@ -546,8 +532,6 @@ def update_crs(
 
     # ── [CRSGaussian Phase 9] R signal: enabled / disabled ──
     # disable_r_signal=True (Phase 9) → R=None, formula bỏ qua R hoàn toàn.
-    # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed use_r_visible branch —
-    # compute_reprojection_consistency() now has no occlusion filter mode.
     if need_r_compute:
         R = compute_reprojection_consistency(xyz, cameras)
     else:

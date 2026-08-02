@@ -91,10 +91,6 @@ class ModelParams(ParamGroup):
         self.use_depth_prior = False
         self.dav2_path = "../Depth-Anything-V2"
         self.dav2_encoder = "vitl"
-        # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed informed_crs_init + 10 sub-flags
-        # (crs_init_use_reproj/depth/view, crs_init_w_*, crs_init_tau_r/gamma/eta, crs_densify_inherit).
-        # Phase 20 TRIM verified WASH on MVS N=24; Phase 24 verified WASH on RoMa v1 N=24
-        # (Δ=−0.013 [−0.081, +0.054]). Cross-backbone safe to remove.
         # ── [CRSGaussian Phase 2c] Opacity decay (inspired by Binocular3DGS) ──
         # Multiply opacity mỗi iter để tạo continuous pressure → zombie
         # Gaussian giảm opacity dần → bị CRS/legacy pruning loại tự nhiên.
@@ -131,11 +127,7 @@ class ModelParams(ParamGroup):
         # DSINE-normal precompute (scripts/p17_c1_preprocess_dsine.py →
         # <source_path>/c1_normal_dir/<stem>.npy). HONEST: C1a là
         # adaptation (dn-splatter detach depth + supervise CUDA C1b);
-        # chi tiết + pre-registered prediction: utils/loss/c1_normal.py.
-        # Default OFF → A3/Phase-13 byte-identical (Quy tắc 11; verify
-        # flag-OFF == A3 bằng N-criterion). λ chính PRE-REGISTERED = 0.10
-        # (dn-splatter default) DUY NHẤT quyết GO/NO; {0.05,0.20} =
-        # sensitivity-only, KHÔNG lật verdict (decisions_log Phase-17).
+        # Default OFF → không ảnh hưởng recipe production.
         self.use_c1_normal       = False     # master switch
         self.c1_normal_lambda    = 0.10      # primary pre-registered λ
         self.c1_normal_start_iter = 0        # iter bắt đầu áp loss
@@ -225,17 +217,14 @@ class OptimizationParams(ParamGroup):
         self.random_background = False
         self.absdensify = False
         # ── [CRSGaussian T4.2] CRS pruning params ──
-        self.T_warmup = 1000        # iter bắt đầu CRS active. Ablate: {500, 1000, 2000}
-        self.tau_crs = 0.35         # ngưỡng CRS để prune. Ablate: {0.25, 0.35, 0.45}
+        self.T_warmup = 1000        # iter bắt đầu CRS active
+        self.tau_crs = 0.35         # ngưỡng CRS để prune
         self.tau_densify = 0.45     # ngưỡng CRS để chặn densify (Phase 4 future)
-        self.tau_isolated = 0.1     # ngưỡng isolation (× scene_extent). Ablate: {0.05, 0.10, 0.20}
+        self.tau_isolated = 0.1     # ngưỡng isolation (× scene_extent)
         self.use_pos_constraint = False  # [debug] bật/tắt position constraint (T4.1)
-        # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed use_crs_pruning.
-        # Phase 20 TRIM verified WASH on MVS N=24; Phase 24 verified WASH on RoMa v1 N=24
-        # (Δ=+0.014 [−0.065, +0.086]). Cross-backbone safe to remove.
         # ── [CRSGaussian] CRS update hyperparameters ──
-        self.crs_ema_decay = 0.9         # EMA decay cho CRS update. Ablate: {0.5, 0.7, 0.9}
-        self.crs_update_interval = 100   # Mỗi bao nhiêu iter update CRS. Ablate: {25, 50, 100}
+        self.crs_ema_decay = 0.9         # EMA decay cho CRS update
+        self.crs_update_interval = 100   # Mỗi bao nhiêu iter update CRS
         # ── [CRSGaussian Hướng D MVP] Render-Native Reliability Coupling ──
         # 3-layer RNRC fix:
         #   L1 (RC): proxy RC từ render (opacity × max_radii × coverage) — MVP dùng proxy.
@@ -259,7 +248,6 @@ class OptimizationParams(ParamGroup):
         # Default 0 → KHÔNG freeze (behavior cũ). > 0 → freeze tại iter này.
         # Dùng để test H4: "SH overfit memorize training views là nguyên nhân
         # chính của train-test gap 16dB".
-        # Ablate: {0, 3000, 5000, 7000}
         self.freeze_sh_after = 0
 
         # ── [CRSGaussian DIAG A2] Freeze chỉ DC (f_dc), f_rest tự do ──
@@ -277,17 +265,13 @@ class OptimizationParams(ParamGroup):
         # Layer 1 — Signal upgrade (D_cycle replace D_DAV2)
         self.use_d_cycle         = False    # master switch: thay D_DAV2 bằng D_cycle
         self.d_cycle_warmup      = 1000     # iters đầu vẫn dùng D_DAV2 (scene chưa converge)
-        self.d_cycle_sigma       = 5.0      # cycle error normalization (pixels). Ablate {3,5,8}
+        self.d_cycle_sigma       = 5.0      # cycle error normalization (pixels)
         self.d_cycle_update_freq = 100      # mỗi N iter compute D_cycle (cache giữa các update)
         # Layer 2 — Mechanism upgrade (per-pixel loss reweighter)
         self.use_loss_reweight   = False    # master switch: weight L_recon bằng CRS_pix
-        self.lossw_gamma         = 0.5      # w(p) ∈ [γ, 1] khi CRS_pix ∈ [0, 1]. Ablate {0.3,0.5,0.7}
+        self.lossw_gamma         = 0.5      # w(p) ∈ [γ, 1] khi CRS_pix ∈ [0, 1]
         self.lossw_render_freq   = 100      # mỗi N iter re-render CRS map (cache giữa các update)
 
-        # [CRSGaussian Phase 24 cleanup 2026-05-29] Removed use_r_visible + 2 sub-flags
-        # (r_visible_occlusion_tolerance, r_visible_min_views). Phase 20 TRIM verified WASH
-        # on MVS N=24; Phase 24 verified WASH on RoMa v1 N=24 (Δ=+0.013 [−0.048, +0.081]).
-        # Cross-backbone safe to remove. R_visible code path stripped from crs_module.py.
 
         # ── [CRSGaussian Phase 8b] S_stability — SH coefficient stability ──
         # Track features_rest variance qua EMA → detect SH drift (memorize vs stable).
@@ -302,7 +286,7 @@ class OptimizationParams(ParamGroup):
         # Per-Gaussian thay thế global freeze_sh_after. CRS thấp → freeze SH grad.
         # Default OFF (giữ behavior cũ với freeze_sh_after).
         self.use_crs_modulated_sh_freeze = False
-        self.crs_freeze_tau              = 0.5    # CRS < tau → zero _features_rest grad
+        self.crs_freeze_tau              = 0.65   # [Phase 28] tuned default (was 0.5); CRS < tau → zero _features_rest grad
         self.crs_freeze_start            = 1000   # iter bắt đầu apply selective freeze
 
         # ── [CRSGaussian Phase 9] D-only formula + cross-backbone test ──
