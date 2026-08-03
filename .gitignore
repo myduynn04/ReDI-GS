@@ -28,6 +28,7 @@ thesis/*
 
 docs/
 thesis.zip
+PGNV.md
 
 # Backup file trước mỗi đợt cleanup — giữ trên đĩa, không đưa vào git.
 *.pre_*
