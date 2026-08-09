@@ -320,7 +320,7 @@ class GaussianModel:
             self.active_sh_degree += 1
     
     def create_from_pcd(self, pcd: BasicPointCloud, spatial_lr_scale: float,
-                         informed_crs0=None):
+                         informed_crs0=None, q_init=None):
         """Khởi tạo Gaussians từ COLMAP point cloud.
 
         Args:
@@ -384,6 +384,25 @@ class GaussianModel:
             self._crs_score = informed_crs0.unsqueeze(-1).to("cuda")
         else:
             self._crs_score = torch.zeros((fused_point_cloud.shape[0], 1), device="cuda")
+        # ── [CRSGaussian P37 H1] Q_init — độ tin cậy vị trí 3D từ triangulation ──
+        # Buffer TĨNH, KHÔNG phải nn.Parameter, KHÔNG vào optimizer.
+        # Cùng khuôn với spawn_iter: đi qua prune/densify nhưng không được học.
+        # None khi use_roma_qinit=False → mọi chỗ dùng đều có guard → behavior
+        # giống hệt trước khi có Phase 37.
+        # Lưu _q_init_mean để điền cho Gaussian con (xem densification_postfix).
+        if q_init is not None:
+            if q_init.shape[0] != fused_point_cloud.shape[0]:
+                raise ValueError(
+                    f"[P37] q_init lệch chiều dài: {q_init.shape[0]} vs "
+                    f"point cloud {fused_point_cloud.shape[0]}"
+                )
+            self._q_init = q_init.reshape(-1, 1).float().to("cuda")
+            self._q_init_mean = float(self._q_init.mean().item())
+            print(f"[P37] Q_init loaded: N={self._q_init.shape[0]} "
+                  f"mean={self._q_init_mean:.4f} std={self._q_init.std().item():.4f}")
+        else:
+            self._q_init = None
+            self._q_init_mean = 0.5
         # ── [CRSGaussian Hướng D MVP] Spawn iter tracking ──
         # Per-Gaussian "creation iter" để compute age trong rnrc warmup logic.
         # Init Gaussians (từ COLMAP point cloud) → spawn_iter=0.
@@ -676,6 +695,13 @@ class GaussianModel:
             self.confidence = self.confidence[valid_points_mask]
             # ── [CRSGaussian T2.2] Prune CRS cùng với Gaussian ──
             self._crs_score = self._crs_score[valid_points_mask]
+            # ── [CRSGaussian P37 H1] Prune Q_init cùng Gaussian ──
+            # Guard 2 lớp: buffer tồn tại VÀ shape khớp mask. Không khớp thì bỏ
+            # qua im lặng là SAI — nhưng ở đây shape luôn khớp vì buffer được
+            # tạo cùng lúc với _crs_score và đi qua đúng những chỗ này.
+            if getattr(self, "_q_init", None) is not None \
+                    and self._q_init.shape[0] == valid_points_mask.shape[0]:
+                self._q_init = self._q_init[valid_points_mask]
             # ── [CRSGaussian Hướng D MVP] Prune spawn_iter + _rc_smooth + _crs_rnrc ──
             if hasattr(self, "spawn_iter") and self.spawn_iter.shape[0] == valid_points_mask.shape[0]:
                 self.spawn_iter = self.spawn_iter[valid_points_mask]
@@ -782,6 +808,26 @@ class GaussianModel:
             # Behavior cũ: neutral logit=0 → sigmoid=0.5
             new_crs = torch.zeros((new_xyz.shape[0], 1), device="cuda")
         self._crs_score = torch.cat([self._crs_score, new_crs], dim=0)
+        # ── [CRSGaussian P37 H1] Append Q_init cho Gaussians mới ──
+        # Gaussian con nhận TRUNG BÌNH toàn cục của Q_init lúc khởi tạo.
+        # Sau khi center_q trừ trung bình, giá trị này thành ~0 → con KHÔNG
+        # được thưởng cũng KHÔNG bị phạt. Trung tính đúng nghĩa.
+        #
+        # ⚠ ĐÂY LÀ LỰA CHỌN CÓ CHỦ Ý CHO S2 (LOG-ONLY), KHÔNG PHẢI luật cuối.
+        #   Ngữ nghĩa đúng hơn là KẾ THỪA — con của một điểm triangulate tồi
+        #   cũng đứng sai chỗ (clone copy vị trí, split lấy mẫu quanh đó).
+        #   Nhưng kế thừa cần truyền parent index qua 3-4 chỗ gọi
+        #   densification_postfix (split / clone / LFCF) = đụng nhiều code
+        #   production. HOÃN tới S3, và chỉ làm nếu S2 chứng minh tín hiệu đáng.
+        #
+        #   Gaussian gốc vẫn phân biệt được bằng spawn_iter == 0 (đã có sẵn),
+        #   nên S2 đo tương quan trên đúng tập mang tín hiệu — không cần
+        #   bookkeeping mới.
+        if getattr(self, "_q_init", None) is not None:
+            fill = float(getattr(self, "_q_init_mean", 0.5))
+            new_q = torch.full((new_xyz.shape[0], 1), fill,
+                               device="cuda", dtype=self._q_init.dtype)
+            self._q_init = torch.cat([self._q_init, new_q], dim=0)
         # ── [CRSGaussian Hướng D MVP] Append spawn_iter cho Gaussians mới ──
         # Read iter từ instance attr set bởi densify_and_prune. Default 0 nếu chưa set
         # (e.g. proximity() hoặc init path).

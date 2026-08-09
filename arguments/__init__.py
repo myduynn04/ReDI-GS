@@ -98,6 +98,19 @@ class ModelParams(ParamGroup):
         self.use_opacity_decay           = False   # master switch
         self.opacity_decay_factor        = 0.995   # multiply per iter
         self.opacity_decay_extend_densify = False  # extend densify_until_iter = iterations
+        # ── [CRSGaussian Phase 37 H1] Q_init từ RoMa — CỜ NẠP DỮ LIỆU ──
+        # Đặt ở ModelParams vì Scene.__init__ chỉ nhận ModelParams, và đây là
+        # chuyện NẠP dữ liệu. Cờ SỬ DỤNG (w_Q, center, log) nằm ở
+        # OptimizationParams vì update_crs nhận `opt`.
+        #
+        # Cần sidecar <data>/<scene>/<n>_views/dense/fused.romav1.qinit.npz,
+        # VÀ fused.ply đang dùng phải là bản sinh cùng lượt (romav1_p37) —
+        # lệch chiều dài thì Scene raise chứ không chạy tiếp. Xem docs/37.
+        #
+        # S1 8/8 scene: certainty BÃO HOÀ (p05 = 1.000 mọi scene) → w_cert = 0.
+        self.use_roma_qinit = False   # master switch
+        self.qinit_w_cert   = 0.0     # trọng số certainty — S1 chứng minh vô dụng
+        self.qinit_w_reproj = 1.0     # trọng số reprojection quality
         # ── [CRSGaussian Tier A] Formula-level diagnostics ──
         # Bật dump D_i, R_i, CRS distributions + 2 test bổ sung (synthetic
         # floater discrimination + occlusion contamination) để diagnose
@@ -296,6 +309,17 @@ class OptimizationParams(ParamGroup):
         # Default OFF (giữ Phase 8 behavior).
         self.disable_r_signal             = False    # True → w_r=0, skip R compute (D-only formula)
         self.disable_global_sh_freeze     = False    # True → bypass freeze_sh_after, dùng CRS-mod freeze thay
+
+        # ── [CRSGaussian Phase 37 H1] Q_init — CỜ SỬ DỤNG ──
+        # Cờ NẠP (use_roma_qinit / qinit_w_cert / qinit_w_reproj) ở ModelParams.
+        # Đây là cờ điều khiển việc Q_init tác động vào logit CRS thế nào.
+        #
+        # qinit_w_in_crs = 0.0 → buffer VẪN đi qua prune/densify và VẪN được
+        # dump ra q_init.npz, nhưng KHÔNG đụng logit → LOG-ONLY, chế độ của S2
+        # (docs/37 §13.6). S3 mới bật lên 0.25.
+        self.qinit_w_in_crs     = 0.0      # w_Q. 0 = LOG-ONLY
+        self.qinit_center       = True     # trừ trung bình trước khi cộng — CHỐNG CONFOUND
+        self.qinit_log_interval = 500      # log phân phối + tỉ lệ freeze mỗi N iter (0 = tắt)
 
         # ── [CRSGaussian Phase 13] LFCF densification (EFA-GS port) ──
         # Replace standard clone/split với tolerance-based decision +

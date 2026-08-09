@@ -154,7 +154,35 @@ class Scene:
         else:
             # Train mới: khởi tạo Gaussians từ point cloud init (fused.ply = MVS hoặc RoMa v1).
             # Mỗi điểm trong point cloud → 1 Gaussian với vị trí, màu, opacity, scale, rotation ban đầu.
-            self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
+            # ── [CRSGaussian P37 H1] Nạp Q_init từ sidecar RoMa (nếu bật) ──
+            # Sidecar do scripts/p37_romav1_preprocess_qinit.py sinh ra, nằm cạnh
+            # fused.ply. Chỉ số của nó khớp TỪNG PHẦN TỬ với vertex của
+            # fused.ply.romav1_p37 — nên fused.ply đang dùng PHẢI là bản đó.
+            #
+            # Cố ý KHÔNG nuốt lỗi: thiếu file hoặc lệch chiều dài → raise.
+            # Lệch index mà chạy tiếp thì mọi kết quả sau đó sai âm thầm, đó là
+            # loại lỗi khó phát hiện nhất. Thà dừng ngay.
+            q_init_t = None
+            if getattr(args, "use_roma_qinit", False):
+                from utils.crs.qinit_roma import find_qinit_sidecar, load_q_init, to_gpu_buffer
+                sc = find_qinit_sidecar(args.source_path, args.n_views)
+                if sc is None:
+                    raise FileNotFoundError(
+                        f"[P37] use_roma_qinit=True nhưng không thấy sidecar tại "
+                        f"{args.source_path}/{args.n_views}_views/dense/fused.romav1.qinit.npz\n"
+                        f"  → chạy scripts/p37_romav1_preprocess_qinit.py trước."
+                    )
+                q_np = load_q_init(
+                    sc,
+                    w_cert=getattr(args, "qinit_w_cert", 0.0),
+                    w_reproj=getattr(args, "qinit_w_reproj", 1.0),
+                    expect_n=len(scene_info.point_cloud.points),
+                )
+                q_init_t = to_gpu_buffer(q_np)
+                print(f"[P37] Q_init sidecar: {sc}")
+
+            self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent,
+                                            q_init=q_init_t)
             self.init_point_cloud = scene_info.point_cloud # Lưu lại point cloud ban đầu để có thể phân tích sau này
 
     def save(self, iteration):
@@ -162,6 +190,20 @@ class Scene:
         # Được gọi khi iteration nằm trong saving_iterations (mặc định iter 10000).
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
         self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
+        # ── [CRSGaussian P37 H1] Dump Q_init + spawn_iter cạnh ply ──
+        # KHÔNG nhét vào capture()/restore() — hai hàm đó unpack đúng 13 trường,
+        # thêm trường sẽ phá mọi checkpoint cũ. File .npz riêng an toàn hơn.
+        # S2 cần cả hai: q_init để đo tương quan, spawn_iter để lọc Gaussian
+        # gốc (spawn_iter == 0) khỏi con cháu (được điền giá trị trung tính).
+        q = getattr(self.gaussians, "_q_init", None)
+        if q is not None:
+            sp = getattr(self.gaussians, "spawn_iter", None)
+            np.savez_compressed(
+                os.path.join(point_cloud_path, "q_init.npz"),
+                q_init=q.detach().cpu().numpy().reshape(-1),
+                spawn_iter=(sp.detach().cpu().numpy().reshape(-1)
+                            if sp is not None else np.zeros(q.shape[0], dtype=np.int32)),
+            )
 
     def getTrainCameras(self, scale=1.0):
         # Trả về list training cameras ở resolution scale cho trước

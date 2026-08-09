@@ -515,6 +515,9 @@ def training(dataset, opt, pipe, args):
                     crs_w_s=opt.crs_w_s,
                     # ── [CRSGaussian Phase 9] D-only formula ──
                     disable_r_signal=opt.disable_r_signal,
+                    # ── [CRSGaussian P37 H1] Q_init term (0.0 = LOG-ONLY, no-op) ──
+                    qinit_w_q=getattr(opt, "qinit_w_in_crs", 0.0),
+                    qinit_center=getattr(opt, "qinit_center", True),
                 )
                 crs_update_time_total += time.time() - _t0
                 # Log CRS distribution
@@ -528,6 +531,30 @@ def training(dataset, opt, pipe, args):
                           f"max={crs_vals.max():.4f} | "
                           f"<0.35={( crs_vals < 0.35).sum().item()} | "
                           f">0.65={(crs_vals > 0.65).sum().item()}")
+
+                # ── [CRSGaussian P37 H1] Log Q_init + TỈ LỆ FREEZE ──
+                # Tỉ lệ freeze là số PHẢI có: center_q chỉ giữ tỉ lệ ĐÚNG XẤP XỈ
+                # (phân phối CRS không đối xứng). Không log thì không kiểm chứng
+                # được confound đã bị khử hay chưa — xem docs/37 §13.3.
+                # Cũng log std của Q_init trên Gaussian GỐC (spawn_iter==0) vs
+                # TOÀN BỘ, để trả lời §13.7c "tín hiệu có sống qua densify không".
+                _qi = getattr(gaussians, "_q_init", None)
+                _log_iv = getattr(opt, "qinit_log_interval", 0)
+                if _qi is not None and _log_iv > 0 and iteration % _log_iv == 0:
+                    _tau = getattr(opt, "crs_freeze_tau", 0.65)
+                    _frz = float((crs_vals < _tau).float().mean().item())
+                    _sp = getattr(gaussians, "spawn_iter", None)
+                    _q_all = _qi.float().flatten()
+                    if _sp is not None and _sp.shape[0] == _q_all.shape[0]:
+                        _orig = _q_all[_sp == 0]
+                        _frac_orig = _orig.numel() / max(_q_all.numel(), 1)
+                    else:
+                        _orig, _frac_orig = _q_all, 1.0
+                    print(f"[P37] iter={iteration} w_Q={getattr(opt,'qinit_w_in_crs',0.0)} | "
+                          f"freeze_frac(CRS<{_tau})={_frz:.4f} | "
+                          f"q_all mean={_q_all.mean():.4f} std={_q_all.std():.4f} | "
+                          f"q_orig(spawn=0) n={_orig.numel()} ({_frac_orig:.1%}) "
+                          f"std={_orig.std():.4f}")
 
                 # ── [CRSGaussian Tier 2-min] Logging — D_cycle + Loss reweighter stats ──
                 # Print compact line mỗi 1000 iter khi flag bật. Giúp debug

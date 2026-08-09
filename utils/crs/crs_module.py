@@ -436,6 +436,10 @@ def update_crs(
     crs_w_s: float = 0.33,
     # ── [CRSGaussian Phase 9] D-only formula support ──
     disable_r_signal: bool = False,
+    # ── [CRSGaussian Phase 37 H1] Q_init từ RoMa triangulation ──
+    # qinit_w_q = 0.0 → term = 0 → LOG-ONLY, logit KHÔNG đổi (chế độ S2).
+    qinit_w_q: float = 0.0,
+    qinit_center: bool = True,
 ) -> None:
     """Tính D_i, R_i rồi update gaussians._crs_score in-place bằng EMA.
 
@@ -571,6 +575,28 @@ def update_crs(
     # Scale mở rộng range: floater (score≈0.1) → logit≈-2.0 → CRS≈0.12
     #                       surface (score≈0.9)  → logit≈2.0  → CRS≈0.88
     crs_logit = scale * (score - 0.5)  # (N, 1)
+
+    # ── [CRSGaussian P37 H1] Cộng số hạng Q_init ──
+    # Q_init = độ tin cậy vị trí 3D suy từ sai số reprojection của chính phép
+    # triangulate đã dựng ra điểm đó (RoMa tính rồi vứt — xem docs/37).
+    #
+    # 🔴 PHẢI CENTER TRƯỚC KHI CỘNG. Cộng thẳng một số hạng dương làm DỊCH CẢ
+    #    phân phối CRS → ở tau=0.65 cố định thì TỈ LỆ Gaussian bị freeze SH
+    #    thay đổi → ΔPSNR đo được trộn "tín hiệu xếp hạng tốt hơn" với "số
+    #    Gaussian bị freeze khác đi". Trừ trung bình giữ nguyên thứ hạng và
+    #    giữ trung bình logit → cô lập đúng thứ cần đo.
+    #    (Chỉ "xấp xỉ" giữ tỉ lệ vì phân phối không đối xứng → train.py vẫn
+    #     phải LOG tỉ lệ freeze ở cả hai nhánh để kiểm chứng.)
+    #
+    # qinit_w_q = 0.0 → qinit_logit_term trả 0.0 → no-op hoàn toàn.
+    q_buf = getattr(gaussians, "_q_init", None)
+    if q_buf is not None and qinit_w_q != 0.0:
+        from utils.crs.qinit_roma import qinit_logit_term
+        # Nhân scale để w_Q cùng thang đo với w_D/w_R/w_S (chúng đều đi qua
+        # `scale * (... - 0.5)`), tránh việc w_Q=0.25 có ý nghĩa khác hẳn 3 cái kia.
+        crs_logit = crs_logit + scale * qinit_logit_term(
+            q_buf, qinit_w_q, center=qinit_center
+        )
 
     # ── EMA update trên logit space ──
     # Lần đầu gọi: _crs_score = 0 (init từ T2.2), EMA sẽ kéo về
