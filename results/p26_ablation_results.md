@@ -10,10 +10,6 @@ Bug đã fix trước khi có bất kỳ kết quả nào ở dưới: `train.py
 đúng `dataset.opacity_decay_freq_modulate` (ModelParams) — khiến mọi lần train
 trước đó crash tại iteration ~500.
 
-Quy ước đọc bảng trong toàn bộ file: `PSNR↑ SSIM↑` càng cao càng tốt, `LPIPS↓`
-càng thấp càng tốt, cột "Chênh lệch" luôn là (config − `trim_full`), dấu `+`
-nghĩa là tốt hơn baseline.
-
 ## 0. A1 / C1 / A2 là gì?
 
 Cả 3 module đều là extension thêm vào CRS module (Confidence/Reliability Score)
