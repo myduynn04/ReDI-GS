@@ -283,8 +283,15 @@ class GaussianModel:
     # Được gọi từ: train.py sau optimizer.step(), mỗi iter sau densify_from_iter
     # ============================================================
     def opacity_decay(self, factor: float = 0.995):
-        """[CRSGaussian Phase 2c] Multiply activated opacity by factor → logit."""
+        """[CRSGaussian Phase 2c] Multiply activated opacity by factor → logit.
+
+        [Phase 26 C1] factor có thể là scalar (behavior cũ, uniform) hoặc
+        (N,1)/(N,) tensor per-Gaussian (density-frequency-modulated decay —
+        vùng tần số cao decay chậm hơn để tránh xoá chi tiết mịn quá sớm).
+        """
         with torch.no_grad():
+            if torch.is_tensor(factor):
+                factor = factor.reshape(-1, 1)  # (N,1) broadcast với get_opacity
             # Activate → multiply → clamp min để tránh inverse_sigmoid(0) = -inf
             opacity = self.get_opacity * factor
             opacity = opacity.clamp(min=1e-6)

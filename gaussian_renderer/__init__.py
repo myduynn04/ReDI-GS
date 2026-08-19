@@ -86,11 +86,28 @@ def render(viewpoint_camera, pc, pipe, bg_color : torch.Tensor, scaling_modifier
             from utils.regularizer.dropansh import (
                 anchor_dropout_mask, sh_degree_dropout
             )
+            # ── [CRSGaussian Phase 26 C1] Density-as-frequency p_sh modulation ──
+            # Thay p_sh scalar (đều tay mọi Gaussian) bằng per-Gaussian array
+            # điều biến theo mật độ+scale cục bộ. Default OFF → p_sh scalar
+            # như cũ (byte-identical baseline).
+            _dropansh_psh = getattr(pipe, "dropansh_psh", 0.2)
+            if getattr(pipe, "use_density_freq_modulate", False):
+                from utils.regularizer.density_freq_modulate import (
+                    compute_frequency_signal, modulate_probability
+                )
+                _freq = compute_frequency_signal(
+                    pc, method=getattr(pipe, "density_freq_method", "voxel"),
+                )
+                _dropansh_psh = modulate_probability(
+                    _dropansh_psh, _freq,
+                    strength=getattr(pipe, "density_freq_strength", 1.0),
+                    min_prob_ratio=getattr(pipe, "density_freq_min_ratio", 0.0),
+                )
             # SH degree dropout: modify _features_rest IN-PLACE → lưu snapshot.
             dropansh_snapshot = sh_degree_dropout(
                 pc,
                 iteration=getattr(pipe, "current_iter", 0),
-                p_sh=getattr(pipe, "dropansh_psh", 0.2),
+                p_sh=_dropansh_psh,
                 schedule=(
                     getattr(pipe, "dropansh_sched0", 2000),
                     getattr(pipe, "dropansh_sched1", 4000),

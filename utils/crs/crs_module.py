@@ -105,9 +105,12 @@ def compute_depth_consistency(
         py = pixel_y[valid].long().clamp(0, H - 1)
 
         # ── Depth prior lookup ──
-        # aligned_depth_dict lưu GPU tensors (moved tại depth_alignment.py).
-        depth_prior_map = aligned_depth_dict[cam.uid]  # (H, W) GPU
-        d_prior = depth_prior_map[py, px]  # (M,)
+        # aligned_depth_dict lưu CPU tensors (đúng docstring hàm này) — index
+        # bằng CUDA indices vào CPU tensor sẽ lỗi "indices should be either
+        # on cpu or on the same device". Đưa px/py về CPU để index, rồi đưa
+        # kết quả (M,) nhỏ về lại device gốc để cộng với d_proj (GPU).
+        depth_prior_map = aligned_depth_dict[cam.uid]  # (H, W) CPU
+        d_prior = depth_prior_map[py.cpu(), px.cpu()].to(device)  # (M,)
 
         # Depth projected của Gaussians visible
         d_proj = depth[valid]  # (M,)
@@ -436,6 +439,10 @@ def update_crs(
     crs_w_s: float = 0.33,
     # ── [CRSGaussian Phase 9] D-only formula support ──
     disable_r_signal: bool = False,
+    # ── [CRSGaussian Phase 26 A1] V_stability support ──
+    use_v_stability: bool = False,
+    v_stability_warmup: int = 1000,
+    crs_w_v: float = 0.33,
 ) -> None:
     """Tính D_i, R_i rồi update gaussians._crs_score in-place bằng EMA.
 
@@ -475,6 +482,10 @@ def update_crs(
             overhead xuống ~1/N của brute-force compute mỗi iter.
         render_func, pipe, bg: cần khi use_d_cycle=True để render depth maps.
             None khi flag OFF — không ảnh hưởng baseline.
+        use_v_stability: [Phase 26 A1] Thêm V_stability (geometric drift)
+            làm signal thứ 4. Default False (backward compat).
+        v_stability_warmup: iters đầu skip (chưa đủ EMA samples). Default 1000.
+        crs_w_v: weight w_v; lấy từ phần weight còn lại (giống w_s).
     """
     xyz = gaussians.get_xyz  # (N, 3) GPU
 
@@ -546,25 +557,50 @@ def update_crs(
         from utils.crs.sh_stability import compute_S_stability
         S = compute_S_stability(gaussians, scale=1.0)  # (N, 1)
 
-    # ── [CRSGaussian Phase 8 + 9] Multi-component CRS formula ──
-    # Auto-normalize weights theo components active:
-    #   D + R + S   (Phase 8 FULL) : w_dr=(1-w_s)/2 each, w_s = crs_w_s
-    #   D + R       (Phase 5/7)    : w1·D + w2·R                 (legacy 2-component)
-    #   D + S       (Phase 9 NoR+S): w_d=(1-w_s),     w_s = crs_w_s
-    #   D only      (Phase 9 NoR)  : score = D directly
+    # ── [CRSGaussian Phase 26 A1] V signal: geometric stability (optional 4th dim) ──
+    # Đối xứng với S (SH drift) nhưng theo dõi drift hình học (xyz/scaling/
+    # rotation) — phát hiện Gaussian đang méo/trôi dạt để "diễn" màu qua SH
+    # thay vì tách Gaussian. update_v_stability gọi từ train.py cùng nhịp
+    # update_sh_stability; ở đây chỉ READ.
+    V = None
+    if use_v_stability and iter >= v_stability_warmup:
+        from utils.crs.v_stability import compute_V_stability
+        V = compute_V_stability(gaussians)  # (N, 1)
+
+    # ── [CRSGaussian Phase 8+9+26] Multi-component CRS formula (generalized) ──
+    # Weighted sum trên các signal đang active, tự normalize theo tổng weight
+    # thực tế active (giữ backward-compat byte-identical khi V=None):
+    #   D luôn active, weight cơ sở = w1 (2-comp) hoặc phần còn lại sau khi
+    #   trừ w_s (S active) — giữ đúng logic legacy Phase 8/9 khi V=None.
+    #   V active thêm weight crs_w_v, lấy từ phần còn lại cùng cách S lấy w_s.
     if R is not None and S is not None:
         w_s = crs_w_s
-        w_dr = (1.0 - w_s) / 2.0
+        w_v = crs_w_v if V is not None else 0.0
+        w_dr = (1.0 - w_s - w_v) / 2.0
         score = w_dr * D + w_dr * R + w_s * S
+        if V is not None:
+            score = score + w_v * V
     elif R is not None and S is None:
-        score = w1 * D + w2 * R
+        if V is not None:
+            w_v = crs_w_v
+            w_dr_sum = 1.0 - w_v
+            score = w_dr_sum * (w1 * D + w2 * R) + w_v * V
+        else:
+            score = w1 * D + w2 * R
     elif R is None and S is not None:
         w_s = crs_w_s
-        w_d = 1.0 - w_s
+        w_v = crs_w_v if V is not None else 0.0
+        w_d = 1.0 - w_s - w_v
         score = w_d * D + w_s * S
+        if V is not None:
+            score = score + w_v * V
     else:
-        # D-only formula — Phase 9 D_ONLY_* configs.
-        score = D
+        # D-only base (Phase 9 D_ONLY_* configs), + V nếu bật.
+        if V is not None:
+            w_v = crs_w_v
+            score = (1.0 - w_v) * D + w_v * V
+        else:
+            score = D
 
     # ── Score → scale → logit ──
     # Trừ 0.5 để center quanh 0: score=0.5 (neutral) → logit=0 → sigmoid=0.5.

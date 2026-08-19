@@ -406,6 +406,26 @@ def training(dataset, opt, pipe, args):
             if L_c1 is not None:
                 LossDict["loss_gs0"] += L_c1
 
+        # ── [CRSGaussian Phase 26 A2] Temporal parameter regularization ──
+        # L_temporal so tham số 3D hiện tại (_xyz/_scaling/_rotation, TRƯỚC
+        # backward của iteration này) với EMA của chính nó từ các iteration
+        # trước — loss tác động trực tiếp lên không gian tham số 3D, khác
+        # L1/D-SSIM/depth (đều so sánh trên pixel 2D). Gọi compute TRƯỚC
+        # update EMA để EMA phản ánh lịch sử "quá khứ" chứ không lẫn giá trị
+        # vừa tính loss trên nó. Default OFF (use_temporal_reg=False) → 0
+        # overhead, byte-identical baseline.
+        if opt.use_temporal_reg and iteration >= opt.temporal_reg_start_iter:
+            from utils.loss.temporal_reg import compute_temporal_reg_loss, update_temporal_ema
+            L_temporal = compute_temporal_reg_loss(
+                gaussians,
+                lambda_xyz=opt.lambda_temporal_xyz,
+                lambda_shape=opt.lambda_temporal_shape,
+                crs_weighted=opt.temporal_crs_weighted,
+            )
+            if L_temporal is not None:
+                LossDict["loss_gs0"] += L_temporal
+            update_temporal_ema(gaussians, beta=opt.temporal_ema_beta)
+
         loss = LossDict["loss_gs0"]
         for i in range(args.gaussiansN):
             LossDict[f"loss_gs{i}"].backward()
@@ -515,6 +535,10 @@ def training(dataset, opt, pipe, args):
                     crs_w_s=opt.crs_w_s,
                     # ── [CRSGaussian Phase 9] D-only formula ──
                     disable_r_signal=opt.disable_r_signal,
+                    # ── [CRSGaussian Phase 26 A1] V_stability ──
+                    use_v_stability=opt.use_v_stability,
+                    v_stability_warmup=opt.v_stability_warmup,
+                    crs_w_v=opt.crs_w_v,
                 )
                 crs_update_time_total += time.time() - _t0
                 # Log CRS distribution
@@ -747,6 +771,21 @@ def training(dataset, opt, pipe, args):
                         tau_freeze=opt.crs_freeze_tau,
                     )
 
+            # ── [CRSGaussian Phase 26 A1] CRS-modulated geometric freeze ──
+            # Đối xứng block trên nhưng freeze _xyz/_scaling/_rotation grad
+            # (thay vì SH) cho Gaussians có V_stability thấp — chặn hình học
+            # đang trôi dạt/méo trước khi optimizer.step() áp dụng update.
+            # Default OFF (use_crs_modulated_geom_freeze=False) → no-op.
+            if opt.use_crs_modulated_geom_freeze:
+                from utils.crs.geom_freeze import apply_crs_modulated_geom_freeze
+                for i in range(args.gaussiansN):
+                    apply_crs_modulated_geom_freeze(
+                        GsDict[f"gs{i}"],
+                        iter=iteration,
+                        freeze_start=opt.geom_freeze_start,
+                        tau_freeze=opt.geom_freeze_tau,
+                    )
+
             # Optimizer step
             if iteration < opt.iterations:
                 for i in range(args.gaussiansN):
@@ -768,6 +807,18 @@ def training(dataset, opt, pipe, args):
                         beta=opt.sh_stability_ema_beta,
                     )
 
+            # ── [CRSGaussian Phase 26 A1] Geometric (V) stability EMA tracking ──
+            # Update EMA mean + variance của _xyz/_scaling/_rotation, cùng nhịp
+            # + vị trí gọi với update_sh_stability (SAU optimizer.step() để
+            # capture trạng thái post-update của tham số hình học).
+            # Default OFF (use_v_stability=False) → no-op.
+            if (opt.use_v_stability
+                    and iteration > opt.v_stability_warmup
+                    and iteration % opt.crs_update_interval == 0):
+                from utils.crs.v_stability import update_v_stability
+                for i in range(args.gaussiansN):
+                    update_v_stability(GsDict[f"gs{i}"])
+
             # ── [CRSGaussian Phase 2c] Opacity decay hook ──
             # Multiply opacity mỗi iter sau densify_from_iter → continuous pressure.
             # Khác CRS pruning (sparse, mỗi 100 iter): decay liên tục giúp zombie
@@ -776,8 +827,33 @@ def training(dataset, opt, pipe, args):
             # Gated bởi --use_opacity_decay (default False) → baseline không đổi.
             if (dataset.use_opacity_decay
                     and iteration > opt.densify_from_iter):
-                for i in range(args.gaussiansN):
-                    GsDict[f"gs{i}"].opacity_decay(factor=dataset.opacity_decay_factor)
+                # ── [CRSGaussian Phase 26 C1] Density-as-frequency decay modulation ──
+                # opacity_decay_factor scalar (đều tay) → per-Gaussian factor
+                # gần 1 (decay chậm) tại vùng tần số cao. Prerequisite: cả
+                # dataset.opacity_decay_freq_modulate VÀ pipe.use_density_freq_modulate.
+                # Default OFF → factor scalar như cũ (byte-identical baseline).
+                if (dataset.opacity_decay_freq_modulate
+                        and getattr(pipe, "use_density_freq_modulate", False)):
+                    from utils.regularizer.density_freq_modulate import (
+                        compute_frequency_signal, modulate_probability
+                    )
+                    for i in range(args.gaussiansN):
+                        _gs = GsDict[f"gs{i}"]
+                        _freq = compute_frequency_signal(
+                            _gs, method=getattr(pipe, "density_freq_method", "voxel"),
+                        )
+                        # decay factor: 1 - (1-base_factor) * (1 - strength*freq)
+                        # freq cao → factor gần 1 (decay chậm); freq thấp → factor gốc.
+                        _decay_gap = 1.0 - dataset.opacity_decay_factor
+                        _factor_per = 1.0 - modulate_probability(
+                            _decay_gap, _freq,
+                            strength=getattr(pipe, "density_freq_strength", 1.0),
+                            min_prob_ratio=getattr(pipe, "density_freq_min_ratio", 0.0),
+                        )
+                        _gs.opacity_decay(factor=_factor_per)
+                else:
+                    for i in range(args.gaussiansN):
+                        GsDict[f"gs{i}"].opacity_decay(factor=dataset.opacity_decay_factor)
                 # One-shot extend densify — Binocular3DGS style (densify suốt training)
                 if (dataset.opacity_decay_extend_densify
                         and iteration == opt.densify_from_iter + 1):

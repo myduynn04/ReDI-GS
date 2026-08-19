@@ -98,6 +98,14 @@ class ModelParams(ParamGroup):
         self.use_opacity_decay           = False   # master switch
         self.opacity_decay_factor        = 0.995   # multiply per iter
         self.opacity_decay_extend_densify = False  # extend densify_until_iter = iterations
+        # ── [CRSGaussian Phase 26 C1] Density-as-frequency opacity decay modulation ──
+        # opacity_decay_factor hiện áp đều cho mọi Gaussian mỗi iter — nghi
+        # ngờ decay đều tay cùng với DropAnSH/SH-freeze gây underfit vùng chi
+        # tiết. Modulate factor per-Gaussian theo mật độ+scale cục bộ: vùng
+        # tần số cao (chi tiết) decay chậm hơn (factor gần 1), vùng tần số
+        # thấp (mặt phẳng) giữ nguyên factor gốc. Prerequisite: use_opacity_decay
+        # + use_density_freq_modulate (PipelineParams). Default OFF.
+        self.opacity_decay_freq_modulate = False
         # ── [CRSGaussian Tier A] Formula-level diagnostics ──
         # Bật dump D_i, R_i, CRS distributions + 2 test bổ sung (synthetic
         # floater discrimination + occlusion contamination) để diagnose
@@ -187,6 +195,18 @@ class PipelineParams(ParamGroup):
         #   "crs_voxel"  → Phase 3β: voxel × (1-CRS) composite
         # crs_anchor (Phase 3 old flag) priority hơn density_method khi cả 2 bật.
         self.dropansh_density_method = "uniform"
+
+        # ── [CRSGaussian Phase 26 C1] Density-as-frequency SH dropout modulation ──
+        # Thay p_sh scalar (đều tay) bằng per-Gaussian probability điều biến
+        # theo mật độ+scale cục bộ (proxy tần số không gian 3D): vùng chi tiết
+        # mịn (density cao, scale nhỏ) → dropout ít hơn, tránh underfit chi
+        # tiết; vùng mặt phẳng trơn → giữ nguyên cường độ dropout gốc.
+        # Prerequisite: use_dropansh=True. Default OFF → dropansh_psh scalar
+        # dùng như cũ (byte-identical baseline).
+        self.use_density_freq_modulate     = False
+        self.density_freq_method           = "voxel"   # "voxel" | "covariance"
+        self.density_freq_strength         = 1.0        # 0=no-op, 1=full range giảm về 0 tại freq=1
+        self.density_freq_min_ratio        = 0.0        # sàn tối thiểu (tỉ lệ base_prob)
 
         super().__init__(parser, "Pipeline Parameters")
 
@@ -288,6 +308,37 @@ class OptimizationParams(ParamGroup):
         self.use_crs_modulated_sh_freeze = False
         self.crs_freeze_tau              = 0.65   # [Phase 28] tuned default (was 0.5); CRS < tau → zero _features_rest grad
         self.crs_freeze_start            = 1000   # iter bắt đầu apply selective freeze
+
+        # ── [CRSGaussian Phase 26 A1] V_stability — geometric stability signal ──
+        # Track EMA variance của _xyz/_scaling/_rotation qua iteration → phát
+        # hiện Gaussian đang trôi dạt/méo hình học (khác S_stability chỉ theo
+        # dõi drift màu SH). Signal thứ 4 trong CRS formula, đối xứng với S.
+        # Default OFF — không ảnh hưởng baseline khi tắt.
+        self.use_v_stability      = False    # master switch
+        self.v_stability_warmup   = 1000     # iters đầu skip (chưa đủ EMA samples)
+        self.crs_w_v              = 0.33     # weight w_v; auto-norm phần còn lại
+
+        # ── [CRSGaussian Phase 26 A1] CRS-modulated geometric freeze ──
+        # Đối xứng use_crs_modulated_sh_freeze nhưng freeze _xyz/_scaling/
+        # _rotation grad (thay vì _features_rest) khi V_stability thấp.
+        # Cần use_v_stability=True làm prerequisite. Default OFF.
+        self.use_crs_modulated_geom_freeze = False
+        self.geom_freeze_tau               = 0.5    # V < tau → zero xyz/scaling/rotation grad
+        self.geom_freeze_start             = 1000   # iter bắt đầu apply
+
+        # ── [CRSGaussian Phase 26 A2] Temporal parameter regularization ──
+        # L_temporal phạt độ lệch giữa _xyz/_scaling/_rotation hiện tại và
+        # EMA của chính nó — loss tác động trực tiếp lên tham số 3D (khác
+        # L1/D-SSIM/depth vốn đều so sánh trên pixel 2D). Mục đích: giữ
+        # Gaussian ổn định qua iteration, tránh trôi dạt/méo hình học.
+        # Độc lập với use_v_stability (A1) — dùng buffer EMA riêng (mean-only,
+        # nhẹ hơn) để bật/tắt A2 mà không cần A1. Default OFF.
+        self.use_temporal_reg       = False    # master switch
+        self.temporal_reg_start_iter = 1000    # iter bắt đầu (đủ EMA warmup)
+        self.temporal_ema_beta      = 0.9      # EMA decay cho buffer riêng của A2
+        self.lambda_temporal_xyz    = 0.01     # trọng số phạt lệch vị trí
+        self.lambda_temporal_shape  = 0.01     # trọng số phạt lệch scale+rotation
+        self.temporal_crs_weighted  = True     # True → weight theo CRS hiện tại
 
         # ── [CRSGaussian Phase 9] D-only formula + cross-backbone test ──
         # Phase 8 attribution: R alone HURTS (-0.111), S adds nothing (-0.023),

@@ -18,6 +18,10 @@ SCENES = os.environ.get(
     "SCENES", "fern flower fortress horns leaves orchids room trex").split()
 SEEDS = os.environ.get("SEEDS", "42 137 9999").split()
 LOG_DIR = Path(os.environ.get("LOG_DIR", "logs/run"))
+# [CRSGaussian Phase 26] Tên file log không phải lúc nào cũng "A3_..." —
+# scripts/p26_ablation_run.sh đặt tên theo ${CONFIG}_seed... Cho phép
+# override qua PREFIX, default "A3" giữ nguyên hành vi cũ (scripts/run.sh).
+PREFIX = os.environ.get("PREFIX", "A3")
 
 PSNR_PAT = re.compile(r"Best test PSNR:\s*([\d.eE+\-]+)")
 ROW_PAT = re.compile(
@@ -39,11 +43,11 @@ def parse_log(path: Path):
 
 
 def collect(root: Path):
-    """Read every ``A3_seed{SEED}_{SCENE}.log`` under ``root``."""
+    """Read every ``{PREFIX}_seed{SEED}_{SCENE}.log`` under ``root``."""
     out = {}
     for sc in SCENES:
         for sd in SEEDS:
-            f = root / f"A3_seed{sd}_{sc}.log"
+            f = root / f"{PREFIX}_seed{sd}_{sc}.log"
             v = parse_log(f)
             if v is not None:
                 out[(sc, sd)] = v

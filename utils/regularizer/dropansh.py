@@ -184,9 +184,12 @@ def sh_degree_dropout(
     restore_sh_dropout(gaussians, snapshot) sau forward pass để phục hồi.
 
     Args:
-        p_sh: per-Gaussian base probability of SH dropout.
-              p_sh=0 → skip (dùng để tắt SH-only, giữ anchor).
-        crs_modulated: True → p_per = p_sh * (1-CRS) (Phase 3).
+        p_sh: base probability of SH dropout — scalar float (uniform, behavior
+              cũ) hoặc (N,) tensor [Phase 26 C1 density-frequency-modulated,
+              per-Gaussian]. p_sh=0.0 (scalar) → skip (tắt SH-only, giữ anchor).
+        crs_modulated: True → p_per = p_sh * (1-CRS) (Phase 3). Không tương
+              thích cùng lúc với p_sh dạng tensor (Phase 26 C1) — caller chỉ
+              nên bật một trong hai.
 
     Returns:
         snapshot_info: None (không dropout), hoặc
@@ -198,8 +201,12 @@ def sh_degree_dropout(
     # lmax TĂNG dần theo iter → ép model học màu nền (DC) trước, chi tiết sau.
     # Mục đích: chống overfit tần-số-cao (SH bậc cao nhớ vẹt 3 view train).
     # ══════════════════════════════════════════════════════════════════
-    # Skip nhanh nếu caller tắt hoặc đã qua giai đoạn dropout
-    if p_sh <= 0.0:
+    # Skip nhanh nếu caller tắt hoặc đã qua giai đoạn dropout.
+    # [Phase 26 C1] p_sh có thể là (N,) tensor — dùng .max() để kiểm tra
+    # "toàn bộ đều 0" mà không phải if trên tensor nhiều phần tử.
+    p_sh_is_tensor = torch.is_tensor(p_sh)
+    p_sh_max = p_sh.max().item() if p_sh_is_tensor else p_sh
+    if p_sh_max <= 0.0:
         return None
     if iteration >= schedule[2]:   # sau iter 6000 → không dropout nữa (đã học đủ)
         return None
@@ -216,7 +223,11 @@ def sh_degree_dropout(
     device = gaussians.get_xyz.device
 
     # Xác suất drop mỗi Gaussian
-    if crs_modulated and hasattr(gaussians, '_crs_score'):
+    if p_sh_is_tensor:
+        # [Phase 26 C1] p_sh đã là (N,) per-Gaussian probability (density-
+        # frequency-modulated) — dùng trực tiếp, bỏ qua crs_modulated.
+        p_per = p_sh.clamp(0.0, 1.0)
+    elif crs_modulated and hasattr(gaussians, '_crs_score'):
         # [NOT USE] Phase 3 — p_per điều biến theo CRS. Production KHÔNG dùng.
         crs = gaussians.get_crs.squeeze(-1)
         p_per = (p_sh * (1.0 - crs)).clamp(0.0, 1.0)

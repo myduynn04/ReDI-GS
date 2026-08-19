@@ -11,6 +11,10 @@
 
 #define BOX_SIZE 1024
 
+// FLT_MAX dùng ở dòng ~90/157 nhưng không được include tường minh — trên
+// toolchain gốc, FLT_MAX lọt vào gián tiếp qua 1 header khác (khác CUDA/
+// gcc version sẽ không đảm bảo). Include thẳng <cfloat> cho chắc chắn.
+#include <cfloat>
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 #include "simple_knn.h"

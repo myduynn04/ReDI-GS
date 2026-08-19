@@ -54,19 +54,22 @@ def main():
             print(f"  {sc:<10} ❌ RoMa v1 ply MISSING: {v1_ply} — run preprocess_all.sh first")
             n_skip += 1
             continue
-        if not dst.is_file():
-            print(f"  {sc:<10} ❌ fused.ply MISSING: {dst}")
-            n_skip += 1
-            continue
 
-        # Back up only once, so a re-run never overwrites the original MVS cloud.
-        if not backup.is_file():
+        # Back up the pre-existing COLMAP MVS cloud only if one exists (i.e.
+        # tools/colmap_llff.py was run first, per the README workflow) and
+        # only once, so a re-run never overwrites the original MVS cloud.
+        # Skipping the MVS step entirely (e.g. RoMa-only setups) is valid —
+        # there's simply nothing to back up in that case.
+        if not dst.is_file():
+            print(f"  {sc:<10} no pre-existing fused.ply (COLMAP MVS step skipped) — placing RoMa v1 directly, no backup")
+        elif not backup.is_file():
             shutil.copy(dst, backup)
             sz_kb = backup.stat().st_size / 1024
             print(f"  {sc:<10} backup ({sz_kb:.1f} KB) → {BACKUP_SUFFIX}")
         else:
             print(f"  {sc:<10} backup already exists — kept")
 
+        dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(v1_ply, dst)
         sz_kb = dst.stat().st_size / 1024
         print(f"  {sc:<10} ✅ placed RoMa v1 init → fused.ply ({sz_kb:.1f} KB)")
